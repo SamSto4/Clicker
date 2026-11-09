@@ -37,6 +37,8 @@ Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`,
 
 Every Worker request must carry `X-Clicky-App-Token` matching `CLICKY_APP_TOKEN`, or the Worker answers 401 (and refuses everything if the secret is unset). The app reads the Worker URL and token from the git-ignored `leanring-buddy/ClickyWorkerSecrets.plist` (template: `ClickyWorkerSecrets.example.plist` at the repo root).
 
+Speech-to-text in this fork uses Apple Speech (`VoiceTranscriptionProvider` = `apple` in Info.plist), which runs on the Mac and needs no API key, so `ASSEMBLYAI_API_KEY` is optional. Set it back to `assemblyai` (and add that Worker secret) to use AssemblyAI streaming.
+
 In this fork, PostHog analytics, the FormSpark email submission and the Sparkle update feed are switched off.
 Worker vars: `ELEVENLABS_VOICE_ID`
 

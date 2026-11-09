@@ -5,7 +5,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>VoiceTranscriptionProvider</key>
-	<string>assemblyai</string>
+	<string>apple</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Clicky uses your microphone so you can talk to it</string>
 	<key>NSScreenCaptureUsageDescription</key>
