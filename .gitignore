@@ -1,0 +1,11 @@
+worker/node_modules/
+worker/.dev.vars
+.DS_Store
+*.xcuserstate
+build/
+releases/
+.claude/
+coding-plans/
+
+# Your Worker URL and app token (copy ClickyWorkerSecrets.example.plist)
+leanring-buddy/ClickyWorkerSecrets.plist
