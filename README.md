@@ -73,9 +73,10 @@ Now add your secrets. Wrangler will prompt you to paste each one:
 
 ```bash
 npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 ```
+
+This fork uses Apple's built-in speech recognition, so you don't need an AssemblyAI key. To switch to AssemblyAI streaming instead, set `VoiceTranscriptionProvider` to `assemblyai` in `leanring-buddy/Info.plist` and also run `npx wrangler secret put ASSEMBLYAI_API_KEY`.
 
 Then make up a long random password for the app (for example with `openssl rand -hex 32`) and save it as a fourth secret. The Worker refuses any request that doesn't carry it, so nobody else can spend your API credit through your Worker URL:
 
@@ -146,6 +147,7 @@ The app will appear in your menu bar (not the dock). Click the icon to open the 
 ### Permissions the app needs
 
 - **Microphone** — for push-to-talk voice capture
+- **Speech Recognition** — Apple Speech turns your voice into text on your Mac
 - **Accessibility** — for the global keyboard shortcut (Control + Option)
 - **Screen Recording** — for taking screenshots when you use the hotkey
 - **Screen Content** — for ScreenCaptureKit access

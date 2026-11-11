@@ -22,6 +22,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
+- **Long-term memory**: optional local Python service (`memory_server.py` from the K.I.T-Agent repo) on `127.0.0.1:8765`, reached via `ClickerMemoryClient.swift`. `Info.plist` sets `NSAllowsLocalNetworking` so the app may use plain HTTP to it.
 
 ### API Proxy (Cloudflare Worker)
 
@@ -38,6 +39,8 @@ Reply tag grammar (parsed by `ClickyReplyTagParser`, case-insensitive, any order
 Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `CLICKY_APP_TOKEN`
 
 Every Worker request must carry `X-Clicky-App-Token` matching `CLICKY_APP_TOKEN`, or the Worker answers 401 (and refuses everything if the secret is unset). The app reads the Worker URL and token from the git-ignored `leanring-buddy/ClickyWorkerSecrets.plist` (template: `ClickyWorkerSecrets.example.plist` at the repo root).
+
+Speech-to-text in this fork uses Apple Speech (`VoiceTranscriptionProvider` = `apple` in Info.plist), which runs on the Mac and needs no API key, so `ASSEMBLYAI_API_KEY` is optional. Set it back to `assemblyai` (and add that Worker secret) to use AssemblyAI streaming.
 
 In this fork, PostHog analytics, the FormSpark email submission and the Sparkle update feed are switched off.
 Worker vars: `ELEVENLABS_VOICE_ID`
@@ -114,6 +117,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyPrompts/clicky_base_system_prompt.md` | ~850 words | Base system prompt: brevity, spoken style, pointing rules, note grammar, recall rules, and the short profile block (`[PROFILE:text]`, lasting statements only, six-word confirmation, forget, no secrets). Loaded at runtime from the bundle. |
 | `ClickyPrompts/skill_*.md` | ~230 words each | Per-app skills (general coding, Xcode, VS Code family, terminals). Plain resource files, not compiled. |
 | `ClickyWorkerConfiguration.swift` | ~65 | Reads the Worker base URL and app token from the git-ignored `ClickyWorkerSecrets.plist` and adds the `X-Clicky-App-Token` header to Worker requests. |
+| `ClickerMemoryClient.swift` | ~150 | Long-term memory client. Talks to `memory_server.py` (K.I.T-Agent repo) on `http://127.0.0.1:8765`: fetches saved facts + a related past session for the system prompt, sends the user's own transcript to `/learn`, and saves a session summary after 10 idle minutes or on quit. Fails soft when the server isn't running. |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
