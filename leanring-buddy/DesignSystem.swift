@@ -147,6 +147,27 @@ enum DS {
         /// field. Green, so dictating is never mistaken for asking Clicky (which is blue).
         static let overlayDictationAccent = Color(hex: "#2FCB9A")
 
+        /// "Marker vermilion": the ink of the marks Clicky draws on the screen (arrows, circles,
+        /// boxes, underlines, the edge of a label). A warm red-orange that stands out on white
+        /// pages and dark editors alike, and cannot be mistaken for the blue cursor or the green
+        /// of dictation.
+        static let overlayDrawingInk = Color(hex: "#FF5A36")
+
+        /// The highlighter band Clicky draws over text. Used see-through, so the text stays readable.
+        static let overlayDrawingHighlighter = Color(hex: "#FFD23F")
+
+        /// The dark pill behind a drawn label, so its words can be read on any background.
+        static let overlayDrawingLabelBackground = Color(hex: "#211A17")
+
+        /// The words of a drawn label: a warm off-white on the dark pill.
+        static let overlayDrawingLabelText = Color(hex: "#FFF6EF")
+
+        /// The paper of a sticky note Clicky leaves on the screen: a soft yellow.
+        static let overlayDrawingStickyNotePaper = Color(hex: "#FFE98A")
+
+        /// The words on a sticky note: a dark warm brown, easy to read on the yellow paper.
+        static let overlayDrawingStickyNoteText = Color(hex: "#3A2E0A")
+
         // ── Floating Button Gradient ─────────────────────────────────
 
         /// The floating session button gradient colors (unchanged from original —

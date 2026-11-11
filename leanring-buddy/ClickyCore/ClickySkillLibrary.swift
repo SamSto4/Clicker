@@ -15,6 +15,13 @@ nonisolated struct ClickySkill: Equatable {
     let priority: Int
     let bodyText: String
     let sourceFileName: String
+    /// From the "always_include" front matter key. A skill like this teaches a reply format the
+    /// user just asked for, so once it matches the turn it must not lose its place to app skills
+    /// that score higher: it is included first, and the other skills share the room that is left.
+    var isAlwaysIncludedWhenSelected: Bool = false
+    /// From the "when_marks_on_screen" front matter key. The skill also matches the turn while
+    /// Clicky's drawing is on the screen, whatever the user says, so the drawing can be edited.
+    var isSelectedWhenDrawingMarksAreOnScreen: Bool = false
 }
 
 /// Everything selection needs to know about the current turn. Plain strings only, so the logic
@@ -23,6 +30,8 @@ nonisolated struct ClickySkillSelectionContext {
     let userTranscript: String
     let frontmostApplicationBundleIdentifier: String?
     let frontmostApplicationName: String?
+    /// True while marks Clicky drew are still on the screen.
+    var drawingMarksAreOnScreen: Bool = false
 }
 
 /// Loads skill files from a folder and picks the few that apply to a turn.
@@ -33,6 +42,9 @@ nonisolated enum ClickySkillLibrary {
     /// Caps how much skill text one turn adds. A skill that would exceed the cap is skipped whole,
     /// never cut in half.
     static let maximumSkillBodyCharacterCountPerTurn = 2500
+    /// The "name" of the skill file that teaches the [DRAW:...] reply format. The app checks for
+    /// it to know that this turn's reply may have tags between its sentences.
+    static let drawSkillName = "draw"
 
     private struct ScoredSkill {
         let skill: ClickySkill
@@ -77,7 +89,9 @@ nonisolated enum ClickySkillLibrary {
             keywordPhrases: commaSeparatedLowercasedValues(frontMatterValuesByKey["keywords"]),
             priority: Int(frontMatterValuesByKey["priority"] ?? "") ?? 0,
             bodyText: bodyText,
-            sourceFileName: fileName
+            sourceFileName: fileName,
+            isAlwaysIncludedWhenSelected: frontMatterValueIsTrue(frontMatterValuesByKey["always_include"]),
+            isSelectedWhenDrawingMarksAreOnScreen: frontMatterValueIsTrue(frontMatterValuesByKey["when_marks_on_screen"])
         )
     }
 
@@ -107,6 +121,10 @@ nonisolated enum ClickySkillLibrary {
     /// Picks at most `maxSkillCount` skills, best first. A skill is eligible when the frontmost app
     /// matches it (100 points) or the transcript contains one of its keywords (40 points).
     /// Ties go to higher priority, then to name order, so the result is deterministic.
+    ///
+    /// A skill marked "always_include" that is eligible is taken first, whatever its rank and size,
+    /// and does not count towards `maxSkillCount`. The other skills then share what is left of the
+    /// character cap. With no such skill eligible, the selection is exactly what it always was.
     static func selectSkills(from availableSkills: [ClickySkill], for selectionContext: ClickySkillSelectionContext, maxSkillCount: Int = 2) -> [ClickySkill] {
         // Keyword matching compares whole words, so both sides are reduced to space-separated words.
         // Padding with spaces stops "ide" from matching inside "video".
@@ -125,6 +143,10 @@ nonisolated enum ClickySkillLibrary {
             if transcriptContainsKeyword {
                 score += keywordMatchScore
             }
+            // Marks on screen count like a keyword: the user may say only "remove the second one".
+            if !transcriptContainsKeyword && skill.isSelectedWhenDrawingMarksAreOnScreen && selectionContext.drawingMarksAreOnScreen {
+                score += keywordMatchScore
+            }
             return score > 0 ? ScoredSkill(skill: skill, score: score) : nil
         }
 
@@ -138,19 +160,37 @@ nonisolated enum ClickySkillLibrary {
             return firstScoredSkill.skill.skillName < secondScoredSkill.skill.skillName
         }
 
+        // Skills that must be included take their room first.
+        let alwaysIncludedSkillNames = Set(
+            rankedSkills.filter(\.skill.isAlwaysIncludedWhenSelected).map(\.skill.skillName)
+        )
+        var accumulatedBodyCharacterCount = rankedSkills
+            .filter(\.skill.isAlwaysIncludedWhenSelected)
+            .reduce(0) { characterCountSoFar, rankedSkill in characterCountSoFar + rankedSkill.skill.bodyText.count }
+
         var selectedSkills: [ClickySkill] = []
-        var accumulatedBodyCharacterCount = 0
+        var selectedOrdinarySkillCount = 0
         for rankedSkill in rankedSkills {
-            guard selectedSkills.count < maxSkillCount else {
-                break
+            if alwaysIncludedSkillNames.contains(rankedSkill.skill.skillName) {
+                selectedSkills.append(rankedSkill.skill)
+                continue
+            }
+            guard selectedOrdinarySkillCount < maxSkillCount else {
+                continue
             }
             if accumulatedBodyCharacterCount + rankedSkill.skill.bodyText.count > maximumSkillBodyCharacterCountPerTurn {
                 continue
             }
             selectedSkills.append(rankedSkill.skill)
+            selectedOrdinarySkillCount += 1
             accumulatedBodyCharacterCount += rankedSkill.skill.bodyText.count
         }
         return selectedSkills
+    }
+
+    private static func frontMatterValueIsTrue(_ rawValue: String?) -> Bool {
+        let normalizedValue = rawValue?.trimmingCharacters(in: .whitespaces).lowercased()
+        return normalizedValue == "true" || normalizedValue == "yes"
     }
 
     private static func matchesFrontmostApplication(_ skill: ClickySkill, bundleIdentifier: String?, applicationName: String?) -> Bool {

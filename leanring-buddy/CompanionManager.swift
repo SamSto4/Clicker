@@ -115,6 +115,7 @@ final class CompanionManager: ObservableObject {
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var escapeKeyCancellable: AnyCancellable?
+    private var scrollWheelCancellable: AnyCancellable?
     private var dictationChordActionCancellable: AnyCancellable?
     private var dictationPhaseCancellable: AnyCancellable?
     private var dictationOverlayStateCancellable: AnyCancellable?
@@ -572,6 +573,14 @@ final class CompanionManager: ObservableObject {
             .sink { [weak self] in
                 self?.handleEscapeKeyPressed()
             }
+
+        // Marks Clicky drew point at places on the page, so they fade when the page scrolls.
+        scrollWheelCancellable = globalPushToTalkShortcutMonitor
+            .scrollWheelScrolledPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.overlayWindowManager.drawingOverlayController.fadeMarksThatPointAtScreenContent()
+            }
     }
 
     private func bindDictation() {
@@ -648,6 +657,9 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
         clearDetectedElementLocation()
+        // The answer's speech has just been cut off, so the marks that were waiting for their
+        // moment in it are not drawn. Marks already on the screen stay.
+        overlayWindowManager.drawingOverlayController.cancelCommandsNotYetDrawn()
     }
 
     /// Escape stops Clicky while it is working out or saying an answer: it ends the audio,
@@ -655,6 +667,9 @@ final class CompanionManager: ObservableObject {
     /// when Clicky is idle or listening, so Escape keeps working normally everywhere else. The
     /// key itself is never swallowed (the event tap is listen-only).
     private func handleEscapeKeyPressed() {
+        // Escape always wipes Clicky's drawing at once, whatever else it does or does not stop.
+        overlayWindowManager.drawingOverlayController.clearAllMarks(fadeOutSeconds: 0)
+
         // A dictation in any step (listening, hands-free, cleaning up, pasting) is cancelled first
         // and nothing is inserted. Escape is used up by it.
         if dictationController.cancelBecauseEscapeWasPressed() {
@@ -764,6 +779,12 @@ final class CompanionManager: ObservableObject {
             elevenLabsTTSClient.stopPlayback()
             clearDetectedElementLocation()
 
+            // Marks already drawn stay on the screen while the user asks again, so the next
+            // reply can erase or add to them. Marks the interrupted reply had not drawn yet are
+            // dropped, because the speech they belonged to has stopped.
+            overlayWindowManager.drawingOverlayController.cancelCommandsNotYetDrawn()
+            overlayWindowManager.drawingOverlayController.beginKeepingMarks()
+
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
                 withAnimation(.easeOut(duration: 0.3)) {
@@ -842,6 +863,12 @@ final class CompanionManager: ObservableObject {
         currentSpeechPrefetch?.cancel()
         currentSpeechPrefetch = speechPrefetch
 
+        // Marks on the screen are kept for the whole turn (so the reply can edit them), and their
+        // countdown to fading starts again when this turn's reply has ended.
+        let drawingOverlayController = overlayWindowManager.drawingOverlayController
+        drawingOverlayController.cancelCommandsNotYetDrawn()
+        let keepMarksGeneration = drawingOverlayController.beginKeepingMarks()
+
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
@@ -871,6 +898,10 @@ final class CompanionManager: ObservableObject {
                 // However the turn ends, an early speech fetch that is still running is stopped.
                 // Cancelling one that already finished or was used does nothing.
                 speechPrefetch.cancel()
+                // The reply is over (spoken to the end, failed or cancelled): from now the marks
+                // on the screen have their 12 seconds. Ignored if a newer press or turn has
+                // already asked for the marks to be kept.
+                drawingOverlayController.finishKeepingMarks(keepMarksGeneration: keepMarksGeneration)
                 if activeResponseTurnIdentifier == turnIdentifier {
                     activeResponseTurnIdentifier = nil
                 }
@@ -955,13 +986,20 @@ final class CompanionManager: ObservableObject {
                 let promptAssemblyStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                 let noteStore = ClickyNoteStore(notesDirectoryURL: ClickyNoteStore.defaultNotesDirectoryURL)
                 let profileStore = ClickyProfileStore(profileDirectoryURL: ClickyProfileStore.defaultProfileDirectoryURL)
+                // The marks Clicky drew that are still on the screen. Clicky's windows are left
+                // out of the screenshots, so this list is the only way Claude knows about them.
+                // It is empty on an ordinary turn, which then gets no extra prompt text.
+                let drawingMarksOnScreen = drawingOverlayController.drawingMarksForPrompt(
+                    displayFramesInScreenshotOrder: screenCaptures.map(\.displayFrame)
+                )
                 let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
                     for: ClickyTurnContext(
                         userTranscript: transcript,
                         frontmostApplicationBundleIdentifier: frontmostApplicationAtTurnStart?.bundleIdentifier,
                         frontmostApplicationName: frontmostApplicationAtTurnStart?.localizedName,
                         screenCount: screenCaptures.count,
-                        currentDate: Date()
+                        currentDate: Date(),
+                        drawingMarksOnScreen: drawingMarksOnScreen
                     ),
                     promptsDirectoryURL: ClickyPromptAssembler.promptsDirectoryURL(in: .main),
                     noteStore: noteStore,
@@ -992,6 +1030,10 @@ final class CompanionManager: ObservableObject {
                 // so the API can reuse the base prompt instead of processing it again each turn.
                 turnStepInProgress = .claudeRequest
                 let elevenLabsTTSClientForSpeechPrefetch = elevenLabsTTSClient
+                // A draw reply has tags between its sentences, so the words before the first tag
+                // are not the whole spoken answer and audio fetched for them would always be
+                // thrown away. The early fetch is skipped for such a turn.
+                let drawSkillIsSelectedForThisTurn = preparedPrompt.selectedSkillNames.contains(ClickySkillLibrary.drawSkillName)
                 let claudeRequestStartedUptimeSecondsForThisCall = ClickyTurnMetrics.currentUptimeSeconds
                 claudeRequestStartedUptimeSeconds = claudeRequestStartedUptimeSecondsForThisCall
                 let streamingResult = try await claudeAPI.analyzeImageStreaming(
@@ -1006,6 +1048,7 @@ final class CompanionManager: ObservableObject {
                         // the early speech fetch once the first reply tag has opened (the words
                         // before it are final). Nothing is played from here.
                         replyTextArrivalClock.markReplyTextArrived()
+                        guard !drawSkillIsSelectedForThisTurn else { return }
                         speechPrefetch.startIfFirstReplyTagHasOpened(
                             accumulatedReplyText: accumulatedReplyText,
                             userTranscript: transcript,
@@ -1037,6 +1080,21 @@ final class CompanionManager: ObservableObject {
                 )
                 let spokenText = finishedTurn.spokenText
                 turnMetrics.spokenReplyCharacterCount = spokenText.count
+
+                // The [DRAW:...] tags of the reply, each with how far into the spoken text it
+                // sits. An ordinary reply has none, and nothing below changes for it.
+                let parsedDrawReply = ClickyDrawTagParser.parse(fullResponseText)
+                let drawingDisplayPlacementsInScreenshotOrder = screenCaptures.map { screenCapture in
+                    ClickyDrawingDisplayPlacement(
+                        displayFrame: screenCapture.displayFrame,
+                        screenshotToDisplayMapping: screenCapture.screenshotToDisplayMapping
+                    )
+                }
+                let cursorScreenshotIndex = screenCaptures.firstIndex(where: { $0.isCursorScreen })
+                if !parsedDrawReply.commands.isEmpty || parsedDrawReply.ignoredDrawTagCount > 0 {
+                    // Counts only, never the text of a label or sticky note.
+                    print("✏️ draw: commands=\(parsedDrawReply.commands.count) ignoredTags=\(parsedDrawReply.ignoredDrawTagCount)")
+                }
                 turnMetrics.usedPointing = finishedTurn.parsedReply.pointTarget != nil
                 // Counts only, never the text of a note or profile fact.
                 print("📚 prompt: skills=\(preparedPrompt.selectedSkillNames) notes=\(preparedPrompt.includedNotes.count) saved=\(finishedTurn.savedNoteTexts.count) profileFacts=\(preparedPrompt.includedProfileFactTexts.count) profileSaved=\(finishedTurn.savedProfileFactTexts.count) profileDropped=\(finishedTurn.droppedProfileTagCount) secretRefused=\(finishedTurn.secretRefusalCount) profileFull=\(finishedTurn.profileWasFull)")
@@ -1078,19 +1136,17 @@ final class CompanionManager: ObservableObject {
                     // Claude's coordinates are in the screenshot's pixel space
                     // (top-left origin, e.g. 1280x831). Scale to the display's
                     // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
                     let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
                     let displayFrame = targetScreenCapture.displayFrame
 
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+                    // Clamp to the screenshot and scale from screenshot pixels to display points.
+                    // The same mapping places Clicky's drawing, so a mark and the cursor agree on
+                    // where a coordinate is.
+                    let displayPointFromTopLeft = targetScreenCapture.screenshotToDisplayMapping.displayPointFromTopLeft(
+                        forScreenshotPixel: ClickyDrawingPoint(x: pointTarget.x, y: pointTarget.y)
+                    )
+                    let displayLocalX = CGFloat(displayPointFromTopLeft.x)
+                    let displayLocalY = CGFloat(displayPointFromTopLeft.y)
 
                     // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
                     let appKitY = displayHeight - displayLocalY
@@ -1111,9 +1167,15 @@ final class CompanionManager: ObservableObject {
 
                 // Save this exchange to conversation history. The point tag is stripped, but
                 // [NOTE:...] and [PROFILE:...] tags stay so the model keeps saving in the same format.
+                // The [DRAW:...] tags of a draw reply are kept for the same reason; for a reply
+                // without them this is exactly the finisher's history text.
                 conversationHistory.append((
                     userTranscript: transcript,
-                    assistantResponse: finishedTurn.historyAssistantText
+                    assistantResponse: ClickyDrawTagParser.historyAssistantText(
+                        rawReplyText: fullResponseText,
+                        finishedSpokenText: spokenText,
+                        finishedHistoryAssistantText: finishedTurn.historyAssistantText
+                    )
                 ))
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
@@ -1155,6 +1217,14 @@ final class CompanionManager: ObservableObject {
                         try elevenLabsTTSClient.playSpeechAudio(resolvedSpeech.fetchedSpeech.audioData)
                         // playSpeechAudio returns after player.play() — audio is now playing
                         let audioStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+                        // The voice has just started: each mark is now scheduled for the moment
+                        // its sentence ends, worked out from the length of this audio.
+                        drawingOverlayController.performDrawCommands(
+                            parsedDrawReply.commands,
+                            displayPlacementsInScreenshotOrder: drawingDisplayPlacementsInScreenshotOrder,
+                            cursorScreenshotIndex: cursorScreenshotIndex,
+                            speechAudioDurationSeconds: elevenLabsTTSClient.currentSpeechAudioDurationSeconds
+                        )
                         turnMetrics.textToSpeechMilliseconds = ClickyTurnMetrics.millisecondsBetween(
                             startUptimeSeconds: textToSpeechStartedUptimeSeconds,
                             endUptimeSeconds: audioStartedUptimeSeconds
@@ -1174,9 +1244,24 @@ final class CompanionManager: ObservableObject {
                             ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                             print("⚠️ ElevenLabs TTS error: \(error)")
                             speakCreditsErrorFallback()
+                            // The voice failed, but the drawing can still be shown: with no audio
+                            // to pace against, the marks follow each other at a steady beat.
+                            drawingOverlayController.performDrawCommands(
+                                parsedDrawReply.commands,
+                                displayPlacementsInScreenshotOrder: drawingDisplayPlacementsInScreenshotOrder,
+                                cursorScreenshotIndex: cursorScreenshotIndex,
+                                speechAudioDurationSeconds: nil
+                            )
                         }
                     }
                 } else {
+                    // A reply with marks but no words (for example only an erase) draws at once.
+                    drawingOverlayController.performDrawCommands(
+                        parsedDrawReply.commands,
+                        displayPlacementsInScreenshotOrder: drawingDisplayPlacementsInScreenshotOrder,
+                        cursorScreenshotIndex: cursorScreenshotIndex,
+                        speechAudioDurationSeconds: nil
+                    )
                     // Nothing to say, so there is no speech step left to wait for.
                     turnMetrics.speechPrefetchOutcome = speechPrefetch.outcomeWhenPrefetchedAudioIsNotUsed
                     turnStepInProgress = nil
@@ -1239,6 +1324,13 @@ final class CompanionManager: ObservableObject {
             // Wait for a dictation (and its notice, such as "copied. press command v to paste.")
             // to be over, so the notice is not faded away before it can be read.
             while dictationOverlayState != .hidden {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+
+            // Marks Clicky drew live in the overlay windows, so the overlay stays until the
+            // drawing has faded (12 seconds after the reply) or was cleared.
+            while overlayWindowManager.drawingOverlayController.hasMarksOnScreen {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }

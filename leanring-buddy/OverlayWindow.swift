@@ -877,6 +877,11 @@ class OverlayWindowManager {
     private var overlayWindows: [OverlayWindow] = []
     var hasShownOverlayBefore = false
 
+    /// Draws Clicky's marks (arrows, circles, labels, ...) on top of each screen's overlay. It
+    /// uses these overlay windows instead of windows of its own, so it is told here whenever the
+    /// windows are created or taken away.
+    let drawingOverlayController = ClickyDrawingOverlayController()
+
     func showOverlay(onScreens screens: [NSScreen], companionManager: CompanionManager) {
         // Hide any existing overlays
         hideOverlay()
@@ -898,6 +903,7 @@ class OverlayWindowManager {
             let hostingView = NSHostingView(rootView: contentView)
             hostingView.frame = screen.frame
             window.contentView = hostingView
+            drawingOverlayController.addDrawingSurface(onTopOf: hostingView, displayFrame: screen.frame)
 
             overlayWindows.append(window)
             window.orderFrontRegardless()
@@ -905,6 +911,8 @@ class OverlayWindowManager {
     }
 
     func hideOverlay() {
+        // The marks live inside these windows, so they go when the windows go.
+        drawingOverlayController.removeAllDrawingSurfaces()
         for window in overlayWindows {
             window.orderOut(nil)
             window.contentView = nil
@@ -916,6 +924,7 @@ class OverlayWindowManager {
     func fadeOutAndHideOverlay(duration: TimeInterval = 0.4) {
         let windowsToFade = overlayWindows
         overlayWindows.removeAll()
+        drawingOverlayController.removeAllDrawingSurfaces()
 
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = duration

@@ -25,6 +25,17 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// shortcuts cannot match at once: dictation is exactly fn + option and asking needs control.
     let dictationChordActionPublisher = PassthroughSubject<ClickyDictationChordAction, Never>()
 
+    /// Sends when the user scrolls anywhere in the system, at most once every
+    /// `scrollWheelMinimumSecondsBetweenReports`. Marks Clicky drew on the screen point at page
+    /// content, so they fade when that content moves. Scroll events come from the same listen-only
+    /// tap as the keys (no second tap), and are never swallowed.
+    let scrollWheelScrolledPublisher = PassthroughSubject<Void, Never>()
+
+    /// A single scroll gesture produces dozens of events a second. One report is enough to fade
+    /// the marks, so the rest of a burst is skipped.
+    private static let scrollWheelMinimumSecondsBetweenReports: TimeInterval = 0.2
+    private var lastScrollWheelReportUptimeSeconds: TimeInterval = 0
+
     /// When the push-to-talk keys were last released, on the same clock as
     /// `ClickyTurnMetrics.currentUptimeSeconds`. It is taken here, where the release is first
     /// seen, so the delay before the transcript and reply is measured from the real key release
@@ -62,7 +73,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // refreshAllPermissions → start() every few seconds.
         guard globalEventTap == nil else { return }
 
-        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
+        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp, .scrollWheel]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
             currentMask | (CGEventMask(1) << eventType.rawValue)
         }
@@ -149,6 +160,17 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
                 dictationChordStateMachine.handleModifiersChanged(modifiersHeldNow, at: ClickyTurnMetrics.currentUptimeSeconds)
             )
             rescheduleDictationChordWakeUp()
+            return Unmanaged.passUnretained(event)
+        }
+
+        // A scroll is not a key: it is reported (rarely, see above) and goes no further, so the
+        // shortcut and dictation logic below only ever see the key events they always saw.
+        if eventType == .scrollWheel {
+            let currentUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+            if currentUptimeSeconds - lastScrollWheelReportUptimeSeconds >= Self.scrollWheelMinimumSecondsBetweenReports {
+                lastScrollWheelReportUptimeSeconds = currentUptimeSeconds
+                scrollWheelScrolledPublisher.send()
+            }
             return Unmanaged.passUnretained(event)
         }
 

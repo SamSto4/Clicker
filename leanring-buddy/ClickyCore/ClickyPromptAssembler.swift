@@ -7,6 +7,9 @@ nonisolated struct ClickyTurnContext {
     let frontmostApplicationName: String?
     let screenCount: Int
     let currentDate: Date
+    /// The marks Clicky drew that are still on the screen, oldest first, with screen numbers that
+    /// match this turn's screenshots. Empty on an ordinary turn, which then gets no extra text.
+    var drawingMarksOnScreen: [ClickyDrawingMark] = []
 }
 
 nonisolated struct ClickyPreparedPrompt {
@@ -70,7 +73,8 @@ nonisolated enum ClickyPromptAssembler {
             for: ClickySkillSelectionContext(
                 userTranscript: turnContext.userTranscript,
                 frontmostApplicationBundleIdentifier: turnContext.frontmostApplicationBundleIdentifier,
-                frontmostApplicationName: turnContext.frontmostApplicationName
+                frontmostApplicationName: turnContext.frontmostApplicationName,
+                drawingMarksAreOnScreen: !turnContext.drawingMarksOnScreen.isEmpty
             )
         )
 
@@ -127,7 +131,8 @@ nonisolated enum ClickyPromptAssembler {
     }
 
     /// Everything after the base prompt: skills for this question, the "right now" block, the
-    /// user's profile, and notes. This is the part that differs between turns.
+    /// marks drawn on the screen (if any), the user's profile, and notes. This is the part that
+    /// differs between turns.
     static func assembleDynamicSystemPromptText(selectedSkills: [ClickySkill], includedNotes: [ClickyNote], includedProfileFactTexts: [String] = [], context: ClickyTurnContext) -> String {
         var sectionTexts: [String] = []
 
@@ -140,6 +145,12 @@ nonisolated enum ClickyPromptAssembler {
         }
 
         sectionTexts.append(rightNowSectionText(for: context))
+
+        // Only present while a drawing is on the screen. It belongs with "right now": it is what
+        // the user currently sees that the screenshot cannot show.
+        if let marksOnScreenSectionText = ClickyDrawingMarksOnScreenText.sectionText(for: context.drawingMarksOnScreen) {
+            sectionTexts.append(marksOnScreenSectionText)
+        }
 
         if !includedProfileFactTexts.isEmpty {
             sectionTexts.append(profileSectionText(for: includedProfileFactTexts))
