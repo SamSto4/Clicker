@@ -3,7 +3,7 @@ import Foundation
 /// How a turn ended.
 nonisolated enum ClickyTurnOutcome: String {
     case completed
-    /// The user spoke again, so this turn's work was thrown away.
+    /// The user spoke again or pressed Escape, so this turn's work was thrown away.
     case cancelled
     case failed
 }
@@ -14,6 +14,8 @@ nonisolated enum ClickyTurnStep: String {
     case promptAssembly
     case claudeRequest
     case textToSpeech
+    /// The audio was playing. Only used to record that Escape cut the speech short.
+    case speechPlayback
 }
 
 /// What is known about one turn: durations, sizes and counts, never any content.
@@ -37,8 +39,25 @@ nonisolated struct ClickyTurnMetrics: Equatable {
     var timeToFirstReplyTextMilliseconds: Int?
     /// Measured from the moment the request to Claude began until its reply finished (or failed).
     var claudeTotalMilliseconds: Int?
-    /// Measured from the moment the speech request began until audio started playing.
+    /// Measured from the moment the speech request began until audio started playing. With early
+    /// speech fetching this is the short wait left after the finisher decided the spoken text.
     var textToSpeechMilliseconds: Int?
+
+    /// The three numbers the user feels, all counted from the moment the push-to-talk keys were
+    /// released. They stay empty when the release moment was not recorded.
+    /// Release until the final transcript was handed to the app (dictation finalisation).
+    var keyReleaseToFinalTranscriptMilliseconds: Int?
+    /// Release until the first piece of Claude's reply text arrived.
+    var keyReleaseToFirstReplyTextMilliseconds: Int?
+    /// Release until audio started playing.
+    var keyReleaseToAudioStartMilliseconds: Int?
+    /// How long the network took to return the speech audio that was played (the early fetch
+    /// when one was used, otherwise the fetch of the final text).
+    var textToSpeechFetchMilliseconds: Int?
+    /// Whether audio fetched while Claude was still writing tags was used, and if not, why.
+    var speechPrefetchOutcome: ClickySpeechPrefetchOutcome?
+    /// True when the user pressed Escape to stop this turn (or its speech).
+    var wasInterruptedByEscapeKey = false
 
     var tokenUsage = ClickyClaudeTokenUsage()
 
@@ -65,6 +84,15 @@ nonisolated struct ClickyTurnMetrics: Equatable {
 
     static func millisecondsElapsed(sinceUptimeSeconds startUptimeSeconds: TimeInterval) -> Int {
         millisecondsBetween(startUptimeSeconds: startUptimeSeconds, endUptimeSeconds: currentUptimeSeconds)
+    }
+
+    /// Nil when the start moment was never recorded (for example the key release could not be
+    /// seen), so a missing measurement is left out instead of being logged as a wrong number.
+    static func millisecondsBetweenIfStartIsKnown(startUptimeSeconds: TimeInterval?, endUptimeSeconds: TimeInterval) -> Int? {
+        guard let startUptimeSeconds else {
+            return nil
+        }
+        return millisecondsBetween(startUptimeSeconds: startUptimeSeconds, endUptimeSeconds: endUptimeSeconds)
     }
 
     // MARK: - Output
@@ -100,6 +128,15 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         if let timeToFirstReplyTextMilliseconds { jsonObject["timeToFirstReplyTextMs"] = timeToFirstReplyTextMilliseconds }
         if let claudeTotalMilliseconds { jsonObject["claudeTotalMs"] = claudeTotalMilliseconds }
         if let textToSpeechMilliseconds { jsonObject["textToSpeechMs"] = textToSpeechMilliseconds }
+        if let keyReleaseToFinalTranscriptMilliseconds { jsonObject["keyReleaseToFinalTranscriptMs"] = keyReleaseToFinalTranscriptMilliseconds }
+        if let keyReleaseToFirstReplyTextMilliseconds { jsonObject["keyReleaseToFirstReplyTextMs"] = keyReleaseToFirstReplyTextMilliseconds }
+        if let keyReleaseToAudioStartMilliseconds { jsonObject["keyReleaseToAudioStartMs"] = keyReleaseToAudioStartMilliseconds }
+        if let textToSpeechFetchMilliseconds { jsonObject["textToSpeechFetchMs"] = textToSpeechFetchMilliseconds }
+        if let speechPrefetchOutcome {
+            jsonObject["speechPrefetchOutcome"] = speechPrefetchOutcome.rawValue
+            jsonObject["usedPrefetchedSpeech"] = speechPrefetchOutcome == .used
+        }
+        if wasInterruptedByEscapeKey { jsonObject["interruptedByEscape"] = true }
 
         if let inputTokens = tokenUsage.inputTokens { jsonObject["inputTokens"] = inputTokens }
         if let outputTokens = tokenUsage.outputTokens { jsonObject["outputTokens"] = outputTokens }
@@ -135,6 +172,14 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         summaryLine += " firstText \(millisecondsText(timeToFirstReplyTextMilliseconds))"
         summaryLine += " claude \(millisecondsText(claudeTotalMilliseconds))"
         summaryLine += " tts \(millisecondsText(textToSpeechMilliseconds))"
+        summaryLine += " | from key release: transcript \(millisecondsText(keyReleaseToFinalTranscriptMilliseconds))"
+        summaryLine += " firstText \(millisecondsText(keyReleaseToFirstReplyTextMilliseconds))"
+        summaryLine += " audio \(millisecondsText(keyReleaseToAudioStartMilliseconds))"
+        summaryLine += " | ttsFetch \(millisecondsText(textToSpeechFetchMilliseconds))"
+        summaryLine += " prefetch \(speechPrefetchOutcome?.rawValue ?? "-")"
+        if wasInterruptedByEscapeKey {
+            summaryLine += " escape"
+        }
         summaryLine += " | tokens in \(countText(tokenUsage.inputTokens))"
         summaryLine += " out \(countText(tokenUsage.outputTokens))"
         summaryLine += " cacheWrite \(countText(tokenUsage.cacheCreationInputTokens))"

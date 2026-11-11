@@ -89,7 +89,19 @@ final class CompanionManager: ObservableObject {
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
 
+    /// Set while a response turn is running (from the transcript arriving until the audio has
+    /// started or the turn has ended), and cleared by that turn when it finishes. The response
+    /// task itself is never set to nil, so this is how Escape knows there is something to stop.
+    private var activeResponseTurnIdentifier: UUID?
+
+    /// The turn that Escape stopped most recently, so that turn's metrics line can say so.
+    private var escapeInterruptedTurnIdentifier: UUID?
+
+    /// The early speech fetch of the current turn, kept so Escape can cancel it at once.
+    private var currentSpeechPrefetch: ElevenLabsSpeechPrefetch?
+
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var escapeKeyCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
@@ -171,6 +183,7 @@ final class CompanionManager: ObservableObject {
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+        warmUpPromptAssemblyInBackground()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -284,7 +297,9 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        currentSpeechPrefetch?.cancel()
         shortcutTransitionCancellable?.cancel()
+        escapeKeyCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
@@ -457,6 +472,84 @@ final class CompanionManager: ObservableObject {
             .sink { [weak self] transition in
                 self?.handleShortcutTransition(transition)
             }
+
+        escapeKeyCancellable = globalPushToTalkShortcutMonitor
+            .escapeKeyPressedPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.handleEscapeKeyPressed()
+            }
+    }
+
+    /// Escape stops Clicky while it is working out or saying an answer: it ends the audio,
+    /// cancels the response task and the early speech fetch, and returns to idle. It does nothing
+    /// when Clicky is idle or listening, so Escape keeps working normally everywhere else. The
+    /// key itself is never swallowed (the event tap is listen-only).
+    private func handleEscapeKeyPressed() {
+        // While the user is holding the keys and talking there is nothing to stop yet.
+        guard !buddyDictationManager.isActivelyRecordingAudio, !buddyDictationManager.isPreparingToRecord else {
+            return
+        }
+
+        let isWaitingForFinalTranscript = buddyDictationManager.isFinalizingTranscript
+        let isResponseTurnRunning = activeResponseTurnIdentifier != nil
+        let isSpeechAudioPlaying = elevenLabsTTSClient.isPlaying
+        guard isWaitingForFinalTranscript || isResponseTurnRunning || isSpeechAudioPlaying else {
+            return
+        }
+
+        escapeInterruptedTurnIdentifier = activeResponseTurnIdentifier
+
+        // Without this the transcript would still arrive a moment later and start a new answer
+        // the user just asked to stop.
+        if isWaitingForFinalTranscript {
+            buddyDictationManager.cancelCurrentDictation(preserveDraftText: false)
+        }
+
+        currentResponseTask?.cancel()
+        currentSpeechPrefetch?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
+        voiceState = .idle
+        scheduleTransientHideIfNeeded()
+        print("⎋ Clicky: Escape stopped the current response")
+    }
+
+    /// The first prompt assembly after each launch took 1.9 to 3.4 seconds in the turn metrics
+    /// log (five launches out of five), while every later one took 2 to 4 milliseconds. Reading
+    /// the prompt and skill files, date formatting and regular expressions each took only a few
+    /// milliseconds on their first use in a test program, so the cause is most likely the first
+    /// access of `~/Documents/Clicky Notes` in a new process: the Documents folder is protected
+    /// and iCloud Drive backed, and macOS checks access the first time a process touches it. That
+    /// is inferred by elimination and was not observed inside this app. The printed warm-up time
+    /// below is there to confirm or refute it: a warm-up of about a second or more means the first
+    /// folder access is the cost. Either way the cost is paid here, at launch off the main
+    /// thread, instead of while the user waits for an answer.
+    ///
+    /// This runs the real assembly once with a throwaway turn and discards the result. It only
+    /// reads. It is skipped until onboarding is done so a new user is not shown a Documents
+    /// access prompt before the app has explained itself.
+    private func warmUpPromptAssemblyInBackground() {
+        guard hasCompletedOnboarding else { return }
+
+        let promptsDirectoryURL = ClickyPromptAssembler.promptsDirectoryURL(in: .main)
+        Task.detached(priority: .utility) {
+            let warmUpStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+            _ = ClickyPromptAssembler.prepareSystemPrompt(
+                for: ClickyTurnContext(
+                    userTranscript: "",
+                    frontmostApplicationBundleIdentifier: nil,
+                    frontmostApplicationName: nil,
+                    screenCount: 1,
+                    currentDate: Date()
+                ),
+                promptsDirectoryURL: promptsDirectoryURL,
+                noteStore: ClickyNoteStore(notesDirectoryURL: ClickyNoteStore.defaultNotesDirectoryURL),
+                profileStore: ClickyProfileStore(profileDirectoryURL: ClickyProfileStore.defaultProfileDirectoryURL)
+            )
+            // A number only, never any prompt, note or profile text.
+            print("⏱ Clicky prompt warm-up: \(ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: warmUpStartedUptimeSeconds))ms")
+        }
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
@@ -495,7 +588,6 @@ final class CompanionManager: ObservableObject {
                     self.onboardingPromptText = ""
                 }
             }
-    
 
             ClickyAnalytics.trackPushToTalkStarted()
 
@@ -510,7 +602,10 @@ final class CompanionManager: ObservableObject {
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        self?.sendTranscriptToClaudeWithScreenshot(
+                            transcript: finalTranscript,
+                            keyReleaseUptimeSeconds: self?.globalPushToTalkShortcutMonitor.lastShortcutReleaseUptimeSeconds
+                        )
                     }
                 )
             }
@@ -535,9 +630,27 @@ final class CompanionManager: ObservableObject {
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    ///
+    /// While Claude is still writing the reply's tags, the audio for the words before the first tag
+    /// is already being downloaded (see `ElevenLabsSpeechPrefetch`). It is played only after
+    /// `ClickyTurnFinisher` has decided the final spoken text, and only if that text is exactly the
+    /// text the audio was made from; nothing is ever heard before the finisher has decided.
+    ///
+    /// `keyReleaseUptimeSeconds` is when the push-to-talk keys were released (nil when unknown),
+    /// so the metrics can show how long the user waited from letting go of the keys.
+    private func sendTranscriptToClaudeWithScreenshot(transcript: String, keyReleaseUptimeSeconds: TimeInterval?) {
+        // The final transcript has just been handed to the app: this is the end of the dictation
+        // finalisation that began at the key release.
+        let finalTranscriptReceivedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
+
+        let turnIdentifier = UUID()
+        let speechPrefetch = ElevenLabsSpeechPrefetch()
+        activeResponseTurnIdentifier = turnIdentifier
+        currentSpeechPrefetch?.cancel()
+        currentSpeechPrefetch = speechPrefetch
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -549,6 +662,10 @@ final class CompanionManager: ObservableObject {
 
             // Timing and size numbers for this turn. They hold no transcript, reply or note text.
             var turnMetrics = ClickyTurnMetrics(turnStartedAt: Date(), modelName: selectedModel)
+            turnMetrics.keyReleaseToFinalTranscriptMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
+                startUptimeSeconds: keyReleaseUptimeSeconds,
+                endUptimeSeconds: finalTranscriptReceivedUptimeSeconds
+            )
             // The step running right now. It is cleared only when every step has finished, so a
             // turn that fails or is cancelled partway can say which step it stopped at.
             var turnStepInProgress: ClickyTurnStep? = .screenCapture
@@ -561,9 +678,24 @@ final class CompanionManager: ObservableObject {
             // so exactly one metrics line is written per turn. Writing happens on a
             // background queue and can never throw, so it cannot affect the spoken answer.
             defer {
+                // However the turn ends, an early speech fetch that is still running is stopped.
+                // Cancelling one that already finished or was used does nothing.
+                speechPrefetch.cancel()
+                if activeResponseTurnIdentifier == turnIdentifier {
+                    activeResponseTurnIdentifier = nil
+                }
+                if escapeInterruptedTurnIdentifier == turnIdentifier {
+                    turnMetrics.wasInterruptedByEscapeKey = true
+                }
                 if let stepThatDidNotFinish = turnStepInProgress {
                     turnMetrics.outcome = Task.isCancelled ? .cancelled : .failed
                     turnMetrics.unfinishedStep = stepThatDidNotFinish
+                }
+                if let firstReplyTextArrivalUptimeSeconds = replyTextArrivalClock.firstReplyTextArrivalUptimeSeconds {
+                    turnMetrics.keyReleaseToFirstReplyTextMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
+                        startUptimeSeconds: keyReleaseUptimeSeconds,
+                        endUptimeSeconds: firstReplyTextArrivalUptimeSeconds
+                    )
                 }
                 if let claudeRequestStartedUptimeSeconds {
                     if let firstReplyTextArrivalUptimeSeconds = replyTextArrivalClock.firstReplyTextArrivalUptimeSeconds {
@@ -639,6 +771,7 @@ final class CompanionManager: ObservableObject {
                 // The base prompt goes out as a cached block and the per-turn part follows it,
                 // so the API can reuse the base prompt instead of processing it again each turn.
                 turnStepInProgress = .claudeRequest
+                let elevenLabsTTSClientForSpeechPrefetch = elevenLabsTTSClient
                 let claudeRequestStartedUptimeSecondsForThisCall = ClickyTurnMetrics.currentUptimeSeconds
                 claudeRequestStartedUptimeSeconds = claudeRequestStartedUptimeSecondsForThisCall
                 let streamingResult = try await claudeAPI.analyzeImageStreaming(
@@ -647,10 +780,17 @@ final class CompanionManager: ObservableObject {
                     dynamicSystemPrompt: preparedPrompt.dynamicSystemPromptText,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
-                    onTextChunk: { _ in
+                    onTextChunk: { accumulatedReplyText in
                         // No streaming text display — spinner stays until TTS plays.
-                        // The callback only notes when the first text arrived, for timing.
+                        // The callback notes when the first text arrived, for timing, and starts
+                        // the early speech fetch once the first reply tag has opened (the words
+                        // before it are final). Nothing is played from here.
                         replyTextArrivalClock.markReplyTextArrived()
+                        speechPrefetch.startIfFirstReplyTagHasOpened(
+                            accumulatedReplyText: accumulatedReplyText,
+                            userTranscript: transcript,
+                            ttsClient: elevenLabsTTSClientForSpeechPrefetch
+                        )
                     }
                 )
                 let fullResponseText = streamingResult.text
@@ -770,34 +910,76 @@ final class CompanionManager: ObservableObject {
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     let textToSpeechStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        turnMetrics.textToSpeechMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
-                            sinceUptimeSeconds: textToSpeechStartedUptimeSeconds
+                        // The finisher has decided the final spoken text, so this is the first
+                        // moment audio may be played. The early fetch is used only if it was made
+                        // from exactly this text; otherwise it is dropped and this text is fetched.
+                        let resolvedSpeech = try await speechPrefetch.speechAudioForFinalSpokenText(
+                            spokenText,
+                            ttsClient: elevenLabsTTSClient
+                        )
+                        turnMetrics.speechPrefetchOutcome = resolvedSpeech.prefetchOutcome
+                        turnMetrics.textToSpeechFetchMilliseconds = resolvedSpeech.fetchedSpeech.fetchMilliseconds
+
+                        // The user may have interrupted while the audio was downloading.
+                        try Task.checkCancellation()
+                        try elevenLabsTTSClient.playSpeechAudio(resolvedSpeech.fetchedSpeech.audioData)
+                        // playSpeechAudio returns after player.play() — audio is now playing
+                        let audioStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+                        turnMetrics.textToSpeechMilliseconds = ClickyTurnMetrics.millisecondsBetween(
+                            startUptimeSeconds: textToSpeechStartedUptimeSeconds,
+                            endUptimeSeconds: audioStartedUptimeSeconds
+                        )
+                        turnMetrics.keyReleaseToAudioStartMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
+                            startUptimeSeconds: keyReleaseUptimeSeconds,
+                            endUptimeSeconds: audioStartedUptimeSeconds
                         )
                         turnStepInProgress = nil
                         voiceState = .responding
                     } catch {
-                        // turnStepInProgress stays at .textToSpeech so the metrics line records the failure.
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                        // A cancelled turn (the user spoke again or pressed Escape) is not an error:
+                        // stay silent. The network layer may report a cancelled request as a URL
+                        // error instead of a CancellationError, so the task itself is asked.
+                        if !Task.isCancelled {
+                            // turnStepInProgress stays at .textToSpeech so the metrics line records the failure.
+                            ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                            print("⚠️ ElevenLabs TTS error: \(error)")
+                            speakCreditsErrorFallback()
+                        }
                     }
                 } else {
                     // Nothing to say, so there is no speech step left to wait for.
+                    turnMetrics.speechPrefetchOutcome = speechPrefetch.outcomeWhenPrefetchedAudioIsNotUsed
                     turnStepInProgress = nil
                 }
             } catch is CancellationError {
-                // User spoke again — response was interrupted
+                // User spoke again or pressed Escape — response was interrupted
             } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
-                print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                // Same as above: a request cancelled by the user must not play the error message.
+                if !Task.isCancelled {
+                    ClickyAnalytics.trackResponseError(error: error.localizedDescription)
+                    print("⚠️ Companion response error: \(error)")
+                    speakCreditsErrorFallback()
+                }
             }
 
             if !Task.isCancelled {
                 voiceState = .idle
                 scheduleTransientHideIfNeeded()
+            }
+
+            // Keep this turn open while its audio plays. The turn used to end the moment audio
+            // started, which left Escape during speech with no turn to record against: the metrics
+            // line had already been written as completed. Nothing else changes: the state above
+            // has already gone back to idle, so the cursor and overlay behave as before. A new
+            // push-to-talk press during speech still ends the wait and the turn stays "completed".
+            if turnStepInProgress == nil && elevenLabsTTSClient.isPlaying {
+                while elevenLabsTTSClient.isPlaying && !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                if Task.isCancelled && escapeInterruptedTurnIdentifier == turnIdentifier {
+                    turnMetrics.outcome = .cancelled
+                    turnMetrics.unfinishedStep = .speechPlayback
+                }
             }
         }
     }

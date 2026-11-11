@@ -15,6 +15,20 @@ import Foundation
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
 
+    /// Sends once each time Escape is pressed anywhere in the system (key repeat from holding the
+    /// key is ignored). The tap is listen-only, so Escape still reaches whichever app has focus;
+    /// the subscriber decides whether Clicky has anything to interrupt.
+    let escapeKeyPressedPublisher = PassthroughSubject<Void, Never>()
+
+    /// When the push-to-talk keys were last released, on the same clock as
+    /// `ClickyTurnMetrics.currentUptimeSeconds`. It is taken here, where the release is first
+    /// seen, so the delay before the transcript and reply is measured from the real key release
+    /// and not from a later hop to another queue. Cleared on the next press, so a release from an
+    /// earlier utterance is never mistaken for this one's.
+    private(set) var lastShortcutReleaseUptimeSeconds: TimeInterval?
+
+    private static let escapeKeyCode: UInt16 = 53
+
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
     /// Mutated exclusively from the CGEvent tap callback, which runs on
@@ -109,6 +123,14 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+
+        let isFirstKeyDownOfEscape = eventType == .keyDown
+            && eventKeyCode == Self.escapeKeyCode
+            && event.getIntegerValueField(.keyboardEventAutorepeat) == 0
+        if isFirstKeyDownOfEscape {
+            escapeKeyPressedPublisher.send()
+        }
+
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
             for: eventType,
             keyCode: eventKeyCode,
@@ -121,9 +143,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             break
         case .pressed:
             isShortcutCurrentlyPressed = true
+            lastShortcutReleaseUptimeSeconds = nil
             shortcutTransitionPublisher.send(.pressed)
         case .released:
             isShortcutCurrentlyPressed = false
+            lastShortcutReleaseUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
             shortcutTransitionPublisher.send(.released)
         }
 
