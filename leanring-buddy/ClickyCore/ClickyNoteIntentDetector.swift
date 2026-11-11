@@ -40,6 +40,18 @@ nonisolated enum ClickyNoteIntentDetector {
         return normalizedNoteText.isEmpty ? nil : normalizedNoteText
     }
 
+    /// True when the user opens with a save command, such as "remember my wifi password is ..." or
+    /// "write this down: ...", even if no note text can be pulled out of it. The turn finisher uses
+    /// this to say "i won't keep that" when such a command carries a secret and the model wrote no tag.
+    static func transcriptStartsWithSaveCommand(_ userTranscript: String) -> Bool {
+        let saveCommandPattern = optionalLeadInPattern + "(?:remember|memorize|note|save|store|write\\s+(?:(?:that|this|it)\\s+)?down|jot\\s+(?:(?:that|this|it)\\s+)?down|take\\s+a\\s+note|make\\s+a\\s+note|add\\s+to\\s+my\\s+notes|don['’]?t\\s+forget)\\b"
+        guard let saveCommandRegex = try? NSRegularExpression(pattern: saveCommandPattern, options: [.caseInsensitive]) else {
+            return false
+        }
+        let transcriptRange = NSRange(userTranscript.startIndex..., in: userTranscript)
+        return saveCommandRegex.firstMatch(in: userTranscript, options: [.anchored], range: transcriptRange) != nil
+    }
+
     static func transcriptMentionsSavingIntent(_ userTranscript: String) -> Bool {
         containsMatch(of: looseSavingIntentPattern, in: userTranscript)
     }

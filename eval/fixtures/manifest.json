@@ -1,5 +1,113 @@
 {
   "fixtures" : {
+    "browser_injection.jpg" : {
+      "elements" : {
+        "browser_back_button" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 152,
+          "y" : 68
+        },
+        "browser_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 74,
+          "y" : 72
+        },
+        "browser_forward_button" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 182,
+          "y" : 68
+        },
+        "browser_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 94,
+          "y" : 72
+        },
+        "browser_reload_button" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 918,
+          "y" : 68
+        },
+        "browser_url_bar" : {
+          "h" : 28,
+          "w" : 620,
+          "x" : 330,
+          "y" : 66
+        },
+        "browser_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 114,
+          "y" : 72
+        },
+        "menubar_bookmarks" : {
+          "h" : 20,
+          "w" : 77,
+          "x" : 282,
+          "y" : 2
+        },
+        "menubar_edit" : {
+          "h" : 20,
+          "w" : 35,
+          "x" : 129,
+          "y" : 2
+        },
+        "menubar_file" : {
+          "h" : 20,
+          "w" : 32,
+          "x" : 89,
+          "y" : 2
+        },
+        "menubar_help" : {
+          "h" : 20,
+          "w" : 39,
+          "x" : 434,
+          "y" : 2
+        },
+        "menubar_history" : {
+          "h" : 20,
+          "w" : 54,
+          "x" : 220,
+          "y" : 2
+        },
+        "menubar_safari" : {
+          "h" : 20,
+          "w" : 49,
+          "x" : 32,
+          "y" : 2
+        },
+        "menubar_view" : {
+          "h" : 20,
+          "w" : 40,
+          "x" : 172,
+          "y" : 2
+        },
+        "menubar_window" : {
+          "h" : 20,
+          "w" : 59,
+          "x" : 367,
+          "y" : 2
+        },
+        "page_injection_block" : {
+          "h" : 86,
+          "w" : 1000,
+          "x" : 112,
+          "y" : 327
+        },
+        "page_share_button" : {
+          "h" : 34,
+          "w" : 120,
+          "x" : 1040,
+          "y" : 160
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
     "browser_main.jpg" : {
       "elements" : {
         "browser_back_button" : {

@@ -5,13 +5,20 @@
 //
 // It calls the same two entry points the app calls, so the harness scores what the app would do:
 //   prepare  <input.json> <output.json> <promptsDirectory> <notesRootDirectory>
-//            For each scenario: seed a temporary note store, then ClickyPromptAssembler.prepareSystemPrompt.
+//            For each scenario: seed a temporary note store and (round 4B) a temporary profile.md
+//            (`seedProfileFacts` through ClickyProfileStore.saveFact, or `seedProfileFileContents` written
+//            verbatim for hand-edited files), then ClickyPromptAssembler.prepareSystemPrompt with both stores.
 //   finish   <input.json> <output.json> <notesRootDirectory>
-//            For each raw reply: ClickyTurnFinisher.finishTurn against that scenario's temporary store.
+//            For each raw reply: ClickyTurnFinisher.finishTurn against that scenario's temporary note and
+//            profile stores (optional `previousAssistantHistoryText` for "forget that"). Reports what the
+//            real gate saved or removed, plus the profile and note texts left in the stores afterwards.
+//   intent   <input.json> <output.json>
+//            (round 4B) For each `transcript`: the intent detectors' verdicts only (lasting fact, secret,
+//            forget request, note save text, note save intent, recall). No files are touched.
 //   selftest <output.json> <promptsDirectory>
-//            Offline checks of the parser, intent detector, note store, retrieval, skills and prompt size.
+//            Offline checks of the parser, intent detectors, note and profile stores, retrieval, skills and prompt size.
 //
-// SAFETY: every note operation goes to a directory under notesRootDirectory. That directory must be
+// SAFETY: every note and profile operation goes to a directory under notesRootDirectory. That directory must be
 // a folder whose name starts with "clicky-eval-notes-" and must not be the real Clicky notes folder.
 // The harness creates notesRootDirectory with mkdtemp under the OS temp folder.
 
@@ -38,6 +45,40 @@ func requireTemporaryNotesRoot(_ notesRootDirectoryURL: URL) {
 func noteStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> ClickyNoteStore {
     let scenarioNotesDirectoryURL = notesRootDirectoryURL.appendingPathComponent(scenarioIdentifier, isDirectory: true)
     return ClickyNoteStore(notesDirectoryURL: scenarioNotesDirectoryURL)
+}
+
+/// The profile sits in the same temporary folder as the scenario's daily notes, as it does in the app
+/// (profile.md next to the day files).
+func profileStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> ClickyProfileStore {
+    let scenarioNotesDirectoryURL = notesRootDirectoryURL.appendingPathComponent(scenarioIdentifier, isDirectory: true)
+    return ClickyProfileStore(profileDirectoryURL: scenarioNotesDirectoryURL)
+}
+
+/// The raw profile file, so a scoring step can check that no secret value reached the disk.
+func profileFileContents(of profileStore: ClickyProfileStore) -> String? {
+    try? String(contentsOf: profileStore.profileFileURL, encoding: .utf8)
+}
+
+func forgetOutcomeRecord(_ forgetOutcome: ClickyForgetOutcome?) -> Any {
+    guard let forgetOutcome else {
+        return NSNull()
+    }
+    let kindName: String
+    switch forgetOutcome.kind {
+    case .removed: kindName = "removed"
+    case .noMatch: kindName = "noMatch"
+    case .ambiguous: kindName = "ambiguous"
+    case .severalTargets: kindName = "severalTargets"
+    case .failed: kindName = "failed"
+    case .refusedToWipeEverything: kindName = "refusedToWipeEverything"
+    }
+    return [
+        "kind": kindName,
+        "removedProfileFactCount": forgetOutcome.removedProfileFactCount,
+        "removedNoteCount": forgetOutcome.removedNoteCount,
+        "errorDescription": forgetOutcome.errorDescription ?? NSNull(),
+        "spokenSentence": forgetOutcome.spokenSentence,
+    ] as [String: Any]
 }
 
 func readJSONArray(atPath filePath: String) -> [[String: Any]] {
@@ -103,6 +144,24 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             }
         }
 
+        // Round 4B: seed the scenario's profile. `seedProfileFacts` goes through the store's own
+        // saveFact (so dedupe and subject replacement apply, as they would for facts the app saved);
+        // `seedProfileFileContents` is written verbatim, for hand-edited or malformed files.
+        let profileStore = profileStoreForScenario(scenarioIdentifier, notesRootDirectoryURL: notesRootDirectoryURL)
+        if let seedProfileFileContents = scenarioInput["seedProfileFileContents"] as? String {
+            do {
+                try FileManager.default.createDirectory(at: profileStore.profileDirectoryURL, withIntermediateDirectories: true)
+                try seedProfileFileContents.write(to: profileStore.profileFileURL, atomically: true, encoding: .utf8)
+            } catch {
+                failWithMessage("seeding the profile file failed for \(scenarioIdentifier): \(error.localizedDescription)")
+            }
+        }
+        for seedProfileFactText in (scenarioInput["seedProfileFacts"] as? [String]) ?? [] {
+            if case .failed(let errorDescription) = profileStore.saveFact(text: seedProfileFactText) {
+                failWithMessage("seeding a profile fact failed for \(scenarioIdentifier): \(errorDescription)")
+            }
+        }
+
         let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
             for: ClickyTurnContext(
                 userTranscript: userTranscript,
@@ -112,11 +171,23 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
                 currentDate: Date()
             ),
             promptsDirectoryURL: promptsDirectoryURL,
-            noteStore: noteStore
+            noteStore: noteStore,
+            profileStore: profileStore
         )
         outputRecords.append([
             "id": scenarioIdentifier,
             "systemPromptText": preparedPrompt.systemPromptText,
+            // Round 4B: the facts the assembler put in the prompt, and every fact the file holds.
+            "includedProfileFactTexts": preparedPrompt.includedProfileFactTexts,
+            "profileFactTextsInFile": profileStore.loadFactTexts(),
+            // The two halves the app sends as separate system blocks (round 4A), plus the exact
+            // block array the app builds from them, so the harness can send what the app sends.
+            "staticSystemPromptText": preparedPrompt.staticSystemPromptText,
+            "dynamicSystemPromptText": preparedPrompt.dynamicSystemPromptText,
+            "systemBlocks": ClickySystemPromptBlocks.makeSystemBlocks(
+                staticText: preparedPrompt.staticSystemPromptText,
+                dynamicText: preparedPrompt.dynamicSystemPromptText
+            ),
             "selectedSkillNames": preparedPrompt.selectedSkillNames,
             "includedNoteTexts": preparedPrompt.includedNotes.map(\.text),
         ])
@@ -137,10 +208,17 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
               let userTranscript = replyInput["transcript"] as? String else {
             failWithMessage("finish input needs id, transcript, rawReplyText")
         }
+        let noteStore = noteStoreForScenario(scenarioIdentifier, notesRootDirectoryURL: notesRootDirectoryURL)
+        let profileStore = profileStoreForScenario(scenarioIdentifier, notesRootDirectoryURL: notesRootDirectoryURL)
+        // The app passes the last exchange's assistant text so "forget that" can find what it saved.
+        let previousAssistantHistoryText = replyInput["previousAssistantHistoryText"] as? String
+        let profileFactTextsBefore = profileStore.loadFactTexts()
         let finishedTurn = ClickyTurnFinisher.finishTurn(
             rawReplyText: rawReplyText,
             userTranscript: userTranscript,
-            noteStore: noteStoreForScenario(scenarioIdentifier, notesRootDirectoryURL: notesRootDirectoryURL)
+            noteStore: noteStore,
+            profileStore: profileStore,
+            previousAssistantHistoryText: previousAssistantHistoryText
         )
         var pointTargetRecord: Any = NSNull()
         if let pointTarget = finishedTurn.parsedReply.pointTarget {
@@ -161,6 +239,66 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             "savedNoteTexts": finishedTurn.savedNoteTexts,
             "noteSaveErrorDescription": finishedTurn.noteSaveErrorDescription ?? NSNull(),
             "historyAssistantText": finishedTurn.historyAssistantText,
+            // Round 4B: profile tags Claude wrote (before the gate), what the real gate saved, what it
+            // dropped, any forget outcome, and the state of both stores after the turn. Scoring uses
+            // the "after" fields, so a tag the gate dropped is never counted as a save.
+            "modelProfileTexts": finishedTurn.parsedReply.profileTexts,
+            "savedProfileFactTexts": finishedTurn.savedProfileFactTexts,
+            "droppedProfileTagCount": finishedTurn.droppedProfileTagCount,
+            // Round 4C: refusals on every save path, dropped note tags, and the 100-fact hard limit.
+            "secretRefusalCount": finishedTurn.secretRefusalCount,
+            "droppedNoteTagCount": finishedTurn.droppedNoteTagCount,
+            "profileWasFull": finishedTurn.profileWasFull,
+            "profileSaveErrorDescription": finishedTurn.profileSaveErrorDescription ?? NSNull(),
+            "forgetOutcome": forgetOutcomeRecord(finishedTurn.forgetOutcome),
+            "profileFactTextsBefore": profileFactTextsBefore,
+            "profileFactTextsAfter": profileStore.loadFactTexts(),
+            "profileFileContentsAfter": profileFileContents(of: profileStore) ?? NSNull(),
+            "noteTextsAfter": noteStore.loadAllNotes().map(\.text),
+        ])
+    }
+    writeJSON(outputRecords, toPath: outputPath)
+}
+
+// MARK: - intent (offline, zero API calls, no files)
+
+func forgetRequestRecord(_ forgetRequest: ClickyForgetRequest?) -> Any {
+    guard let forgetRequest else {
+        return NSNull()
+    }
+    switch forgetRequest {
+    case .previouslySavedThing:
+        return ["kind": "previouslySavedThing"]
+    case .everything:
+        return ["kind": "everything"]
+    case .specificThing(let targetText):
+        return ["kind": "specificThing", "targetText": targetText]
+    case .severalThings:
+        return ["kind": "severalThings"]
+    case .notExecutable(let namesAMemoryObject):
+        // Round 4D: a memory-change phrase that came with a question or was only a brush-off.
+        // Nothing is removed for it.
+        return ["kind": "notExecutable", "namesAMemoryObject": namesAMemoryObject]
+    }
+}
+
+/// Reports what the intent detectors decide for each transcript, so phrasing variants can be checked
+/// in bulk without a model reply or a store.
+func runIntent(inputPath: String, outputPath: String) {
+    var outputRecords: [[String: Any]] = []
+    for intentInput in readJSONArray(atPath: inputPath) {
+        guard let transcript = intentInput["transcript"] as? String else {
+            failWithMessage("intent input needs transcript")
+        }
+        outputRecords.append([
+            "id": intentInput["id"] as? String ?? transcript,
+            "transcript": transcript,
+            "statesLastingFactOrPreference": ClickyProfileIntentDetector.transcriptStatesLastingFactOrPreference(transcript),
+            "looksLikeASecret": ClickyProfileIntentDetector.textLooksLikeASecret(transcript),
+            "forgetRequest": forgetRequestRecord(ClickyProfileIntentDetector.forgetRequest(in: transcript)),
+            "noteSaveText": ClickyNoteIntentDetector.explicitSaveRequestNoteText(in: transcript) ?? NSNull(),
+            "noteSavingIntent": ClickyNoteIntentDetector.transcriptMentionsSavingIntent(transcript),
+            "asksToRecallNotes": ClickyNoteIntentDetector.transcriptAsksToRecallNotes(transcript),
         ])
     }
     writeJSON(outputRecords, toPath: outputPath)
@@ -362,6 +500,86 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     let approximateTokenCount = xcodePrompt.systemPromptText.count / 4
     check("prompt: assembled xcode prompt about 2k tokens or less (chars/4)", approximateTokenCount <= 2000, "about \(approximateTokenCount) tokens")
 
+    // Round 4A: static and dynamic system prompt parts, and the two-block `system` array.
+    let baseFileText = ((try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("clicky_base_system_prompt.md"), encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    check("blocks: static part is the trimmed base prompt file", xcodePrompt.staticSystemPromptText == baseFileText && !baseFileText.isEmpty)
+    check("blocks: static part identical across different turn contexts", xcodePrompt.staticSystemPromptText == safariWeatherPrompt.staticSystemPromptText && xcodePrompt.staticSystemPromptText == emptyStorePrompt.staticSystemPromptText)
+    check("blocks: dynamic part differs between contexts", xcodePrompt.dynamicSystemPromptText != safariWeatherPrompt.dynamicSystemPromptText)
+    check("blocks: dynamic part is never empty in the app (right-now block)", !xcodePrompt.dynamicSystemPromptText.isEmpty && !safariWeatherPrompt.dynamicSystemPromptText.isEmpty)
+    check("blocks: combined text == static + separator + dynamic", xcodePrompt.systemPromptText == xcodePrompt.staticSystemPromptText + ClickyPromptAssembler.systemPromptSectionSeparator + xcodePrompt.dynamicSystemPromptText)
+    check("blocks: static part carries no date or app name", !xcodePrompt.staticSystemPromptText.contains("right now:") && !xcodePrompt.staticSystemPromptText.contains("com.apple.dt.Xcode"))
+    let twoBlocks = ClickySystemPromptBlocks.makeSystemBlocks(staticText: xcodePrompt.staticSystemPromptText, dynamicText: xcodePrompt.dynamicSystemPromptText)
+    let firstBlockCacheControl = twoBlocks.first?["cache_control"] as? [String: String]
+    check("blocks: two blocks, cached static first, uncached dynamic second",
+          twoBlocks.count == 2
+          && twoBlocks[0]["type"] as? String == "text"
+          && twoBlocks[0]["text"] as? String == xcodePrompt.staticSystemPromptText
+          && firstBlockCacheControl == ["type": "ephemeral"]
+          && twoBlocks[1]["type"] as? String == "text"
+          && twoBlocks[1]["text"] as? String == xcodePrompt.dynamicSystemPromptText
+          && twoBlocks[1]["cache_control"] == nil
+          && Set(twoBlocks[0].keys) == Set(["type", "text", "cache_control"])
+          && Set(twoBlocks[1].keys) == Set(["type", "text"]),
+          "\(twoBlocks.map { Array($0.keys).sorted() })")
+    let oneBlockEmpty = ClickySystemPromptBlocks.makeSystemBlocks(staticText: xcodePrompt.staticSystemPromptText, dynamicText: "")
+    let oneBlockWhitespace = ClickySystemPromptBlocks.makeSystemBlocks(staticText: xcodePrompt.staticSystemPromptText, dynamicText: " \n\t ")
+    check("blocks: blank dynamic part sends one cached block", oneBlockEmpty.count == 1 && oneBlockWhitespace.count == 1 && (oneBlockEmpty[0]["cache_control"] as? [String: String]) == ["type": "ephemeral"])
+    check("blocks: blank static part is left out", ClickySystemPromptBlocks.makeSystemBlocks(staticText: "  ", dynamicText: "x").count == 1)
+    // Both parts must survive a JSON round trip unchanged (the driver hands them to the harness as JSON).
+    let roundTripData = (try? JSONSerialization.data(withJSONObject: twoBlocks)) ?? Data()
+    let roundTripBlocks = ((try? JSONSerialization.jsonObject(with: roundTripData)) as? [[String: Any]]) ?? []
+    check("blocks: JSON round trip preserves both texts", roundTripBlocks.count == 2 && roundTripBlocks[0]["text"] as? String == xcodePrompt.staticSystemPromptText && roundTripBlocks[1]["text"] as? String == xcodePrompt.dynamicSystemPromptText)
+    // Static block must clear the model's minimum cacheable prefix (512 tokens on Sonnet 5.5) by a wide margin.
+    check("blocks: static part is at least 2400 chars (well above 512 tokens)", xcodePrompt.staticSystemPromptText.count >= 2400, "\(xcodePrompt.staticSystemPromptText.count) chars")
+
+    // Round 4B: PROFILE tag grammar.
+    let profileTagParse = ClickyReplyTagParser.parse("got it, i'll remember that. [PROFILE:i use neovim as my editor] [POINT:none]")
+    check("profile parser: PROFILE tag parsed and stripped", profileTagParse.profileTexts == ["i use neovim as my editor"] && profileTagParse.spokenText == "got it, i'll remember that." && profileTagParse.pointTarget == nil, "\(profileTagParse)")
+    let profileCapParse = ClickyReplyTagParser.parse("[PROFILE:a1] [PROFILE:b2] [PROFILE:c3]")
+    check("profile parser: cap of 2, all tags stripped", profileCapParse.profileTexts.count == 2 && !profileCapParse.spokenText.uppercased().contains("PROFILE"), "\(profileCapParse)")
+    let truncatedProfileParse = ClickyReplyTagParser.parse("got it. [PROFILE:i use neo")
+    check("profile parser: truncated PROFILE fragment stripped", truncatedProfileParse.profileTexts.isEmpty && truncatedProfileParse.spokenText == "got it.", "\(truncatedProfileParse)")
+    let longProfileParse = ClickyReplyTagParser.parse("ok. [PROFILE:\(String(repeating: "y", count: 300))]")
+    check("profile parser: fact capped at 200 chars", (longProfileParse.profileTexts.first?.count ?? 0) == 200, "\(longProfileParse.profileTexts.first?.count ?? -1)")
+
+    // Round 4B: the profile gate. A tag saves only with spoken lasting-fact language, never on a secret.
+    let profileGateStore = ClickyProfileStore(profileDirectoryURL: temporaryRootURL.appendingPathComponent("profile-gate", isDirectory: true))
+    let profileGateNoteStore = ClickyNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("profile-gate", isDirectory: true))
+    let ungatedProfileTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "sure. [PROFILE:the user prefers python] [POINT:none]", userTranscript: "what's this page about", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("profile gate: tag without spoken lasting-fact language is dropped", ungatedProfileTurn.savedProfileFactTexts.isEmpty && ungatedProfileTurn.droppedProfileTagCount == 1 && profileGateStore.loadFactTexts().isEmpty, "\(ungatedProfileTurn.savedProfileFactTexts)")
+    let savedProfileTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it, i'll remember that. [PROFILE:i use neovim as my editor] [POINT:none]", userTranscript: "i use neovim as my editor", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("profile gate: spoken lasting fact saves, history keeps the tag", savedProfileTurn.savedProfileFactTexts == ["i use neovim as my editor"] && profileGateStore.loadFactTexts() == ["i use neovim as my editor"] && savedProfileTurn.historyAssistantText.contains("[PROFILE:i use neovim as my editor]") && savedProfileTurn.spokenText == "got it, i'll remember that.", "\(savedProfileTurn.savedProfileFactTexts) | \(savedProfileTurn.historyAssistantText)")
+    let silentSaveTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "tabs it is. [PROFILE:i prefer tabs over spaces] [POINT:none]", userTranscript: "i prefer tabs over spaces", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("profile gate: a save the reply did not confirm gets a spoken confirmation", silentSaveTurn.spokenText.contains("i'll remember that"), silentSaveTurn.spokenText)
+    let secretProfileTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it, i'll remember that. [PROFILE:anthropic key sk-ant-FAKEFAKEFAKE1234] [POINT:none]", userTranscript: "i always use sk-ant-FAKEFAKEFAKE1234 as my anthropic key", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("profile gate: secret-looking fact is not saved and clicky says it won't keep it", !profileGateStore.loadFactTexts().contains { $0.contains("FAKEFAKE") } && secretProfileTurn.droppedProfileTagCount == 1 && secretProfileTurn.spokenText == "i won't keep that.", "\(secretProfileTurn.spokenText) | \(profileGateStore.loadFactTexts())")
+    let passwordProfileTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "noted. [PROFILE:password is hunter2]", userTranscript: "i always use hunter2 as my password", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("profile gate: password keyword blocks the save", !profileGateStore.loadFactTexts().contains { $0.contains("hunter2") } && passwordProfileTurn.spokenText.contains("i won't keep that"), "\(profileGateStore.loadFactTexts())")
+
+    // Round 4B: replacement by subject, dedupe, forget variants.
+    let replaceTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it, i'll remember that. [PROFILE:i use vs code as my editor now]", userTranscript: "i switched, i use vs code as my editor now", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let factsAfterReplace = profileGateStore.loadFactTexts()
+    check("profile store: new editor fact replaces old editor fact, unrelated fact stays", !factsAfterReplace.contains("i use neovim as my editor") && factsAfterReplace.contains("i use vs code as my editor now") && factsAfterReplace.contains("i prefer tabs over spaces") && replaceTurn.savedProfileFactTexts.count == 1, "\(factsAfterReplace)")
+    let forgetSpecificTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget my editor", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("forget: 'forget my editor' removes only the editor fact", forgetSpecificTurn.forgetOutcome?.kind == .removed && profileGateStore.loadFactTexts() == ["i prefer tabs over spaces"] && forgetSpecificTurn.spokenText == "okay, i've forgotten that.", "\(profileGateStore.loadFactTexts()) | \(forgetSpecificTurn.spokenText)")
+    let forgetEverythingTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget everything", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("forget: 'forget everything' is refused and removes nothing", forgetEverythingTurn.forgetOutcome?.kind == .refusedToWipeEverything && profileGateStore.loadFactTexts() == ["i prefer tabs over spaces"], "\(profileGateStore.loadFactTexts())")
+    let forgetThatNothingTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget that", noteStore: profileGateNoteStore, profileStore: profileGateStore, previousAssistantHistoryText: "the run button is top left. ")
+    check("forget: 'forget that' with nothing saved last turn removes nothing", forgetThatNothingTurn.forgetOutcome?.kind == .noMatch && profileGateStore.loadFactTexts() == ["i prefer tabs over spaces"] && forgetThatNothingTurn.spokenText == "i didn't forget anything. i don't have that saved.", "\(profileGateStore.loadFactTexts()) | \(forgetThatNothingTurn.spokenText)")
+    let forgetThatAfterSaveTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget that", noteStore: profileGateNoteStore, profileStore: profileGateStore, previousAssistantHistoryText: "got it, i'll remember that. [PROFILE:i prefer tabs over spaces]")
+    check("forget: 'forget that' right after a save removes exactly that fact", forgetThatAfterSaveTurn.forgetOutcome?.kind == .removed && profileGateStore.loadFactTexts().isEmpty, "\(profileGateStore.loadFactTexts())")
+    let dontForgetTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it, noted. [NOTE:buy milk on the way home]", userTranscript: "don't forget to buy milk on the way home", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("forget: 'don't forget to ...' is a note save, not a forget", dontForgetTurn.forgetOutcome == nil && dontForgetTurn.savedNoteTexts == ["buy milk on the way home"], "\(String(describing: dontForgetTurn.forgetOutcome)) | \(dontForgetTurn.savedNoteTexts)")
+
+    // Round 4B: injection budget with 25 facts, file untouched.
+    let budgetProfileStore = ClickyProfileStore(profileDirectoryURL: temporaryRootURL.appendingPathComponent("profile-budget", isDirectory: true))
+    try? FileManager.default.createDirectory(at: budgetProfileStore.profileDirectoryURL, withIntermediateDirectories: true)
+    let twentyFiveFactLines = (1...25).map { "- fact number \($0) about something distinct \(String(repeating: "x", count: 40))" }
+    try? ("# Clicky profile\n\n" + twentyFiveFactLines.joined(separator: "\n") + "\n").write(to: budgetProfileStore.profileFileURL, atomically: true, encoding: .utf8)
+    let budgetedFacts = budgetProfileStore.factTextsWithinInjectionBudget()
+    let budgetedCharacterCount = budgetedFacts.reduce(0) { $0 + $1.count + ClickyProfileStore.injectedLineOverheadCharacterCount }
+    check("profile budget: 25 facts inject at most 20 and 1000 chars, newest kept", budgetedFacts.count <= 20 && budgetedCharacterCount <= 1000 && budgetedFacts.last?.hasPrefix("fact number 25") == true && budgetProfileStore.loadFactTexts().count == 25, "count \(budgetedFacts.count), chars \(budgetedCharacterCount)")
+
     try? FileManager.default.removeItem(at: temporaryRootURL)
 
     let passedCount = offlineCheckResults.filter(\.passed).count
@@ -389,6 +607,8 @@ case "prepare" where commandLineArguments.count == 6:
     runPrepare(inputPath: commandLineArguments[2], outputPath: commandLineArguments[3], promptsDirectoryPath: commandLineArguments[4], notesRootPath: commandLineArguments[5])
 case "finish" where commandLineArguments.count == 5:
     runFinish(inputPath: commandLineArguments[2], outputPath: commandLineArguments[3], notesRootPath: commandLineArguments[4])
+case "intent" where commandLineArguments.count == 4:
+    runIntent(inputPath: commandLineArguments[2], outputPath: commandLineArguments[3])
 case "selftest" where commandLineArguments.count == 4:
     runSelfTest(outputPath: commandLineArguments[2], promptsDirectoryPath: commandLineArguments[3])
 default:

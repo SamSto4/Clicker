@@ -212,42 +212,136 @@ nonisolated struct ClickyNoteStore {
         )
     }
 
+    // MARK: - Forgetting
+
+    /// Removes the one note the user's words point at, from whichever daily file holds it.
+    /// A match on a single generic word ("name") is too weak to delete a note, and if two notes
+    /// match equally well nothing is removed and the result is `.ambiguous`.
+    func removeNotes(matchingForgetTarget forgetTargetText: String) -> ClickyMemoryRemovalResult {
+        removeNotes { savedNotes in
+            switch ClickyMemoryKeyWords.bestMatch(forTargetText: forgetTargetText, in: savedNotes.map(\.text)) {
+            case .none:
+                return .noNote
+            case .single(let matchingNoteIndex):
+                return .notes([matchingNoteIndex])
+            case .tie(let tiedNoteIndexes):
+                return .ambiguous(candidateCount: tiedNoteIndexes.count)
+            }
+        }
+    }
+
+    /// Removes every note whose words equal one of the given texts. Used for "forget that" right
+    /// after a note was saved, where the exact saved text is known.
+    func removeNotes(withExactTexts exactNoteTexts: [String]) -> ClickyMemoryRemovalResult {
+        let lowercasedExactNoteTexts = Set(exactNoteTexts.map { $0.lowercased() })
+        return removeNotes { savedNotes in
+            let matchingNoteIndexes = Set(savedNotes.indices.filter { savedNoteIndex in
+                lowercasedExactNoteTexts.contains(savedNotes[savedNoteIndex].text.lowercased())
+            })
+            return matchingNoteIndexes.isEmpty ? .noNote : .notes(matchingNoteIndexes)
+        }
+    }
+
+    /// Which saved notes a removal should delete.
+    private enum NoteSelection {
+        case noNote
+        case notes(Set<Int>)
+        case ambiguous(candidateCount: Int)
+    }
+
+    /// Shared removal: `selectNotesToRemove` receives every note oldest first and says which to
+    /// remove. Only the lines of those notes are dropped from their files; headings, blank lines
+    /// and the other notes stay exactly as they were.
+    private func removeNotes(selectNotesToRemove: ([ClickyNote]) -> NoteSelection) -> ClickyMemoryRemovalResult {
+        let allNotes = loadAllNotes()
+        let noteIndexesToRemove: Set<Int>
+        switch selectNotesToRemove(allNotes) {
+        case .noNote:
+            return .noMatch
+        case .ambiguous(let candidateCount):
+            return .ambiguous(matchCount: candidateCount)
+        case .notes(let selectedNoteIndexes):
+            noteIndexesToRemove = selectedNoteIndexes
+        }
+
+        var lowercasedTextsToRemoveByFileName: [String: Set<String>] = [:]
+        var removedNoteTexts: [String] = []
+        for noteIndex in noteIndexesToRemove.sorted() where allNotes.indices.contains(noteIndex) {
+            let noteToRemove = allNotes[noteIndex]
+            lowercasedTextsToRemoveByFileName[noteToRemove.sourceFileName, default: []].insert(noteToRemove.text.lowercased())
+            removedNoteTexts.append(noteToRemove.text)
+        }
+
+        let timePrefixRegex = Self.makeTimePrefixRegex()
+        for (fileName, lowercasedTextsToRemove) in lowercasedTextsToRemoveByFileName {
+            let dayFileURL = notesDirectoryURL.appendingPathComponent(fileName)
+            guard let dayStartDate = Self.dayStartDate(fromFileName: fileName) else {
+                continue
+            }
+            do {
+                let fileContents = try String(contentsOf: dayFileURL, encoding: .utf8)
+                let remainingRawLines = fileContents.components(separatedBy: .newlines).filter { rawLine in
+                    guard let parsedNote = Self.parseNote(
+                        fromRawLine: rawLine,
+                        timePrefixRegex: timePrefixRegex,
+                        dayStartDate: dayStartDate,
+                        fileName: fileName
+                    ) else {
+                        return true
+                    }
+                    return !lowercasedTextsToRemove.contains(parsedNote.text.lowercased())
+                }
+                // Atomic, so a failed write leaves the day's notes as they were.
+                try remainingRawLines.joined(separator: "\n").write(to: dayFileURL, atomically: true, encoding: .utf8)
+            } catch {
+                return .failed(errorDescription: error.localizedDescription)
+            }
+        }
+        return .removed(removedTexts: removedNoteTexts)
+    }
+
     // MARK: - Parsing
 
     /// Reads note lines from a daily file. Headings and blank lines are skipped. Any other line is
     /// a note, so hand-typed notes work. A leading "- " or "* " is removed. A leading "HH:mm — "
     /// sets the time, and without it the note gets the start of its day.
     private static func parseNotes(fromFileContents fileContents: String, dayStartDate: Date, fileName: String) -> [ClickyNote] {
-        var parsedNotes: [ClickyNote] = []
-        // Matches the time prefix this store writes, "HH:mm — text", and tolerates a hyphen or en dash.
-        let timePrefixRegex = try! NSRegularExpression(pattern: "^(\\d{1,2}):(\\d{2})\\s+[—–-]\\s+(.+)$")
-
-        for rawLine in fileContents.components(separatedBy: .newlines) {
-            var lineText = rawLine.trimmingCharacters(in: .whitespaces)
-            if lineText.isEmpty || lineText.hasPrefix("#") {
-                continue
-            }
-            if lineText.hasPrefix("- ") || lineText.hasPrefix("* ") {
-                lineText = String(lineText.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-            }
-
-            var savedAt = dayStartDate
-            var noteText = lineText
-            if let timePrefixMatch = timePrefixRegex.firstMatch(in: lineText, range: NSRange(lineText.startIndex..., in: lineText)),
-               let hourText = Range(timePrefixMatch.range(at: 1), in: lineText).map({ String(lineText[$0]) }),
-               let minuteText = Range(timePrefixMatch.range(at: 2), in: lineText).map({ String(lineText[$0]) }),
-               let remainingText = Range(timePrefixMatch.range(at: 3), in: lineText).map({ String(lineText[$0]) }),
-               let hour = Int(hourText), let minute = Int(minuteText), hour < 24, minute < 60 {
-                savedAt = Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: dayStartDate) ?? dayStartDate
-                noteText = remainingText.trimmingCharacters(in: .whitespaces)
-            }
-
-            guard !noteText.isEmpty else {
-                continue
-            }
-            parsedNotes.append(ClickyNote(savedAt: savedAt, text: noteText, sourceFileName: fileName))
+        let timePrefixRegex = makeTimePrefixRegex()
+        return fileContents.components(separatedBy: .newlines).compactMap { rawLine in
+            parseNote(fromRawLine: rawLine, timePrefixRegex: timePrefixRegex, dayStartDate: dayStartDate, fileName: fileName)
         }
-        return parsedNotes
+    }
+
+    /// Matches the time prefix this store writes, "HH:mm — text", and tolerates a hyphen or en dash.
+    private static func makeTimePrefixRegex() -> NSRegularExpression {
+        try! NSRegularExpression(pattern: "^(\\d{1,2}):(\\d{2})\\s+[—–-]\\s+(.+)$")
+    }
+
+    /// Reads one line of a daily file. Returns nil for headings, blank lines and empty notes.
+    private static func parseNote(fromRawLine rawLine: String, timePrefixRegex: NSRegularExpression, dayStartDate: Date, fileName: String) -> ClickyNote? {
+        var lineText = rawLine.trimmingCharacters(in: .whitespaces)
+        if lineText.isEmpty || lineText.hasPrefix("#") {
+            return nil
+        }
+        if lineText.hasPrefix("- ") || lineText.hasPrefix("* ") {
+            lineText = String(lineText.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        }
+
+        var savedAt = dayStartDate
+        var noteText = lineText
+        if let timePrefixMatch = timePrefixRegex.firstMatch(in: lineText, range: NSRange(lineText.startIndex..., in: lineText)),
+           let hourText = Range(timePrefixMatch.range(at: 1), in: lineText).map({ String(lineText[$0]) }),
+           let minuteText = Range(timePrefixMatch.range(at: 2), in: lineText).map({ String(lineText[$0]) }),
+           let remainingText = Range(timePrefixMatch.range(at: 3), in: lineText).map({ String(lineText[$0]) }),
+           let hour = Int(hourText), let minute = Int(minuteText), hour < 24, minute < 60 {
+            savedAt = Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: dayStartDate) ?? dayStartDate
+            noteText = remainingText.trimmingCharacters(in: .whitespaces)
+        }
+
+        guard !noteText.isEmpty else {
+            return nil
+        }
+        return ClickyNote(savedAt: savedAt, text: noteText, sourceFileName: fileName)
     }
 
     private static func dayStartDate(fromFileName fileName: String) -> Date? {

@@ -5,6 +5,14 @@
 
 import Foundation
 
+/// What a streaming request returns: the reply, how long it took, and the token counts Claude reported.
+struct ClaudeStreamingResult {
+    let text: String
+    let duration: TimeInterval
+    /// Input, output, cache-creation and cache-read token counts. A count is nil if the stream never reported it.
+    let tokenUsage: ClickyClaudeTokenUsage
+}
+
 /// Claude API helper with streaming for progressive text display.
 class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
@@ -106,6 +114,7 @@ class ClaudeAPI {
     /// Send a vision request to Claude with streaming.
     /// Calls `onTextChunk` on the main actor each time new text arrives so the UI updates progressively.
     /// Returns the full accumulated text and total duration when the stream completes.
+    /// The system prompt goes out as one plain string (used by the onboarding demo).
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
@@ -113,6 +122,49 @@ class ClaudeAPI {
         userPrompt: String,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
+        let streamingResult = try await streamReply(
+            images: images,
+            systemPromptValue: systemPrompt,
+            conversationHistory: conversationHistory,
+            userPrompt: userPrompt,
+            onTextChunk: onTextChunk
+        )
+        return (text: streamingResult.text, duration: streamingResult.duration)
+    }
+
+    /// Same streaming request, but the system prompt is sent as two blocks so Anthropic can cache
+    /// the first. `staticSystemPrompt` must be identical on every turn (it carries the cache
+    /// breakpoint); `dynamicSystemPrompt` holds everything that changes per turn and follows it.
+    /// Also returns the token counts Claude reported, including cache creation and cache reads.
+    func analyzeImageStreaming(
+        images: [(data: Data, label: String)],
+        staticSystemPrompt: String,
+        dynamicSystemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> ClaudeStreamingResult {
+        return try await streamReply(
+            images: images,
+            systemPromptValue: ClickySystemPromptBlocks.makeSystemBlocks(
+                staticText: staticSystemPrompt,
+                dynamicText: dynamicSystemPrompt
+            ),
+            conversationHistory: conversationHistory,
+            userPrompt: userPrompt,
+            onTextChunk: onTextChunk
+        )
+    }
+
+    /// Does the actual streaming request for both public entry points. `systemPromptValue` is
+    /// either a String or an array of system blocks; both are valid values for the API's `system` field.
+    private func streamReply(
+        images: [(data: Data, label: String)],
+        systemPromptValue: Any,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> ClaudeStreamingResult {
         let startTime = Date()
 
         var request = makeAPIRequest()
@@ -152,7 +204,7 @@ class ClaudeAPI {
             "max_tokens": 1024,
             "stream": true,
             "output_config": Self.lowEffortOutputConfiguration,
-            "system": systemPrompt,
+            "system": systemPromptValue,
             "messages": messages
         ]
 
@@ -188,6 +240,7 @@ class ClaudeAPI {
 
         // Parse SSE stream — each event is "data: {json}\n\n"
         var accumulatedResponseText = ""
+        var streamUsageAccumulator = ClickyClaudeStreamUsageAccumulator()
 
         for try await line in byteStream.lines {
             // SSE lines look like: "data: {...}"
@@ -203,6 +256,10 @@ class ClaudeAPI {
                 continue
             }
 
+            // message_start and message_delta events report token usage (input and cache
+            // counts first, output count at the end); other events are ignored by the accumulator.
+            streamUsageAccumulator.consumeStreamEvent(eventPayload)
+
             // We care about content_block_delta events that contain text chunks
             if eventType == "content_block_delta",
                let delta = eventPayload["delta"] as? [String: Any],
@@ -217,7 +274,11 @@ class ClaudeAPI {
         }
 
         let duration = Date().timeIntervalSince(startTime)
-        return (text: accumulatedResponseText, duration: duration)
+        return ClaudeStreamingResult(
+            text: accumulatedResponseText,
+            duration: duration,
+            tokenUsage: streamUsageAccumulator.tokenUsage
+        )
     }
 
     /// Non-streaming fallback for validation requests where we don't need progressive display.

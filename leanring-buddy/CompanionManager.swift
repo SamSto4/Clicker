@@ -547,9 +547,53 @@ final class CompanionManager: ObservableObject {
             // the app the user was working in when they spoke.
             let frontmostApplicationAtTurnStart = NSWorkspace.shared.frontmostApplication
 
+            // Timing and size numbers for this turn. They hold no transcript, reply or note text.
+            var turnMetrics = ClickyTurnMetrics(turnStartedAt: Date(), modelName: selectedModel)
+            // The step running right now. It is cleared only when every step has finished, so a
+            // turn that fails or is cancelled partway can say which step it stopped at.
+            var turnStepInProgress: ClickyTurnStep? = .screenCapture
+            var claudeRequestStartedUptimeSeconds: TimeInterval?
+            // The text callback is @Sendable and cannot change a local variable, so it marks
+            // the arrival of the first reply text on this object instead.
+            let replyTextArrivalClock = ClickyReplyTextArrivalClock()
+
+            // Runs on every way out of this task (finished, failed, cancelled, early return),
+            // so exactly one metrics line is written per turn. Writing happens on a
+            // background queue and can never throw, so it cannot affect the spoken answer.
+            defer {
+                if let stepThatDidNotFinish = turnStepInProgress {
+                    turnMetrics.outcome = Task.isCancelled ? .cancelled : .failed
+                    turnMetrics.unfinishedStep = stepThatDidNotFinish
+                }
+                if let claudeRequestStartedUptimeSeconds {
+                    if let firstReplyTextArrivalUptimeSeconds = replyTextArrivalClock.firstReplyTextArrivalUptimeSeconds {
+                        turnMetrics.timeToFirstReplyTextMilliseconds = ClickyTurnMetrics.millisecondsBetween(
+                            startUptimeSeconds: claudeRequestStartedUptimeSeconds,
+                            endUptimeSeconds: firstReplyTextArrivalUptimeSeconds
+                        )
+                    }
+                    // A request that ended early (failure or cancel) still reports how long it ran.
+                    if turnMetrics.claudeTotalMilliseconds == nil {
+                        turnMetrics.claudeTotalMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
+                            sinceUptimeSeconds: claudeRequestStartedUptimeSeconds
+                        )
+                    }
+                }
+                print(turnMetrics.makeConsoleSummaryLine())
+                ClickyTurnMetricsLog.recordInBackground(turnMetrics)
+            }
+
             do {
                 // Capture all connected screens so the AI has full context
+                let screenCaptureStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                turnMetrics.screenshotCaptureMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
+                    sinceUptimeSeconds: screenCaptureStartedUptimeSeconds
+                )
+                turnMetrics.screenCount = screenCaptures.count
+                turnMetrics.totalImageBytes = screenCaptures.reduce(0) { totalImageBytesSoFar, screenCapture in
+                    totalImageBytesSoFar + screenCapture.imageData.count
+                }
 
                 guard !Task.isCancelled else { return }
 
@@ -569,8 +613,11 @@ final class CompanionManager: ObservableObject {
                 }
 
                 // Assemble this turn's system prompt: base prompt, matching app skills, the
-                // "right now" block, and any saved notes relevant to the question.
+                // "right now" block, the user's profile, and any saved notes relevant to the question.
+                turnStepInProgress = .promptAssembly
+                let promptAssemblyStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                 let noteStore = ClickyNoteStore(notesDirectoryURL: ClickyNoteStore.defaultNotesDirectoryURL)
+                let profileStore = ClickyProfileStore(profileDirectoryURL: ClickyProfileStore.defaultProfileDirectoryURL)
                 let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
                     for: ClickyTurnContext(
                         userTranscript: transcript,
@@ -580,32 +627,70 @@ final class CompanionManager: ObservableObject {
                         currentDate: Date()
                     ),
                     promptsDirectoryURL: ClickyPromptAssembler.promptsDirectoryURL(in: .main),
-                    noteStore: noteStore
+                    noteStore: noteStore,
+                    profileStore: profileStore
                 )
+                turnMetrics.promptAssemblyMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
+                    sinceUptimeSeconds: promptAssemblyStartedUptimeSeconds
+                )
+                turnMetrics.skillCount = preparedPrompt.selectedSkillNames.count
+                turnMetrics.noteCount = preparedPrompt.includedNotes.count
 
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
+                // The base prompt goes out as a cached block and the per-turn part follows it,
+                // so the API can reuse the base prompt instead of processing it again each turn.
+                turnStepInProgress = .claudeRequest
+                let claudeRequestStartedUptimeSecondsForThisCall = ClickyTurnMetrics.currentUptimeSeconds
+                claudeRequestStartedUptimeSeconds = claudeRequestStartedUptimeSecondsForThisCall
+                let streamingResult = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: preparedPrompt.systemPromptText,
+                    staticSystemPrompt: preparedPrompt.staticSystemPromptText,
+                    dynamicSystemPrompt: preparedPrompt.dynamicSystemPromptText,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                        // No streaming text display — spinner stays until TTS plays.
+                        // The callback only notes when the first text arrived, for timing.
+                        replyTextArrivalClock.markReplyTextArrived()
                     }
                 )
+                let fullResponseText = streamingResult.text
+                turnMetrics.claudeTotalMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
+                    sinceUptimeSeconds: claudeRequestStartedUptimeSecondsForThisCall
+                )
+                turnMetrics.tokenUsage = streamingResult.tokenUsage
+                // Claude is done; speech is the only step left. If the user interrupts before it
+                // starts, the metrics line records the turn as cancelled at the speech step.
+                turnStepInProgress = .textToSpeech
 
                 guard !Task.isCancelled else { return }
 
-                // Split the reply into spoken text, the [POINT:...] target, and any [NOTE:...]
-                // texts. Notes are saved here so a failed save can be reported in the spoken reply.
+                // Split the reply into spoken text, the [POINT:...] target, and any [NOTE:...] and
+                // [PROFILE:...] texts. Notes and profile facts are saved (and "forget ..." requests
+                // handled) here so a failed write can be reported in the spoken reply. The last
+                // exchange is passed so "forget that" can find what it saved.
                 let finishedTurn = ClickyTurnFinisher.finishTurn(
                     rawReplyText: fullResponseText,
                     userTranscript: transcript,
-                    noteStore: noteStore
+                    noteStore: noteStore,
+                    profileStore: profileStore,
+                    previousAssistantHistoryText: conversationHistory.last?.assistantResponse
                 )
                 let spokenText = finishedTurn.spokenText
-                print("📚 prompt: skills=\(preparedPrompt.selectedSkillNames) notes=\(preparedPrompt.includedNotes.count) saved=\(finishedTurn.savedNoteTexts.count)")
+                turnMetrics.spokenReplyCharacterCount = spokenText.count
+                turnMetrics.usedPointing = finishedTurn.parsedReply.pointTarget != nil
+                // Counts only, never the text of a note or profile fact.
+                print("📚 prompt: skills=\(preparedPrompt.selectedSkillNames) notes=\(preparedPrompt.includedNotes.count) saved=\(finishedTurn.savedNoteTexts.count) profileFacts=\(preparedPrompt.includedProfileFactTexts.count) profileSaved=\(finishedTurn.savedProfileFactTexts.count) profileDropped=\(finishedTurn.droppedProfileTagCount) secretRefused=\(finishedTurn.secretRefusalCount) profileFull=\(finishedTurn.profileWasFull)")
                 if let noteSaveErrorDescription = finishedTurn.noteSaveErrorDescription {
                     print("⚠️ Clicky note save failed: \(noteSaveErrorDescription)")
+                }
+                if let profileSaveErrorDescription = finishedTurn.profileSaveErrorDescription {
+                    print("⚠️ Clicky profile save failed: \(profileSaveErrorDescription)")
+                }
+                if let forgetOutcome = finishedTurn.forgetOutcome {
+                    print("📚 forget: \(forgetOutcome.kind) profileFactsRemoved=\(forgetOutcome.removedProfileFactCount) notesRemoved=\(forgetOutcome.removedNoteCount)")
+                    if let forgetErrorDescription = forgetOutcome.errorDescription {
+                        print("⚠️ Clicky forget failed: \(forgetErrorDescription)")
+                    }
                 }
 
                 // Handle element pointing if Claude returned coordinates.
@@ -665,7 +750,7 @@ final class CompanionManager: ObservableObject {
                 }
 
                 // Save this exchange to conversation history. The point tag is stripped, but
-                // [NOTE:...] tags stay so the model keeps saving notes in the same format.
+                // [NOTE:...] and [PROFILE:...] tags stay so the model keeps saving in the same format.
                 conversationHistory.append((
                     userTranscript: transcript,
                     assistantResponse: finishedTurn.historyAssistantText
@@ -683,15 +768,24 @@ final class CompanionManager: ObservableObject {
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let textToSpeechStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                     do {
                         try await elevenLabsTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
+                        turnMetrics.textToSpeechMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
+                            sinceUptimeSeconds: textToSpeechStartedUptimeSeconds
+                        )
+                        turnStepInProgress = nil
                         voiceState = .responding
                     } catch {
+                        // turnStepInProgress stays at .textToSpeech so the metrics line records the failure.
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
                         speakCreditsErrorFallback()
                     }
+                } else {
+                    // Nothing to say, so there is no speech step left to wait for.
+                    turnStepInProgress = nil
                 }
             } catch is CancellationError {
                 // User spoke again — response was interrupted

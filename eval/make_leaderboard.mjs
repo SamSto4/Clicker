@@ -19,13 +19,24 @@ export function writeLeaderboard(loopFolder) {
   // The scenario set grew before round 2 grading (fresh holdout cases). Rows are labelled by how many
   // scenarios they ran so that scores from different set sizes are not read as directly comparable.
   const ORIGINAL_SCENARIO_COUNT = 45;
-  const rows = summaryFileNames.map((fileName) => {
-    const summary = JSON.parse(fs.readFileSync(path.join(loopFolder, fileName), "utf8"));
+  const summaries = summaryFileNames.map((fileName) => ({ fileName, summary: JSON.parse(fs.readFileSync(path.join(loopFolder, fileName), "utf8")) }));
+  const FOUR_DIMENSIONS = ["pointing", "brevity", "coding", "notes"];
+  // A summary that ran none of the four weighted dimensions (a personalization-only run) has no place
+  // in the main table; it appears only in the personalization table below.
+  const ranAnyWeightedDimension = (summary) => FOUR_DIMENSIONS.some((dimension) => summary.dimensions?.[dimension]?.score !== null && summary.dimensions?.[dimension]?.score !== undefined);
+  const rows = summaries.filter(({ summary }) => ranAnyWeightedDimension(summary)).map(({ fileName, summary }) => {
     const dimensions = summary.dimensions ?? {};
     const scenarioCount = Object.values(dimensions).reduce(
       (runningTotal, dimension) => runningTotal + (dimension.details?.scenarios_scored ?? 0) + (dimension.details?.scenarios_errored ?? 0), 0);
     const scenarioSetLabel = scenarioCount > ORIGINAL_SCENARIO_COUNT ? `expanded (${scenarioCount})` : `original (${scenarioCount})`;
     return `| ${summary.round} | ${summary.label ?? fileName} | ${scenarioSetLabel} | ${formatScore(dimensions.pointing?.score)} | ${formatScore(dimensions.brevity?.score)} | ${formatScore(dimensions.coding?.score)} | ${formatScore(dimensions.notes?.score)} | **${formatScore(summary.total)}** | ${formatScore(summary.total_equal_weight)} | ${formatScore(summary.split_scores?.visible?.total)} | ${formatScore(summary.split_scores?.holdout?.total)} | ${summary.calls_used?.total ?? "-"} |`;
+  });
+
+  // Round 4B: personalization is tracked separately and never enters the weighted total.
+  const personalizationRows = summaries.filter(({ summary }) => summary.personalization).map(({ fileName, summary }) => {
+    const personalization = summary.personalization;
+    const scenarioCount = (personalization.details?.scenarios_scored ?? 0) + (personalization.details?.scenarios_errored ?? 0);
+    return `| ${summary.round} | ${summary.label ?? fileName} | ${scenarioCount} | **${formatScore(personalization.score)}** | ${formatScore(personalization.split_scores?.visible)} | ${formatScore(personalization.split_scores?.holdout)} | ${personalization.details?.tags_dropped_by_gate_count ?? "-"} | ${summary.calls_used?.total ?? "-"} |`;
   });
 
   const markdown = [
@@ -41,6 +52,16 @@ export function writeLeaderboard(loopFolder) {
     "",
     "Scenario set: `original` is the 45-scenario set used for rounds 0 and 1; `expanded` adds 13 fresh holdout scenarios (58 total) that were added before round 2 grading. Only rows with the same scenario set are directly comparable.",
     "",
+    ...(personalizationRows.length === 0 ? [] : [
+      "## Personalization (round 4B; tracked separately, excluded from the weighted total)",
+      "",
+      "| Round | Label | Scenarios | Personalization | Visible | Holdout | Profile tags dropped by the gate | API calls |",
+      "|---|---|---|---|---|---|---|---|",
+      ...personalizationRows,
+      "",
+      "Scored on what the app's real turn finisher saved or removed in a temporary profile, not on the model's tag alone. Rubric in eval/README.md.",
+      "",
+    ]),
   ].join("\n");
   fs.writeFileSync(path.join(loopFolder, "leaderboard.md"), markdown);
 }
