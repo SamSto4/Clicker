@@ -87,7 +87,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyCore/ClickyNoteIntentDetector.swift` | ~80 | Decides from the transcript alone whether the user asked to save a note (strict start-of-sentence phrases plus a loose gate) or to recall notes. |
 | `ClickyCore/ClickySkillLibrary.swift` | ~200 | Loads `skill_*.md` files and selects up to two per turn by frontmost app (100) and keyword (40). |
 | `ClickyCore/ClickyPromptAssembler.swift` | ~230 | Builds each turn's system prompt (`prepareSystemPrompt`) and finishes the reply (`ClickyTurnFinisher.finishTurn`: saves notes, spoken text, history text). |
-| `ClickyPrompts/clicky_base_system_prompt.md` | ~800 words | Base system prompt: brevity, spoken style, pointing rules, note grammar, recall rules. Loaded at runtime from the bundle. |
+| `ClickyPrompts/clicky_base_system_prompt.md` | ~760 words | Base system prompt: brevity, spoken style, pointing rules, note grammar, recall rules. Loaded at runtime from the bundle. |
 | `ClickyPrompts/skill_*.md` | ~230 words each | Per-app skills (general coding, Xcode, VS Code family, terminals). Plain resource files, not compiled. |
 | `ClickyWorkerConfiguration.swift` | ~65 | Reads the Worker base URL and app token from the git-ignored `ClickyWorkerSecrets.plist` and adds the `X-Clicky-App-Token` header to Worker requests. |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |

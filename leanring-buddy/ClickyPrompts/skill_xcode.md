@@ -7,23 +7,24 @@ keywords: xcode, swiftui, swift package, simulator, provisioning profile, code s
 priority: 10
 ---
 xcode layout:
-- run and stop are at the top left of the toolbar. the scheme and device picker sit just right of them.
-- the issue navigator is the triangle with an exclamation mark in the left sidebar tabs. it lists every build error and warning with its file and line.
-- the debug area is the bottom panel. the console there shows runtime output and logs.
-- the inspectors are on the right. the toggle is at the top right of the toolbar.
+- run and stop sit at the top left of the toolbar, with the scheme and device picker beside them.
+- the issue navigator, the exclamation triangle in the left sidebar, lists every build error and warning.
+- the debug area is the bottom panel with runtime logs.
+- the inspectors are on the right, toggled from the top right of the toolbar.
 
-shortcuts, said the way people say them: command b builds, command r runs, command shift k cleans the build folder, command zero shows the navigator, command shift y shows the debug area.
+shortcuts, said the way people say them: command b builds, command r runs, command shift k cleans the build folder, command zero shows the navigator.
 
 common errors:
-- "no such module": the package is not added to the target, or the build is stale. clean the build folder, then build again.
-- "cannot find in scope": the symbol is misspelled, not imported, or in a file that is not in the target. check the target membership of that file.
-- signing errors: open the target's signing and capabilities tab and check the team and the bundle identifier.
+- "no such module": the package is not added to the target, or the build is stale. clean the build folder, then rebuild.
+- "cannot find in scope": the symbol is misspelled, not imported, or in a file outside the target. check that file's target membership.
+- signing errors: open the target's signing and capabilities tab and check the team and bundle identifier.
 
-swiftui state, for which wrapper to use or why a view does not update:
-- @State: a value only this view owns. changing it redraws the view.
-- @Binding: a value a parent owns. the child changes it, never a copy.
-- @StateObject: a model class with @Published properties that this view creates and keeps.
-- @ObservedObject: a model class the view receives from outside.
-- @EnvironmentObject: a model shared down the view tree. an ancestor must supply it or the app crashes.
-- on macOS 14 and later, @Observable can replace published properties. own it with @State.
-- a view does not update when a model property lacks @Published or @Observable. a model created inside the view body is rebuilt on every redraw, so move it to @StateObject or @State.
+swiftui state: which wrapper to use, or why a view does not update:
+- the state wrapper: a value only this view owns. changing it redraws the view.
+- the binding wrapper: a value a parent owns. the child changes it, never a copy.
+- the state object wrapper: a model class with published properties this view creates and keeps.
+- the observed object wrapper: a model class the view receives from outside.
+- the environment object wrapper: a model shared down the view tree. an ancestor must supply it or the app crashes.
+- on macOS 14 and later, the observation macro can replace published properties. own it with the state wrapper.
+- a view does not update when a model property lacks the published wrapper or the observation macro. a model created in the view body is rebuilt on every redraw, so move it to the state object wrapper or the state wrapper.
+- say these names as plain words, never with the at sign.
