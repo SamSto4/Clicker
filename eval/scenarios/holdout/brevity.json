@@ -1,0 +1,85 @@
+[
+  {
+    "id": "br_h01",
+    "split": "holdout",
+    "dimension": "brevity",
+    "category": "yes-no-question",
+    "userPrompt": "Is Swift faster than Python?",
+    "screens": [
+      "terminal_main.jpg"
+    ],
+    "expect": {
+      "maxSentences": 2,
+      "maxWords": 45,
+      "pointExpectation": "none"
+    }
+  },
+  {
+    "id": "br_h02",
+    "split": "holdout",
+    "dimension": "brevity",
+    "category": "describe-screen",
+    "userPrompt": "What am I looking at right now?",
+    "screens": [
+      "vscode_main.jpg"
+    ],
+    "expect": {
+      "maxSentences": 2,
+      "maxWords": 50,
+      "pointExpectation": "any"
+    }
+  },
+  {
+    "id": "br_h03",
+    "split": "holdout",
+    "dimension": "brevity",
+    "category": "advice-no-lists",
+    "userPrompt": "How do I get better at public speaking?",
+    "screens": [
+      "settings_main.jpg"
+    ],
+    "expect": {
+      "maxSentences": 2,
+      "maxWords": 50,
+      "pointExpectation": "none"
+    }
+  },
+  {
+    "id": "br_h04",
+    "split": "holdout",
+    "dimension": "brevity",
+    "category": "spoken-trap-percentage",
+    "userPrompt": "Roughly what percent of the earth's surface is covered by water?",
+    "screens": [
+      "browser_main.jpg"
+    ],
+    "expect": {
+      "maxSentences": 2,
+      "maxWords": 45,
+      "pointExpectation": "none",
+      "answerAnyOf": [
+        "seventy",
+        "71",
+        "70"
+      ]
+    }
+  },
+  {
+    "id": "br_h05",
+    "split": "holdout",
+    "dimension": "brevity",
+    "category": "spoken-trap-product-name-and-number",
+    "userPrompt": "Which framework is VS Code built on, and what year did VS Code first come out?",
+    "screens": [
+      "terminal_main.jpg"
+    ],
+    "expect": {
+      "maxSentences": 2,
+      "maxWords": 45,
+      "pointExpectation": "none",
+      "answerAnyOf": [
+        "electron"
+      ]
+    }
+  }
+]

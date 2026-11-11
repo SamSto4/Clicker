@@ -1,0 +1,132 @@
+[
+  {
+    "id": "cd_h01",
+    "split": "holdout",
+    "dimension": "coding",
+    "category": "typescript-error",
+    "userPrompt": "There's a red squiggle in my code. What's wrong and how should I fix it?",
+    "screens": [
+      "vscode_error_ts.jpg"
+    ],
+    "screenContext": "VS Code showing index.ts. In getUserName, `const user = users.find(...)` then `return user.name;` has a red squiggle under `user`. The Problems panel says: 'user' is possibly 'undefined'. ts(18048).",
+    "reference": "Array.find returns undefined when nothing matches, so user may be undefined. Handle it: check if (!user) and return a fallback or throw, or use optional chaining like user?.name ?? 'unknown'. Do not silence it with a non-null assertion.",
+    "keywordGroups": [
+      [
+        "undefined",
+        "not found",
+        "no match",
+        "nothing",
+        "might not",
+        "may not"
+      ],
+      [
+        "check",
+        "optional chaining",
+        "question mark dot",
+        "guard",
+        "fallback",
+        "default",
+        "throw",
+        "if "
+      ]
+    ]
+  },
+  {
+    "id": "cd_h02",
+    "split": "holdout",
+    "dimension": "coding",
+    "category": "git-workflow",
+    "userPrompt": "My push got rejected. What do I do?",
+    "screens": [
+      "terminal_git_push_rejected.jpg"
+    ],
+    "screenContext": "Terminal: git push origin main fails with ! [rejected] main -> main (fetch first), error: failed to push some refs, hint: Updates were rejected because the remote contains work that you do not have locally ... use 'git pull' before pushing again.",
+    "reference": "The remote has commits you do not have locally. Run git pull (optionally with --rebase) to bring them in, resolve any conflicts, then push again. Avoid force pushing.",
+    "keywordGroups": [
+      [
+        "pull",
+        "fetch",
+        "rebase"
+      ],
+      [
+        "push"
+      ]
+    ]
+  },
+  {
+    "id": "cd_h03",
+    "split": "holdout",
+    "dimension": "coding",
+    "category": "git-undo",
+    "userPrompt": "How do I undo my last commit but keep my changes?",
+    "screens": [
+      "terminal_main.jpg"
+    ],
+    "screenContext": "Terminal with git status, git log --oneline -3 (latest commit: a41b9d2 wip: add notes folder) and a failed swift build.",
+    "reference": "git reset --soft HEAD~1 undoes the last commit and keeps the changes staged; git reset HEAD~1 (mixed) keeps them unstaged. Do not use --hard, which throws changes away.",
+    "keywordGroups": [
+      [
+        "reset"
+      ],
+      [
+        "soft",
+        "mixed",
+        "keep",
+        "head"
+      ]
+    ]
+  },
+  {
+    "id": "cd_h04",
+    "split": "holdout",
+    "dimension": "coding",
+    "category": "swiftui-state",
+    "userPrompt": "Should this cart model be a state object or an observed object here? And is anything else missing?",
+    "screens": [
+      "xcode_swiftui_state.jpg"
+    ],
+    "screenContext": "Xcode showing CartView.swift. class CartModel (plain class, no ObservableObject, items is a plain var array) has add(_:). struct CartView: View holds `let cartModel = CartModel()` and shows Text(\"items: \\(cartModel.items.count)\") and a Button that calls cartModel.add(\"apple\").",
+    "reference": "The view creates and owns the model, so it should be @StateObject (not @ObservedObject, which is for a model passed in from outside). That alone is not enough: CartModel must conform to ObservableObject and items must be @Published, otherwise SwiftUI is never told about changes. On macOS 14 or later the @Observable macro with @State is the modern equivalent.",
+    "keywordGroups": [
+      [
+        "stateobject",
+        "state object",
+        "@state"
+      ],
+      [
+        "published",
+        "observableobject",
+        "observable object",
+        "@observable",
+        "observable macro"
+      ]
+    ]
+  },
+  {
+    "id": "cd_h05",
+    "split": "holdout",
+    "dimension": "coding",
+    "category": "swiftui-state",
+    "userPrompt": "Quick SwiftUI question: when should I use a binding instead of state?",
+    "screens": [
+      "vscode_main.jpg"
+    ],
+    "screenContext": "VS Code showing index.ts, a worker script in TypeScript. The question is conceptual and not about the code on screen.",
+    "reference": "@State is for a value the view itself owns and creates. @Binding is for a value owned by a parent (or another source of truth) that the child needs to read and write without making its own copy; the parent passes it with the dollar-sign prefix. If a view creates the value, use State; if it receives it from outside and must change it, use Binding.",
+    "keywordGroups": [
+      [
+        "binding"
+      ],
+      [
+        "parent",
+        "owns",
+        "owned",
+        "another view",
+        "outside",
+        "source of truth",
+        "passed in",
+        "receives"
+      ]
+    ]
+  }
+]

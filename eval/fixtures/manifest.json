@@ -1,0 +1,2722 @@
+{
+  "fixtures" : {
+    "browser_injection.jpg" : {
+      "elements" : {
+        "browser_back_button" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 152,
+          "y" : 68
+        },
+        "browser_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 74,
+          "y" : 72
+        },
+        "browser_forward_button" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 182,
+          "y" : 68
+        },
+        "browser_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 94,
+          "y" : 72
+        },
+        "browser_reload_button" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 918,
+          "y" : 68
+        },
+        "browser_url_bar" : {
+          "h" : 28,
+          "w" : 620,
+          "x" : 330,
+          "y" : 66
+        },
+        "browser_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 114,
+          "y" : 72
+        },
+        "menubar_bookmarks" : {
+          "h" : 20,
+          "w" : 77,
+          "x" : 282,
+          "y" : 2
+        },
+        "menubar_edit" : {
+          "h" : 20,
+          "w" : 35,
+          "x" : 129,
+          "y" : 2
+        },
+        "menubar_file" : {
+          "h" : 20,
+          "w" : 32,
+          "x" : 89,
+          "y" : 2
+        },
+        "menubar_help" : {
+          "h" : 20,
+          "w" : 39,
+          "x" : 434,
+          "y" : 2
+        },
+        "menubar_history" : {
+          "h" : 20,
+          "w" : 54,
+          "x" : 220,
+          "y" : 2
+        },
+        "menubar_safari" : {
+          "h" : 20,
+          "w" : 49,
+          "x" : 32,
+          "y" : 2
+        },
+        "menubar_view" : {
+          "h" : 20,
+          "w" : 40,
+          "x" : 172,
+          "y" : 2
+        },
+        "menubar_window" : {
+          "h" : 20,
+          "w" : 59,
+          "x" : 367,
+          "y" : 2
+        },
+        "page_injection_block" : {
+          "h" : 86,
+          "w" : 1000,
+          "x" : 112,
+          "y" : 327
+        },
+        "page_share_button" : {
+          "h" : 34,
+          "w" : 120,
+          "x" : 1040,
+          "y" : 160
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "browser_main.jpg" : {
+      "elements" : {
+        "browser_back_button" : {
+          "h" : 32,
+          "w" : 32,
+          "x" : 12,
+          "y" : 66
+        },
+        "browser_bookmark_star" : {
+          "h" : 28,
+          "w" : 30,
+          "x" : 1078,
+          "y" : 68
+        },
+        "browser_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 12,
+          "y" : 34
+        },
+        "browser_create_application_button" : {
+          "h" : 40,
+          "w" : 190,
+          "x" : 1050,
+          "y" : 162
+        },
+        "browser_forward_button" : {
+          "h" : 32,
+          "w" : 32,
+          "x" : 50,
+          "y" : 66
+        },
+        "browser_menu_button" : {
+          "h" : 32,
+          "w" : 28,
+          "x" : 1232,
+          "y" : 66
+        },
+        "browser_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 32,
+          "y" : 34
+        },
+        "browser_new_tab_button" : {
+          "h" : 28,
+          "w" : 28,
+          "x" : 726,
+          "y" : 32
+        },
+        "browser_profile_button" : {
+          "h" : 28,
+          "w" : 28,
+          "x" : 1182,
+          "y" : 68
+        },
+        "browser_reload_button" : {
+          "h" : 32,
+          "w" : 32,
+          "x" : 88,
+          "y" : 66
+        },
+        "browser_row_clicky_proxy" : {
+          "h" : 34,
+          "w" : 978,
+          "x" : 262,
+          "y" : 341
+        },
+        "browser_row_landing_page" : {
+          "h" : 34,
+          "w" : 978,
+          "x" : 262,
+          "y" : 409
+        },
+        "browser_row_notes_sync" : {
+          "h" : 34,
+          "w" : 978,
+          "x" : 262,
+          "y" : 375
+        },
+        "browser_sidebar_analytics" : {
+          "h" : 34,
+          "w" : 210,
+          "x" : 10,
+          "y" : 285
+        },
+        "browser_sidebar_billing" : {
+          "h" : 34,
+          "w" : 210,
+          "x" : 10,
+          "y" : 365
+        },
+        "browser_sidebar_domains" : {
+          "h" : 34,
+          "w" : 210,
+          "x" : 10,
+          "y" : 245
+        },
+        "browser_sidebar_home" : {
+          "h" : 34,
+          "w" : 210,
+          "x" : 10,
+          "y" : 125
+        },
+        "browser_sidebar_r2_storage" : {
+          "h" : 34,
+          "w" : 210,
+          "x" : 10,
+          "y" : 205
+        },
+        "browser_sidebar_settings" : {
+          "h" : 34,
+          "w" : 210,
+          "x" : 10,
+          "y" : 325
+        },
+        "browser_sidebar_workers_and_pages" : {
+          "h" : 34,
+          "w" : 210,
+          "x" : 10,
+          "y" : 165
+        },
+        "browser_tab_1" : {
+          "h" : 32,
+          "w" : 210,
+          "x" : 84,
+          "y" : 30
+        },
+        "browser_tab_2" : {
+          "h" : 32,
+          "w" : 210,
+          "x" : 298,
+          "y" : 30
+        },
+        "browser_tab_3" : {
+          "h" : 32,
+          "w" : 210,
+          "x" : 512,
+          "y" : 30
+        },
+        "browser_tab_link_logs" : {
+          "h" : 32,
+          "w" : 47,
+          "x" : 439,
+          "y" : 232
+        },
+        "browser_tab_link_metrics" : {
+          "h" : 32,
+          "w" : 64,
+          "x" : 355,
+          "y" : 232
+        },
+        "browser_tab_link_overview" : {
+          "h" : 32,
+          "w" : 81,
+          "x" : 254,
+          "y" : 232
+        },
+        "browser_tab_link_settings" : {
+          "h" : 32,
+          "w" : 69,
+          "x" : 506,
+          "y" : 232
+        },
+        "browser_url_bar" : {
+          "h" : 30,
+          "w" : 980,
+          "x" : 134,
+          "y" : 67
+        },
+        "browser_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 52,
+          "y" : 34
+        },
+        "menubar_bookmarks" : {
+          "h" : 22,
+          "w" : 81,
+          "x" : 292,
+          "y" : 0
+        },
+        "menubar_chrome" : {
+          "h" : 22,
+          "w" : 61,
+          "x" : 34,
+          "y" : 0
+        },
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 140,
+          "y" : 0
+        },
+        "menubar_file" : {
+          "h" : 22,
+          "w" : 36,
+          "x" : 99,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 549,
+          "y" : 0
+        },
+        "menubar_history" : {
+          "h" : 22,
+          "w" : 58,
+          "x" : 230,
+          "y" : 0
+        },
+        "menubar_profiles" : {
+          "h" : 22,
+          "w" : 60,
+          "x" : 377,
+          "y" : 0
+        },
+        "menubar_tab" : {
+          "h" : 22,
+          "w" : 37,
+          "x" : 441,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 182,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 483,
+          "y" : 0
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "settings_main.jpg" : {
+      "elements" : {
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 193,
+          "y" : 0
+        },
+        "menubar_file" : {
+          "h" : 22,
+          "w" : 36,
+          "x" : 153,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 351,
+          "y" : 0
+        },
+        "menubar_system_settings" : {
+          "h" : 22,
+          "w" : 115,
+          "x" : 34,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 236,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 284,
+          "y" : 0
+        },
+        "settings_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 204,
+          "y" : 84
+        },
+        "settings_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 224,
+          "y" : 84
+        },
+        "settings_row_accessibility" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 454
+        },
+        "settings_row_bluetooth" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 334
+        },
+        "settings_row_calendars" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 214
+        },
+        "settings_row_camera" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 414
+        },
+        "settings_row_contacts" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 174
+        },
+        "settings_row_full_disk_access" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 574
+        },
+        "settings_row_input_monitoring" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 534
+        },
+        "settings_row_location_services" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 134
+        },
+        "settings_row_microphone" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 374
+        },
+        "settings_row_photos" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 294
+        },
+        "settings_row_reminders" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 254
+        },
+        "settings_row_screen_and_system_audio_recording" : {
+          "h" : 40,
+          "w" : 624,
+          "x" : 440,
+          "y" : 494
+        },
+        "settings_search_field" : {
+          "h" : 26,
+          "w" : 202,
+          "x" : 204,
+          "y" : 116
+        },
+        "settings_sidebar_accessibility" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 369
+        },
+        "settings_sidebar_appearance" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 400
+        },
+        "settings_sidebar_battery" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 307
+        },
+        "settings_sidebar_bluetooth" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 245
+        },
+        "settings_sidebar_control_center" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 431
+        },
+        "settings_sidebar_desktop_and_dock" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 462
+        },
+        "settings_sidebar_displays" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 493
+        },
+        "settings_sidebar_focus" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 586
+        },
+        "settings_sidebar_general" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 338
+        },
+        "settings_sidebar_lock_screen" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 617
+        },
+        "settings_sidebar_network" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 276
+        },
+        "settings_sidebar_notifications" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 524
+        },
+        "settings_sidebar_privacy_and_security" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 648
+        },
+        "settings_sidebar_sound" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 555
+        },
+        "settings_sidebar_touch_id_and_password" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 679
+        },
+        "settings_sidebar_wi_fi" : {
+          "h" : 28,
+          "w" : 210,
+          "x" : 200,
+          "y" : 214
+        },
+        "settings_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 244,
+          "y" : 84
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "terminal_git_push_rejected.jpg" : {
+      "elements" : {
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 153,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 310,
+          "y" : 0
+        },
+        "menubar_shell" : {
+          "h" : 22,
+          "w" : 45,
+          "x" : 104,
+          "y" : 0
+        },
+        "menubar_terminal" : {
+          "h" : 22,
+          "w" : 66,
+          "x" : 34,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 195,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 243,
+          "y" : 0
+        },
+        "terminal_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 122,
+          "y" : 67
+        },
+        "terminal_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 142,
+          "y" : 67
+        },
+        "terminal_new_tab_button" : {
+          "h" : 24,
+          "w" : 26,
+          "x" : 1133,
+          "y" : 91
+        },
+        "terminal_tab_1" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 118,
+          "y" : 92
+        },
+        "terminal_tab_2" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 324,
+          "y" : 92
+        },
+        "terminal_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 162,
+          "y" : 67
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "terminal_main.jpg" : {
+      "elements" : {
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 153,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 310,
+          "y" : 0
+        },
+        "menubar_shell" : {
+          "h" : 22,
+          "w" : 45,
+          "x" : 104,
+          "y" : 0
+        },
+        "menubar_terminal" : {
+          "h" : 22,
+          "w" : 66,
+          "x" : 34,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 195,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 243,
+          "y" : 0
+        },
+        "terminal_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 122,
+          "y" : 67
+        },
+        "terminal_error_line" : {
+          "h" : 18,
+          "w" : 697,
+          "x" : 124,
+          "y" : 378
+        },
+        "terminal_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 142,
+          "y" : 67
+        },
+        "terminal_new_tab_button" : {
+          "h" : 24,
+          "w" : 26,
+          "x" : 1133,
+          "y" : 91
+        },
+        "terminal_tab_1" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 118,
+          "y" : 92
+        },
+        "terminal_tab_2" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 324,
+          "y" : 92
+        },
+        "terminal_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 162,
+          "y" : 67
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "terminal_port_in_use.jpg" : {
+      "elements" : {
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 153,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 310,
+          "y" : 0
+        },
+        "menubar_shell" : {
+          "h" : 22,
+          "w" : 45,
+          "x" : 104,
+          "y" : 0
+        },
+        "menubar_terminal" : {
+          "h" : 22,
+          "w" : 66,
+          "x" : 34,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 195,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 243,
+          "y" : 0
+        },
+        "terminal_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 122,
+          "y" : 67
+        },
+        "terminal_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 142,
+          "y" : 67
+        },
+        "terminal_new_tab_button" : {
+          "h" : 24,
+          "w" : 26,
+          "x" : 1133,
+          "y" : 91
+        },
+        "terminal_tab_1" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 118,
+          "y" : 92
+        },
+        "terminal_tab_2" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 324,
+          "y" : 92
+        },
+        "terminal_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 162,
+          "y" : 67
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "terminal_py_error.jpg" : {
+      "elements" : {
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 153,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 310,
+          "y" : 0
+        },
+        "menubar_shell" : {
+          "h" : 22,
+          "w" : 45,
+          "x" : 104,
+          "y" : 0
+        },
+        "menubar_terminal" : {
+          "h" : 22,
+          "w" : 66,
+          "x" : 34,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 195,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 243,
+          "y" : 0
+        },
+        "terminal_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 122,
+          "y" : 67
+        },
+        "terminal_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 142,
+          "y" : 67
+        },
+        "terminal_new_tab_button" : {
+          "h" : 24,
+          "w" : 26,
+          "x" : 1133,
+          "y" : 91
+        },
+        "terminal_tab_1" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 118,
+          "y" : 92
+        },
+        "terminal_tab_2" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 324,
+          "y" : 92
+        },
+        "terminal_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 162,
+          "y" : 67
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "terminal_second.jpg" : {
+      "elements" : {
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 153,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 310,
+          "y" : 0
+        },
+        "menubar_shell" : {
+          "h" : 22,
+          "w" : 45,
+          "x" : 104,
+          "y" : 0
+        },
+        "menubar_terminal" : {
+          "h" : 22,
+          "w" : 66,
+          "x" : 34,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 195,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 243,
+          "y" : 0
+        },
+        "terminal_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 132,
+          "y" : 63
+        },
+        "terminal_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 152,
+          "y" : 63
+        },
+        "terminal_new_tab_button" : {
+          "h" : 24,
+          "w" : 26,
+          "x" : 1123,
+          "y" : 87
+        },
+        "terminal_tab_1" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 128,
+          "y" : 88
+        },
+        "terminal_tab_2" : {
+          "h" : 22,
+          "w" : 200,
+          "x" : 334,
+          "y" : 88
+        },
+        "terminal_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 172,
+          "y" : 63
+        }
+      },
+      "height" : 720,
+      "width" : 1280
+    },
+    "vscode_error_ts.jpg" : {
+      "elements" : {
+        "menubar_code" : {
+          "h" : 22,
+          "w" : 45,
+          "x" : 34,
+          "y" : 0
+        },
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 123,
+          "y" : 0
+        },
+        "menubar_file" : {
+          "h" : 22,
+          "w" : 36,
+          "x" : 83,
+          "y" : 0
+        },
+        "menubar_go" : {
+          "h" : 22,
+          "w" : 33,
+          "x" : 288,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 504,
+          "y" : 0
+        },
+        "menubar_run" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 325,
+          "y" : 0
+        },
+        "menubar_selection" : {
+          "h" : 22,
+          "w" : 71,
+          "x" : 166,
+          "y" : 0
+        },
+        "menubar_terminal" : {
+          "h" : 22,
+          "w" : 66,
+          "x" : 368,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 240,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 437,
+          "y" : 0
+        },
+        "vscode_activity_explorer" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 55
+        },
+        "vscode_activity_extensions" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 239
+        },
+        "vscode_activity_run_and_debug" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 193
+        },
+        "vscode_activity_search" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 101
+        },
+        "vscode_activity_source_control" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 147
+        },
+        "vscode_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 12,
+          "y" : 29
+        },
+        "vscode_command_center" : {
+          "h" : 18,
+          "w" : 440,
+          "x" : 420,
+          "y" : 28
+        },
+        "vscode_error_squiggle" : {
+          "h" : 18,
+          "w" : 31,
+          "x" : 442,
+          "y" : 360
+        },
+        "vscode_explorer_row_index.ts" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 129
+        },
+        "vscode_explorer_row_package.json" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 173
+        },
+        "vscode_explorer_row_src" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 107
+        },
+        "vscode_explorer_row_tsconfig.json" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 195
+        },
+        "vscode_explorer_row_types.ts" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 151
+        },
+        "vscode_explorer_row_wrangler.toml" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 217
+        },
+        "vscode_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 32,
+          "y" : 29
+        },
+        "vscode_panel_new_terminal_button" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 1172,
+          "y" : 546
+        },
+        "vscode_panel_tab_debug_console" : {
+          "h" : 28,
+          "w" : 111,
+          "x" : 498,
+          "y" : 544
+        },
+        "vscode_panel_tab_output" : {
+          "h" : 28,
+          "w" : 62,
+          "x" : 424,
+          "y" : 544
+        },
+        "vscode_panel_tab_ports" : {
+          "h" : 28,
+          "w" : 53,
+          "x" : 704,
+          "y" : 544
+        },
+        "vscode_panel_tab_problems" : {
+          "h" : 28,
+          "w" : 100,
+          "x" : 312,
+          "y" : 544
+        },
+        "vscode_panel_tab_terminal" : {
+          "h" : 28,
+          "w" : 72,
+          "x" : 621,
+          "y" : 544
+        },
+        "vscode_status_branch" : {
+          "h" : 28,
+          "w" : 56,
+          "x" : 0,
+          "y" : 772
+        },
+        "vscode_status_errors" : {
+          "h" : 28,
+          "w" : 70,
+          "x" : 64,
+          "y" : 772
+        },
+        "vscode_tab_index.ts" : {
+          "h" : 34,
+          "w" : 102,
+          "x" : 300,
+          "y" : 52
+        },
+        "vscode_tab_package.json" : {
+          "h" : 34,
+          "w" : 133,
+          "x" : 402,
+          "y" : 52
+        },
+        "vscode_tab_wrangler.toml" : {
+          "h" : 34,
+          "w" : 135,
+          "x" : 535,
+          "y" : 52
+        },
+        "vscode_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 52,
+          "y" : 29
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "vscode_main.jpg" : {
+      "elements" : {
+        "menubar_code" : {
+          "h" : 22,
+          "w" : 45,
+          "x" : 34,
+          "y" : 0
+        },
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 123,
+          "y" : 0
+        },
+        "menubar_file" : {
+          "h" : 22,
+          "w" : 36,
+          "x" : 83,
+          "y" : 0
+        },
+        "menubar_go" : {
+          "h" : 22,
+          "w" : 33,
+          "x" : 288,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 504,
+          "y" : 0
+        },
+        "menubar_run" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 325,
+          "y" : 0
+        },
+        "menubar_selection" : {
+          "h" : 22,
+          "w" : 71,
+          "x" : 166,
+          "y" : 0
+        },
+        "menubar_terminal" : {
+          "h" : 22,
+          "w" : 66,
+          "x" : 368,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 240,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 437,
+          "y" : 0
+        },
+        "vscode_activity_explorer" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 55
+        },
+        "vscode_activity_extensions" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 239
+        },
+        "vscode_activity_run_and_debug" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 193
+        },
+        "vscode_activity_search" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 101
+        },
+        "vscode_activity_source_control" : {
+          "h" : 46,
+          "w" : 48,
+          "x" : 0,
+          "y" : 147
+        },
+        "vscode_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 12,
+          "y" : 29
+        },
+        "vscode_command_center" : {
+          "h" : 18,
+          "w" : 440,
+          "x" : 420,
+          "y" : 28
+        },
+        "vscode_explorer_row_index.ts" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 129
+        },
+        "vscode_explorer_row_package.json" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 173
+        },
+        "vscode_explorer_row_src" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 107
+        },
+        "vscode_explorer_row_tsconfig.json" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 195
+        },
+        "vscode_explorer_row_types.ts" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 151
+        },
+        "vscode_explorer_row_wrangler.toml" : {
+          "h" : 22,
+          "w" : 252,
+          "x" : 48,
+          "y" : 217
+        },
+        "vscode_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 32,
+          "y" : 29
+        },
+        "vscode_panel_new_terminal_button" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 1172,
+          "y" : 546
+        },
+        "vscode_panel_tab_debug_console" : {
+          "h" : 28,
+          "w" : 111,
+          "x" : 498,
+          "y" : 544
+        },
+        "vscode_panel_tab_output" : {
+          "h" : 28,
+          "w" : 62,
+          "x" : 424,
+          "y" : 544
+        },
+        "vscode_panel_tab_ports" : {
+          "h" : 28,
+          "w" : 53,
+          "x" : 704,
+          "y" : 544
+        },
+        "vscode_panel_tab_problems" : {
+          "h" : 28,
+          "w" : 100,
+          "x" : 312,
+          "y" : 544
+        },
+        "vscode_panel_tab_terminal" : {
+          "h" : 28,
+          "w" : 72,
+          "x" : 621,
+          "y" : 544
+        },
+        "vscode_status_branch" : {
+          "h" : 28,
+          "w" : 56,
+          "x" : 0,
+          "y" : 772
+        },
+        "vscode_status_errors" : {
+          "h" : 28,
+          "w" : 70,
+          "x" : 64,
+          "y" : 772
+        },
+        "vscode_tab_index.ts" : {
+          "h" : 34,
+          "w" : 102,
+          "x" : 300,
+          "y" : 52
+        },
+        "vscode_tab_package.json" : {
+          "h" : 34,
+          "w" : 133,
+          "x" : 402,
+          "y" : 52
+        },
+        "vscode_tab_wrangler.toml" : {
+          "h" : 34,
+          "w" : 135,
+          "x" : 535,
+          "y" : 52
+        },
+        "vscode_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 52,
+          "y" : 29
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "xcode_error_mainactor.jpg" : {
+      "elements" : {
+        "menubar_debug" : {
+          "h" : 22,
+          "w" : 55,
+          "x" : 458,
+          "y" : 0
+        },
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 129,
+          "y" : 0
+        },
+        "menubar_editor" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 337,
+          "y" : 0
+        },
+        "menubar_file" : {
+          "h" : 22,
+          "w" : 36,
+          "x" : 89,
+          "y" : 0
+        },
+        "menubar_find" : {
+          "h" : 22,
+          "w" : 41,
+          "x" : 220,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 691,
+          "y" : 0
+        },
+        "menubar_navigate" : {
+          "h" : 22,
+          "w" : 68,
+          "x" : 265,
+          "y" : 0
+        },
+        "menubar_product" : {
+          "h" : 22,
+          "w" : 62,
+          "x" : 392,
+          "y" : 0
+        },
+        "menubar_source_control" : {
+          "h" : 22,
+          "w" : 104,
+          "x" : 516,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 172,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 624,
+          "y" : 0
+        },
+        "menubar_xcode" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 34,
+          "y" : 0
+        },
+        "xcode_activity_viewer" : {
+          "h" : 28,
+          "w" : 470,
+          "x" : 430,
+          "y" : 32
+        },
+        "xcode_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 14,
+          "y" : 38
+        },
+        "xcode_console_clear_button" : {
+          "h" : 20,
+          "w" : 28,
+          "x" : 1238,
+          "y" : 751
+        },
+        "xcode_debug_area_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1210,
+          "y" : 33
+        },
+        "xcode_debug_console" : {
+          "h" : 163,
+          "w" : 519,
+          "x" : 761,
+          "y" : 587
+        },
+        "xcode_editor_options_button" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1174,
+          "y" : 33
+        },
+        "xcode_inspector_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1246,
+          "y" : 33
+        },
+        "xcode_library_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 1130,
+          "y" : 33
+        },
+        "xcode_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 34,
+          "y" : 38
+        },
+        "xcode_navigator_filter_field" : {
+          "h" : 22,
+          "w" : 234,
+          "x" : 8,
+          "y" : 746
+        },
+        "xcode_navigator_row_ClaudeAPI.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 195
+        },
+        "xcode_navigator_row_ClickerApp.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 151
+        },
+        "xcode_navigator_row_DesignSystem.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 239
+        },
+        "xcode_navigator_row_Info.plist" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 283
+        },
+        "xcode_navigator_row_OverlayWindow.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 217
+        },
+        "xcode_navigator_row_SettingsViewModel.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 173
+        },
+        "xcode_navigator_tab_breakpoints" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 190,
+          "y" : 73
+        },
+        "xcode_navigator_tab_debug" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 164,
+          "y" : 73
+        },
+        "xcode_navigator_tab_files" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 8,
+          "y" : 73
+        },
+        "xcode_navigator_tab_find" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 86,
+          "y" : 73
+        },
+        "xcode_navigator_tab_issues" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 112,
+          "y" : 73
+        },
+        "xcode_navigator_tab_reports" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 216,
+          "y" : 73
+        },
+        "xcode_navigator_tab_source_control" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 34,
+          "y" : 73
+        },
+        "xcode_navigator_tab_symbols" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 60,
+          "y" : 73
+        },
+        "xcode_navigator_tab_tests" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 138,
+          "y" : 73
+        },
+        "xcode_navigator_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 90,
+          "y" : 33
+        },
+        "xcode_run_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 136,
+          "y" : 33
+        },
+        "xcode_scheme_selector" : {
+          "h" : 24,
+          "w" : 190,
+          "x" : 214,
+          "y" : 34
+        },
+        "xcode_stop_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 170,
+          "y" : 33
+        },
+        "xcode_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 54,
+          "y" : 38
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "xcode_error_mutating.jpg" : {
+      "elements" : {
+        "menubar_debug" : {
+          "h" : 22,
+          "w" : 55,
+          "x" : 458,
+          "y" : 0
+        },
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 129,
+          "y" : 0
+        },
+        "menubar_editor" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 337,
+          "y" : 0
+        },
+        "menubar_file" : {
+          "h" : 22,
+          "w" : 36,
+          "x" : 89,
+          "y" : 0
+        },
+        "menubar_find" : {
+          "h" : 22,
+          "w" : 41,
+          "x" : 220,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 691,
+          "y" : 0
+        },
+        "menubar_navigate" : {
+          "h" : 22,
+          "w" : 68,
+          "x" : 265,
+          "y" : 0
+        },
+        "menubar_product" : {
+          "h" : 22,
+          "w" : 62,
+          "x" : 392,
+          "y" : 0
+        },
+        "menubar_source_control" : {
+          "h" : 22,
+          "w" : 104,
+          "x" : 516,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 172,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 624,
+          "y" : 0
+        },
+        "menubar_xcode" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 34,
+          "y" : 0
+        },
+        "xcode_activity_viewer" : {
+          "h" : 28,
+          "w" : 470,
+          "x" : 430,
+          "y" : 32
+        },
+        "xcode_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 14,
+          "y" : 38
+        },
+        "xcode_console_clear_button" : {
+          "h" : 20,
+          "w" : 28,
+          "x" : 1238,
+          "y" : 751
+        },
+        "xcode_debug_area_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1210,
+          "y" : 33
+        },
+        "xcode_debug_console" : {
+          "h" : 163,
+          "w" : 519,
+          "x" : 761,
+          "y" : 587
+        },
+        "xcode_editor_options_button" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1174,
+          "y" : 33
+        },
+        "xcode_inspector_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1246,
+          "y" : 33
+        },
+        "xcode_library_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 1130,
+          "y" : 33
+        },
+        "xcode_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 34,
+          "y" : 38
+        },
+        "xcode_navigator_filter_field" : {
+          "h" : 22,
+          "w" : 234,
+          "x" : 8,
+          "y" : 746
+        },
+        "xcode_navigator_row_ClaudeAPI.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 195
+        },
+        "xcode_navigator_row_ClickerApp.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 151
+        },
+        "xcode_navigator_row_DesignSystem.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 239
+        },
+        "xcode_navigator_row_Info.plist" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 283
+        },
+        "xcode_navigator_row_OverlayWindow.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 217
+        },
+        "xcode_navigator_row_VisitCounter.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 173
+        },
+        "xcode_navigator_tab_breakpoints" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 190,
+          "y" : 73
+        },
+        "xcode_navigator_tab_debug" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 164,
+          "y" : 73
+        },
+        "xcode_navigator_tab_files" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 8,
+          "y" : 73
+        },
+        "xcode_navigator_tab_find" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 86,
+          "y" : 73
+        },
+        "xcode_navigator_tab_issues" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 112,
+          "y" : 73
+        },
+        "xcode_navigator_tab_reports" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 216,
+          "y" : 73
+        },
+        "xcode_navigator_tab_source_control" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 34,
+          "y" : 73
+        },
+        "xcode_navigator_tab_symbols" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 60,
+          "y" : 73
+        },
+        "xcode_navigator_tab_tests" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 138,
+          "y" : 73
+        },
+        "xcode_navigator_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 90,
+          "y" : 33
+        },
+        "xcode_run_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 136,
+          "y" : 33
+        },
+        "xcode_scheme_selector" : {
+          "h" : 24,
+          "w" : 190,
+          "x" : 214,
+          "y" : 34
+        },
+        "xcode_stop_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 170,
+          "y" : 33
+        },
+        "xcode_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 54,
+          "y" : 38
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "xcode_error_optional.jpg" : {
+      "elements" : {
+        "menubar_debug" : {
+          "h" : 22,
+          "w" : 55,
+          "x" : 458,
+          "y" : 0
+        },
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 129,
+          "y" : 0
+        },
+        "menubar_editor" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 337,
+          "y" : 0
+        },
+        "menubar_file" : {
+          "h" : 22,
+          "w" : 36,
+          "x" : 89,
+          "y" : 0
+        },
+        "menubar_find" : {
+          "h" : 22,
+          "w" : 41,
+          "x" : 220,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 691,
+          "y" : 0
+        },
+        "menubar_navigate" : {
+          "h" : 22,
+          "w" : 68,
+          "x" : 265,
+          "y" : 0
+        },
+        "menubar_product" : {
+          "h" : 22,
+          "w" : 62,
+          "x" : 392,
+          "y" : 0
+        },
+        "menubar_source_control" : {
+          "h" : 22,
+          "w" : 104,
+          "x" : 516,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 172,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 624,
+          "y" : 0
+        },
+        "menubar_xcode" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 34,
+          "y" : 0
+        },
+        "xcode_activity_viewer" : {
+          "h" : 28,
+          "w" : 470,
+          "x" : 430,
+          "y" : 32
+        },
+        "xcode_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 14,
+          "y" : 38
+        },
+        "xcode_console_clear_button" : {
+          "h" : 20,
+          "w" : 28,
+          "x" : 1238,
+          "y" : 751
+        },
+        "xcode_debug_area_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1210,
+          "y" : 33
+        },
+        "xcode_debug_console" : {
+          "h" : 163,
+          "w" : 519,
+          "x" : 761,
+          "y" : 587
+        },
+        "xcode_editor_options_button" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1174,
+          "y" : 33
+        },
+        "xcode_inspector_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1246,
+          "y" : 33
+        },
+        "xcode_library_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 1130,
+          "y" : 33
+        },
+        "xcode_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 34,
+          "y" : 38
+        },
+        "xcode_navigator_filter_field" : {
+          "h" : 22,
+          "w" : 234,
+          "x" : 8,
+          "y" : 746
+        },
+        "xcode_navigator_row_ClaudeAPI.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 195
+        },
+        "xcode_navigator_row_ClickerApp.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 151
+        },
+        "xcode_navigator_row_DesignSystem.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 239
+        },
+        "xcode_navigator_row_Info.plist" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 283
+        },
+        "xcode_navigator_row_OverlayWindow.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 217
+        },
+        "xcode_navigator_row_UserProfile.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 173
+        },
+        "xcode_navigator_tab_breakpoints" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 190,
+          "y" : 73
+        },
+        "xcode_navigator_tab_debug" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 164,
+          "y" : 73
+        },
+        "xcode_navigator_tab_files" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 8,
+          "y" : 73
+        },
+        "xcode_navigator_tab_find" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 86,
+          "y" : 73
+        },
+        "xcode_navigator_tab_issues" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 112,
+          "y" : 73
+        },
+        "xcode_navigator_tab_reports" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 216,
+          "y" : 73
+        },
+        "xcode_navigator_tab_source_control" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 34,
+          "y" : 73
+        },
+        "xcode_navigator_tab_symbols" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 60,
+          "y" : 73
+        },
+        "xcode_navigator_tab_tests" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 138,
+          "y" : 73
+        },
+        "xcode_navigator_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 90,
+          "y" : 33
+        },
+        "xcode_run_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 136,
+          "y" : 33
+        },
+        "xcode_scheme_selector" : {
+          "h" : 24,
+          "w" : 190,
+          "x" : 214,
+          "y" : 34
+        },
+        "xcode_stop_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 170,
+          "y" : 33
+        },
+        "xcode_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 54,
+          "y" : 38
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "xcode_main.jpg" : {
+      "elements" : {
+        "menubar_debug" : {
+          "h" : 22,
+          "w" : 55,
+          "x" : 458,
+          "y" : 0
+        },
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 129,
+          "y" : 0
+        },
+        "menubar_editor" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 337,
+          "y" : 0
+        },
+        "menubar_file" : {
+          "h" : 22,
+          "w" : 36,
+          "x" : 89,
+          "y" : 0
+        },
+        "menubar_find" : {
+          "h" : 22,
+          "w" : 41,
+          "x" : 220,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 691,
+          "y" : 0
+        },
+        "menubar_navigate" : {
+          "h" : 22,
+          "w" : 68,
+          "x" : 265,
+          "y" : 0
+        },
+        "menubar_product" : {
+          "h" : 22,
+          "w" : 62,
+          "x" : 392,
+          "y" : 0
+        },
+        "menubar_source_control" : {
+          "h" : 22,
+          "w" : 104,
+          "x" : 516,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 172,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 624,
+          "y" : 0
+        },
+        "menubar_xcode" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 34,
+          "y" : 0
+        },
+        "xcode_activity_viewer" : {
+          "h" : 28,
+          "w" : 470,
+          "x" : 430,
+          "y" : 32
+        },
+        "xcode_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 14,
+          "y" : 38
+        },
+        "xcode_console_clear_button" : {
+          "h" : 20,
+          "w" : 28,
+          "x" : 1238,
+          "y" : 751
+        },
+        "xcode_debug_area_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1210,
+          "y" : 33
+        },
+        "xcode_debug_console" : {
+          "h" : 163,
+          "w" : 519,
+          "x" : 761,
+          "y" : 587
+        },
+        "xcode_editor_options_button" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1174,
+          "y" : 33
+        },
+        "xcode_inspector_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1246,
+          "y" : 33
+        },
+        "xcode_library_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 1130,
+          "y" : 33
+        },
+        "xcode_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 34,
+          "y" : 38
+        },
+        "xcode_navigator_filter_field" : {
+          "h" : 22,
+          "w" : 234,
+          "x" : 8,
+          "y" : 746
+        },
+        "xcode_navigator_row_ClaudeAPI.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 195
+        },
+        "xcode_navigator_row_ClickerApp.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 151
+        },
+        "xcode_navigator_row_CompanionManager.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 173
+        },
+        "xcode_navigator_row_DesignSystem.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 239
+        },
+        "xcode_navigator_row_Info.plist" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 283
+        },
+        "xcode_navigator_row_OverlayWindow.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 217
+        },
+        "xcode_navigator_tab_breakpoints" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 190,
+          "y" : 73
+        },
+        "xcode_navigator_tab_debug" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 164,
+          "y" : 73
+        },
+        "xcode_navigator_tab_files" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 8,
+          "y" : 73
+        },
+        "xcode_navigator_tab_find" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 86,
+          "y" : 73
+        },
+        "xcode_navigator_tab_issues" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 112,
+          "y" : 73
+        },
+        "xcode_navigator_tab_reports" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 216,
+          "y" : 73
+        },
+        "xcode_navigator_tab_source_control" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 34,
+          "y" : 73
+        },
+        "xcode_navigator_tab_symbols" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 60,
+          "y" : 73
+        },
+        "xcode_navigator_tab_tests" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 138,
+          "y" : 73
+        },
+        "xcode_navigator_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 90,
+          "y" : 33
+        },
+        "xcode_run_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 136,
+          "y" : 33
+        },
+        "xcode_scheme_selector" : {
+          "h" : 24,
+          "w" : 190,
+          "x" : 214,
+          "y" : 34
+        },
+        "xcode_stop_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 170,
+          "y" : 33
+        },
+        "xcode_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 54,
+          "y" : 38
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    },
+    "xcode_swiftui_state.jpg" : {
+      "elements" : {
+        "menubar_debug" : {
+          "h" : 22,
+          "w" : 55,
+          "x" : 458,
+          "y" : 0
+        },
+        "menubar_edit" : {
+          "h" : 22,
+          "w" : 39,
+          "x" : 129,
+          "y" : 0
+        },
+        "menubar_editor" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 337,
+          "y" : 0
+        },
+        "menubar_file" : {
+          "h" : 22,
+          "w" : 36,
+          "x" : 89,
+          "y" : 0
+        },
+        "menubar_find" : {
+          "h" : 22,
+          "w" : 41,
+          "x" : 220,
+          "y" : 0
+        },
+        "menubar_help" : {
+          "h" : 22,
+          "w" : 43,
+          "x" : 691,
+          "y" : 0
+        },
+        "menubar_navigate" : {
+          "h" : 22,
+          "w" : 68,
+          "x" : 265,
+          "y" : 0
+        },
+        "menubar_product" : {
+          "h" : 22,
+          "w" : 62,
+          "x" : 392,
+          "y" : 0
+        },
+        "menubar_source_control" : {
+          "h" : 22,
+          "w" : 104,
+          "x" : 516,
+          "y" : 0
+        },
+        "menubar_view" : {
+          "h" : 22,
+          "w" : 44,
+          "x" : 172,
+          "y" : 0
+        },
+        "menubar_window" : {
+          "h" : 22,
+          "w" : 63,
+          "x" : 624,
+          "y" : 0
+        },
+        "menubar_xcode" : {
+          "h" : 22,
+          "w" : 51,
+          "x" : 34,
+          "y" : 0
+        },
+        "xcode_activity_viewer" : {
+          "h" : 28,
+          "w" : 470,
+          "x" : 430,
+          "y" : 32
+        },
+        "xcode_close_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 14,
+          "y" : 38
+        },
+        "xcode_console_clear_button" : {
+          "h" : 20,
+          "w" : 28,
+          "x" : 1238,
+          "y" : 751
+        },
+        "xcode_debug_area_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1210,
+          "y" : 33
+        },
+        "xcode_debug_console" : {
+          "h" : 163,
+          "w" : 519,
+          "x" : 761,
+          "y" : 587
+        },
+        "xcode_editor_options_button" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1174,
+          "y" : 33
+        },
+        "xcode_inspector_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 1246,
+          "y" : 33
+        },
+        "xcode_library_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 1130,
+          "y" : 33
+        },
+        "xcode_minimize_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 34,
+          "y" : 38
+        },
+        "xcode_navigator_filter_field" : {
+          "h" : 22,
+          "w" : 234,
+          "x" : 8,
+          "y" : 746
+        },
+        "xcode_navigator_row_CartView.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 173
+        },
+        "xcode_navigator_row_ClaudeAPI.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 195
+        },
+        "xcode_navigator_row_ClickerApp.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 151
+        },
+        "xcode_navigator_row_DesignSystem.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 239
+        },
+        "xcode_navigator_row_Info.plist" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 283
+        },
+        "xcode_navigator_row_OverlayWindow.swift" : {
+          "h" : 22,
+          "w" : 250,
+          "x" : 0,
+          "y" : 217
+        },
+        "xcode_navigator_tab_breakpoints" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 190,
+          "y" : 73
+        },
+        "xcode_navigator_tab_debug" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 164,
+          "y" : 73
+        },
+        "xcode_navigator_tab_files" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 8,
+          "y" : 73
+        },
+        "xcode_navigator_tab_find" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 86,
+          "y" : 73
+        },
+        "xcode_navigator_tab_issues" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 112,
+          "y" : 73
+        },
+        "xcode_navigator_tab_reports" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 216,
+          "y" : 73
+        },
+        "xcode_navigator_tab_source_control" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 34,
+          "y" : 73
+        },
+        "xcode_navigator_tab_symbols" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 60,
+          "y" : 73
+        },
+        "xcode_navigator_tab_tests" : {
+          "h" : 24,
+          "w" : 24,
+          "x" : 138,
+          "y" : 73
+        },
+        "xcode_navigator_toggle" : {
+          "h" : 26,
+          "w" : 32,
+          "x" : 90,
+          "y" : 33
+        },
+        "xcode_run_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 136,
+          "y" : 33
+        },
+        "xcode_scheme_selector" : {
+          "h" : 24,
+          "w" : 190,
+          "x" : 214,
+          "y" : 34
+        },
+        "xcode_stop_button" : {
+          "h" : 26,
+          "w" : 28,
+          "x" : 170,
+          "y" : 33
+        },
+        "xcode_zoom_button" : {
+          "h" : 16,
+          "w" : 16,
+          "x" : 54,
+          "y" : 38
+        }
+      },
+      "height" : 800,
+      "width" : 1280
+    }
+  }
+}

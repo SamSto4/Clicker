@@ -17,5 +17,7 @@
 	</dict>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Clicky uses speech recognition to transcribe your voice when you talk to it</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Clicky saves the notes you ask it to remember in a Clicky Notes folder in your Documents folder.</string>
 </dict>
 </plist>

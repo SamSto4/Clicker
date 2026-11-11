@@ -1,0 +1,50 @@
+[
+  {"id": "cd_v01", "split": "visible", "dimension": "coding", "category": "swift-compiler-error",
+   "userPrompt": "Why am I getting this error and how do I fix it?",
+   "screens": ["xcode_error_mutating.jpg"],
+   "screenContext": "Xcode showing VisitCounter.swift. A struct VisitCounter has stored properties totalVisits and lastVisitDate. The method func recordVisit() (not marked mutating) does totalVisits += 1 and lastVisitDate = Date(). Both lines show the red error: Cannot assign to property: 'self' is immutable. Below, `let counter = VisitCounter()` then counter.recordVisit().",
+   "reference": "Methods on a struct that change its properties must be marked mutating (func recordVisit becomes mutating func recordVisit), because structs are value types. Alternative: make it a class. The instance at the bottom must then be a var, not a let.",
+   "keywordGroups": [["mutating"], ["struct", "value type"]]},
+
+  {"id": "cd_v02", "split": "visible", "dimension": "coding", "category": "swift-concurrency-error",
+   "userPrompt": "What does this red error mean, and how do I get rid of it?",
+   "screens": ["xcode_error_mainactor.jpg"],
+   "screenContext": "Xcode showing SettingsViewModel.swift. refreshStatusText(with:) is marked @MainActor. loadSettingsFromDisk() (not main actor, not async) calls refreshStatusText(with: loadedText) and shows the error: Call to main actor-isolated instance method 'refreshStatusText(with:)' in a synchronous nonisolated context.",
+   "reference": "refreshStatusText is isolated to the main actor but is called from a nonisolated synchronous function. Fix: mark loadSettingsFromDisk (or the whole class) @MainActor, or make the caller async and await the call, or wrap the call in Task { @MainActor in ... } / MainActor.run.",
+   "keywordGroups": [["main actor", "mainactor", "main thread"], ["task", "await", "async", "mark", "annotate", "add @mainactor", "wrap"]]},
+
+  {"id": "cd_v03", "split": "visible", "dimension": "coding", "category": "swift-optionals",
+   "userPrompt": "Xcode is complaining on this line. What's wrong?",
+   "screens": ["xcode_error_optional.jpg"],
+   "screenContext": "Xcode showing UserProfile.swift. struct UserProfile has fullName: String and nickname: String?. In greeting(for:), the line `let displayName: String = user.nickname` shows the error: Value of optional type 'String?' must be unwrapped to a value of type 'String'.",
+   "reference": "user.nickname is an optional String and can be nil, but displayName is declared as a non-optional String. Unwrap it: if let / guard let, or provide a default with the nil-coalescing operator (user.nickname ?? user.fullName). Avoid force unwrapping.",
+   "keywordGroups": [["optional", "nil", "question mark"], ["unwrap", "if let", "guard let", "coalesc", "default", "fallback", "double question"]]},
+
+  {"id": "cd_v04", "split": "visible", "dimension": "coding", "category": "swiftui-state",
+   "userPrompt": "I tap the Add apple button but the count never changes. Why?",
+   "screens": ["xcode_swiftui_state.jpg"],
+   "screenContext": "Xcode showing CartView.swift. class CartModel (plain class, no ObservableObject, items is a plain var array) has add(_:). struct CartView: View holds `let cartModel = CartModel()` and shows Text(\"items: \\(cartModel.items.count)\") and a Button that calls cartModel.add(\"apple\").",
+   "reference": "SwiftUI is not told when CartModel changes because it is a plain class. Make CartModel conform to ObservableObject with @Published var items (or use the @Observable macro), and hold it in the view with @StateObject (or @State with @Observable).",
+   "keywordGroups": [["observable", "published"], ["state object", "stateobject", "observed object", "observedobject", "@state", "state property"]]},
+
+  {"id": "cd_v05", "split": "visible", "dimension": "coding", "category": "python-environment-error",
+   "userPrompt": "What does this error mean and what do I run to fix it?",
+   "screens": ["terminal_py_error.jpg"],
+   "screenContext": "Terminal: running python3 fetch_prices.py fails with a traceback ending in ModuleNotFoundError: No module named 'requests' at line 1 (import requests).",
+   "reference": "The requests library is not installed for that Python. Install it with pip, for example python3 -m pip install requests (ideally inside a virtual environment).",
+   "keywordGroups": [["pip"], ["install"], ["requests"]]},
+
+  {"id": "cd_v06", "split": "visible", "dimension": "coding", "category": "node-runtime-error",
+   "userPrompt": "My server won't start. What's going on?",
+   "screens": ["terminal_port_in_use.jpg"],
+   "screenContext": "Terminal: npm run dev (node server.js) crashes with Error: listen EADDRINUSE: address already in use :::3000.",
+   "reference": "Port 3000 is already taken by another process, probably an earlier copy of the server. Find it with lsof -i :3000 and kill it, or start the server on a different port.",
+   "keywordGroups": [["port", "3000", "three thousand"], ["already", "in use", "another process", "other process", "lsof", "kill", "different port", "other port", "something else"]]},
+
+  {"id": "cd_v07", "split": "visible", "dimension": "coding", "category": "ide-shortcut",
+   "userPrompt": "How do I jump to where a function is defined in VS Code?",
+   "screens": ["vscode_main.jpg"],
+   "screenContext": "VS Code showing index.ts with a worker script; a getUserName function is defined and called a few lines below.",
+   "reference": "Command-click the function name or put the cursor on it and press F12 (Go to Definition). Peek Definition is option F12.",
+   "keywordGroups": [["f12", "f twelve", "command click", "cmd click", "command-click", "go to definition", "definition"]]}
+]
