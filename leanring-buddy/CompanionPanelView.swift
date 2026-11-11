@@ -607,7 +607,7 @@ struct CompanionPanelView: View {
             Spacer()
 
             HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
+                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-5-5")
                 modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
             }
             .background(

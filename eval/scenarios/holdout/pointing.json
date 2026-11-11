@@ -1,0 +1,140 @@
+[
+  {
+    "id": "pt_h01",
+    "split": "holdout",
+    "dimension": "pointing",
+    "category": "toolbar-icon",
+    "userPrompt": "How do I stop the app?",
+    "screens": [
+      "xcode_main.jpg"
+    ],
+    "expect": {
+      "type": "point",
+      "targets": [
+        {
+          "screen": 1,
+          "element": "xcode_stop_button"
+        }
+      ]
+    }
+  },
+  {
+    "id": "pt_h02",
+    "split": "holdout",
+    "dimension": "pointing",
+    "category": "list-row-in-settings",
+    "userPrompt": "Take me to the Bluetooth settings.",
+    "screens": [
+      "settings_main.jpg"
+    ],
+    "expect": {
+      "type": "point",
+      "targets": [
+        {
+          "screen": 1,
+          "element": "settings_sidebar_bluetooth"
+        }
+      ]
+    }
+  },
+  {
+    "id": "pt_h03",
+    "split": "holdout",
+    "dimension": "pointing",
+    "category": "absent-element-wrong-app",
+    "userPrompt": "Where do I pick which simulator device to run on?",
+    "screens": [
+      "vscode_main.jpg"
+    ],
+    "expect": {
+      "type": "none",
+      "honestyRequired": true
+    }
+  },
+  {
+    "id": "pt_h04",
+    "split": "holdout",
+    "dimension": "pointing",
+    "category": "multi-screen-secondary",
+    "userPrompt": "On my other monitor, how do I open a new tab in my terminal window?",
+    "screens": [
+      "vscode_main.jpg",
+      "terminal_second.jpg"
+    ],
+    "expect": {
+      "type": "point",
+      "targets": [
+        {
+          "screen": 2,
+          "element": "terminal_new_tab_button"
+        }
+      ]
+    }
+  },
+  {
+    "id": "pt_h05",
+    "split": "holdout",
+    "dimension": "pointing",
+    "category": "absent-element-wrong-app",
+    "userPrompt": "Where's the scheme selector so I can switch targets?",
+    "screens": [
+      "browser_main.jpg"
+    ],
+    "expect": {
+      "type": "none",
+      "honestyRequired": true
+    }
+  },
+  {
+    "id": "pt_h06",
+    "split": "holdout",
+    "dimension": "pointing",
+    "category": "absent-element-wrong-app",
+    "userPrompt": "Where's the extensions icon?",
+    "screens": [
+      "xcode_main.jpg"
+    ],
+    "expect": {
+      "type": "none",
+      "honestyRequired": true
+    }
+  },
+  {
+    "id": "pt_h07",
+    "split": "holdout",
+    "dimension": "pointing",
+    "category": "present-element-absent-style-phrasing",
+    "userPrompt": "Where's the scheme selector so I can switch targets?",
+    "screens": [
+      "xcode_main.jpg"
+    ],
+    "expect": {
+      "type": "point",
+      "targets": [
+        {
+          "screen": 1,
+          "element": "xcode_scheme_selector"
+        }
+      ]
+    }
+  },
+  {
+    "id": "pt_h08",
+    "split": "holdout",
+    "dimension": "pointing",
+    "category": "present-element-absent-style-phrasing",
+    "userPrompt": "Where's the extensions icon?",
+    "screens": [
+      "vscode_main.jpg"
+    ],
+    "expect": {
+      "type": "point",
+      "targets": [
+        {
+          "screen": 1,
+          "element": "vscode_activity_extensions"
+        }
+      ]
+    }
+  }
+]

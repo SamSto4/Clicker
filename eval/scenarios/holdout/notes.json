@@ -1,0 +1,352 @@
+[
+  {
+    "id": "nt_h01",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "save-by-voice-preference",
+    "kind": "save",
+    "userPrompt": "Write down that I prefer tabs over spaces in my Swift projects.",
+    "screens": [
+      "xcode_main.jpg"
+    ],
+    "expect": {
+      "mustSave": true,
+      "bodyKeywordGroups": [
+        [
+          "tab"
+        ],
+        [
+          "space"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "nt_h02",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "recall-absent-no-hallucination",
+    "kind": "recall",
+    "notes": [
+      {
+        "title": "Deploy token rotation",
+        "date": "2026-11-03",
+        "body": "The deploy token for the clicky worker rotates every thirty days."
+      }
+    ],
+    "userPrompt": "What did I note about my dentist appointment?",
+    "screens": [
+      "browser_main.jpg"
+    ],
+    "expect": {
+      "answerKeywordGroups": [],
+      "mustAdmitNoNote": true,
+      "forbiddenPatterns": [
+        "thirty",
+        "token"
+      ],
+      "maxSentences": 3
+    }
+  },
+  {
+    "id": "nt_h03",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "recall-among-several",
+    "kind": "recall",
+    "notes": [
+      {
+        "title": "Indentation preference",
+        "date": "2026-10-20",
+        "body": "Prefers tabs over spaces in Swift projects."
+      },
+      {
+        "title": "Standup time",
+        "date": "2026-10-22",
+        "body": "Daily standup is at nine thirty."
+      },
+      {
+        "title": "Coffee order",
+        "date": "2026-10-25",
+        "body": "Flat white, oat milk."
+      }
+    ],
+    "userPrompt": "What's my note about indentation?",
+    "screens": [
+      "xcode_main.jpg"
+    ],
+    "expect": {
+      "answerKeywordGroups": [
+        [
+          "tab"
+        ]
+      ],
+      "forbiddenPatterns": [
+        "flat white",
+        "nine thirty"
+      ],
+      "maxSentences": 3
+    }
+  },
+  {
+    "id": "nt_h04",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "recall-when-question",
+    "kind": "recall",
+    "notes": [
+      {
+        "title": "Dentist",
+        "date": "2026-11-09",
+        "body": "My dentist appointment is friday at 3."
+      }
+    ],
+    "userPrompt": "When's my dentist?",
+    "screens": [
+      "browser_main.jpg"
+    ],
+    "expect": {
+      "answerKeywordGroups": [
+        [
+          "friday"
+        ],
+        [
+          "3",
+          "three"
+        ]
+      ],
+      "forbiddenPatterns": [
+        "thursday",
+        "monday"
+      ],
+      "maxSentences": 3
+    }
+  },
+  {
+    "id": "nt_h05",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "no-false-save-general-question",
+    "kind": "nosave",
+    "userPrompt": "What's the capital of France?",
+    "screens": [
+      "browser_main.jpg"
+    ],
+    "expect": {
+      "mustSave": false
+    }
+  },
+  {
+    "id": "nt_h06",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "recall-paraphrase-synonym",
+    "kind": "recall",
+    "notes": [
+      {
+        "title": "Office wifi",
+        "date": "2026-10-12",
+        "body": "the office wifi password is bluefern77"
+      },
+      {
+        "title": "Sister birthday",
+        "date": "2026-10-14",
+        "body": "my sister lena's birthday is the ninth of june"
+      },
+      {
+        "title": "Plant watering",
+        "date": "2026-10-16",
+        "body": "water the fiddle leaf fig every ten days"
+      }
+    ],
+    "userPrompt": "What is the passcode for the network at work?",
+    "screens": [
+      "browser_main.jpg"
+    ],
+    "expect": {
+      "answerKeywordGroups": [
+        [
+          "bluefern"
+        ]
+      ],
+      "forbiddenPatterns": [
+        "lena",
+        "june",
+        "fiddle",
+        "fig"
+      ],
+      "maxSentences": 3
+    }
+  },
+  {
+    "id": "nt_h07",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "recall-paraphrase-synonym",
+    "kind": "recall",
+    "notes": [
+      {
+        "title": "Landlord",
+        "date": "2026-10-18",
+        "body": "the landlord is marcus and he prefers a text, not a call"
+      },
+      {
+        "title": "Oil change",
+        "date": "2026-10-19",
+        "body": "next oil change is due at sixty thousand miles"
+      },
+      {
+        "title": "Library books",
+        "date": "2026-10-21",
+        "body": "library books go back on the twenty eighth"
+      }
+    ],
+    "userPrompt": "Who's my property manager again, and how should I reach him?",
+    "screens": [
+      "xcode_main.jpg"
+    ],
+    "expect": {
+      "answerKeywordGroups": [
+        [
+          "marcus"
+        ],
+        [
+          "text"
+        ]
+      ],
+      "forbiddenPatterns": [
+        "sixty",
+        "oil",
+        "library"
+      ],
+      "maxSentences": 3
+    }
+  },
+  {
+    "id": "nt_h08",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "recall-paraphrase-synonym",
+    "kind": "recall",
+    "notes": [
+      {
+        "title": "Parking",
+        "date": "2026-10-20",
+        "body": "the car is parked on level three of the airport garage, near pillar c"
+      },
+      {
+        "title": "Sourdough",
+        "date": "2026-10-22",
+        "body": "sourdough starter gets fed at eight in the morning"
+      },
+      {
+        "title": "Accountant",
+        "date": "2026-10-24",
+        "body": "the accountant wants the receipts before the fifteenth"
+      }
+    ],
+    "userPrompt": "Which floor did I leave the vehicle on?",
+    "screens": [
+      "terminal_main.jpg"
+    ],
+    "expect": {
+      "answerKeywordGroups": [
+        [
+          "three",
+          "3",
+          "third"
+        ]
+      ],
+      "forbiddenPatterns": [
+        "sourdough",
+        "receipt",
+        "accountant",
+        "eight"
+      ],
+      "maxSentences": 3
+    }
+  },
+  {
+    "id": "nt_h09",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "recall-absent-among-unrelated",
+    "kind": "recall",
+    "notes": [
+      {
+        "title": "Gym",
+        "date": "2026-11-02",
+        "body": "gym membership renews in january"
+      },
+      {
+        "title": "Printer",
+        "date": "2026-11-04",
+        "body": "the second floor printer needs the admin code fifty one fifty"
+      },
+      {
+        "title": "Book club",
+        "date": "2026-11-06",
+        "body": "book club meets the last thursday of the month"
+      }
+    ],
+    "userPrompt": "What did I save about my passport renewal?",
+    "screens": [
+      "browser_main.jpg"
+    ],
+    "expect": {
+      "answerKeywordGroups": [],
+      "mustAdmitNoNote": true,
+      "forbiddenPatterns": [
+        "gym",
+        "january",
+        "printer",
+        "fifty",
+        "book club",
+        "thursday"
+      ],
+      "maxSentences": 3
+    }
+  },
+  {
+    "id": "nt_h10",
+    "split": "holdout",
+    "dimension": "notes",
+    "category": "recall-absent-among-unrelated",
+    "kind": "recall",
+    "notes": [
+      {
+        "title": "Vet",
+        "date": "2026-11-01",
+        "body": "the vet is doctor patel on elm street"
+      },
+      {
+        "title": "Flight",
+        "date": "2026-11-05",
+        "body": "flight to denver leaves at six forty in the morning on the twelfth"
+      },
+      {
+        "title": "Pizza",
+        "date": "2026-11-08",
+        "body": "favorite pizza place is luigi's on main"
+      }
+    ],
+    "userPrompt": "Do I have a note with my dentist's phone number?",
+    "screens": [
+      "vscode_main.jpg"
+    ],
+    "expect": {
+      "answerKeywordGroups": [],
+      "mustAdmitNoNote": true,
+      "forbiddenPatterns": [
+        "patel",
+        "vet",
+        "elm",
+        "denver",
+        "flight",
+        "luigi",
+        "pizza"
+      ],
+      "maxSentences": 3
+    }
+  }
+]

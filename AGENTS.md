@@ -14,7 +14,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
+- **AI Chat**: Claude (Sonnet 5.5 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming. Requests send `output_config.effort = "low"` (set in `ClaudeAPI.swift`) to keep spoken replies cheap and fast.
 - **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
@@ -33,6 +33,8 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
+Reply tag grammar (parsed by `ClickyReplyTagParser`, case-insensitive, any order): `[POINT:x,y:label]`, `[POINT:x,y:label:screenN]`, `[POINT:none]`, and `[NOTE:text]` (one line, at most 400 characters, at most three per reply). Tags never reach TTS or history as tag text; history keeps `[NOTE:...]` so the model keeps the format.
+
 Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, `CLICKY_APP_TOKEN`
 
 Every Worker request must carry `X-Clicky-App-Token` matching `CLICKY_APP_TOKEN`, or the Worker answers 401 (and refuses everything if the secret is unset). The app reads the Worker URL and token from the git-ignored `leanring-buddy/ClickyWorkerSecrets.plist` (template: `ClickyWorkerSecrets.example.plist` at the repo root).
@@ -49,6 +51,8 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 **Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
 
 **Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
+
+**Reply Tags, Notes, and Skills**: Claude's reply can carry `[POINT:x,y:label]` / `[POINT:x,y:label:screenN]` / `[POINT:none]` and up to three `[NOTE:text]` tags. `ClickyReplyTagParser` strips every tag from the spoken text (including truncated fragments) and returns the point target and note texts. Notes are saved only when the user's transcript has save language (`ClickyNoteIntentDetector`), and a dictated "remember that ..." is saved directly if Claude forgets the tag. Notes live as one markdown file per day in `~/Documents/Clicky Notes` and are injected into the system prompt: all of them when the store is small (up to 15 notes and 1500 characters, so the model matches paraphrases), otherwise by word relevance plus recent notes, or the newest notes when the user asks what Clicky remembers. Skills are `leanring-buddy/ClickyPrompts/skill_*.md` files with front matter (app bundle ids, app name fragments, keywords) and are added to the prompt for the matching app or question, at most two per turn. The system prompt is assembled per turn by `ClickyPromptAssembler` from `clicky_base_system_prompt.md`, the selected skills, a "right now" block, and the notes, in that order so the static part comes first.
 
 **Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
@@ -78,6 +82,13 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
+| `ClickyCore/ClickyReplyTagParser.swift` | ~150 | Foundation-only parser for `[POINT:...]` and `[NOTE:...]` tags. Returns spoken text, the point target, and note texts. Shared by the chat pipeline and the onboarding demo. |
+| `ClickyCore/ClickyNoteStore.swift` | ~290 | Daily markdown notes in `~/Documents/Clicky Notes`: save with same-minute dedupe, tolerant reader, relevance and full-recall selection with caps. |
+| `ClickyCore/ClickyNoteIntentDetector.swift` | ~80 | Decides from the transcript alone whether the user asked to save a note (strict start-of-sentence phrases plus a loose gate) or to recall notes. |
+| `ClickyCore/ClickySkillLibrary.swift` | ~200 | Loads `skill_*.md` files and selects up to two per turn by frontmost app (100) and keyword (40). |
+| `ClickyCore/ClickyPromptAssembler.swift` | ~230 | Builds each turn's system prompt (`prepareSystemPrompt`) and finishes the reply (`ClickyTurnFinisher.finishTurn`: saves notes, spoken text, history text). |
+| `ClickyPrompts/clicky_base_system_prompt.md` | ~800 words | Base system prompt: brevity, spoken style, pointing rules, note grammar, recall rules. Loaded at runtime from the bundle. |
+| `ClickyPrompts/skill_*.md` | ~230 words each | Per-app skills (general coding, Xcode, VS Code family, terminals). Plain resource files, not compiled. |
 | `ClickyWorkerConfiguration.swift` | ~65 | Reads the Worker base URL and app token from the git-ignored `ClickyWorkerSecrets.plist` and adds the `X-Clicky-App-Token` header to Worker requests. |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 

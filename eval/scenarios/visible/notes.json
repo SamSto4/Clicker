@@ -1,0 +1,125 @@
+[
+  {
+    "id": "nt_v01",
+    "split": "visible",
+    "dimension": "notes",
+    "category": "save-by-voice-fact",
+    "kind": "save",
+    "userPrompt": "Take a note: the deploy token for the clicky worker rotates every thirty days.",
+    "screens": [
+      "terminal_main.jpg"
+    ],
+    "expect": {
+      "mustSave": true,
+      "bodyKeywordGroups": [
+        [
+          "token"
+        ],
+        [
+          "thirty",
+          "30"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "nt_v02",
+    "split": "visible",
+    "dimension": "notes",
+    "category": "save-by-voice-idea",
+    "kind": "save",
+    "userPrompt": "Jot this down for later: ideas for the onboarding flow, shorten the permission step and add a progress indicator.",
+    "screens": [
+      "settings_main.jpg"
+    ],
+    "expect": {
+      "mustSave": true,
+      "bodyKeywordGroups": [
+        [
+          "onboarding"
+        ],
+        [
+          "permission"
+        ],
+        [
+          "progress"
+        ]
+      ]
+    }
+  },
+  {
+    "id": "nt_v03",
+    "split": "visible",
+    "dimension": "notes",
+    "category": "recall-present",
+    "kind": "recall",
+    "notes": [
+      {
+        "title": "Deploy token rotation",
+        "date": "2026-11-03",
+        "body": "The deploy token for the clicky worker rotates every thirty days."
+      },
+      {
+        "title": "Onboarding ideas",
+        "date": "2026-11-05",
+        "body": "Shorten the permission step and add a progress indicator."
+      }
+    ],
+    "userPrompt": "What did I note about the deploy token?",
+    "screens": [
+      "vscode_main.jpg"
+    ],
+    "expect": {
+      "answerKeywordGroups": [
+        [
+          "thirty",
+          "30",
+          "every month",
+          "monthly"
+        ]
+      ],
+      "forbiddenPatterns": [],
+      "maxSentences": 3
+    }
+  },
+  {
+    "id": "nt_v04",
+    "split": "visible",
+    "dimension": "notes",
+    "category": "no-false-save",
+    "kind": "nosave",
+    "userPrompt": "What does the git status command do?",
+    "screens": [
+      "terminal_main.jpg"
+    ],
+    "expect": {
+      "mustSave": false
+    }
+  },
+  {
+    "id": "nt_v05",
+    "split": "visible",
+    "dimension": "notes",
+    "category": "save-by-voice-appointment",
+    "kind": "save",
+    "userPrompt": "Remember that my dentist is friday at 3.",
+    "screens": [
+      "browser_main.jpg"
+    ],
+    "expect": {
+      "mustSave": true,
+      "bodyKeywordGroups": [
+        [
+          "dentist"
+        ],
+        [
+          "friday"
+        ],
+        [
+          "3",
+          "three"
+        ]
+      ]
+    }
+  }
+]

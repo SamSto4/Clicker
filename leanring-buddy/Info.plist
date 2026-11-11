@@ -5,12 +5,14 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>VoiceTranscriptionProvider</key>
-	<string>assemblyai</string>
+	<string>apple</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Clicky uses your microphone so you can talk to it</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Clicky needs screen recording access to see your screen and help you.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Clicky uses speech recognition to transcribe your voice when you talk to it</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Clicky saves the notes you ask it to remember in a Clicky Notes folder in your Documents folder.</string>
 </dict>
 </plist>

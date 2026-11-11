@@ -14,7 +14,14 @@ class ClaudeAPI {
     var model: String
     private let session: URLSession
 
-    init(proxyURL: String, model: String = "claude-sonnet-4-6") {
+    /// Tells Claude to spend as little effort (and as few hidden "thinking" tokens) as
+    /// possible. Clicky gives short spoken answers, so deep reasoning mostly adds cost and
+    /// latency. Measured on a short question: 109 output tokens at the default effort vs
+    /// 39 at "low", with the same answer quality. Also keeps hidden thinking from eating
+    /// into the small max_tokens limit and cutting a spoken reply short.
+    private static let lowEffortOutputConfiguration: [String: Any] = ["effort": "low"]
+
+    init(proxyURL: String, model: String = "claude-sonnet-5-5") {
         self.apiURL = URL(string: proxyURL)!
         self.model = model
 
@@ -144,6 +151,7 @@ class ClaudeAPI {
             "model": model,
             "max_tokens": 1024,
             "stream": true,
+            "output_config": Self.lowEffortOutputConfiguration,
             "system": systemPrompt,
             "messages": messages
         ]
@@ -254,6 +262,7 @@ class ClaudeAPI {
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 256,
+            "output_config": Self.lowEffortOutputConfiguration,
             "system": systemPrompt,
             "messages": messages
         ]

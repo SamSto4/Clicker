@@ -1,0 +1,22 @@
+{
+  "_comment": "Adapter for the NOTES dimension. save_detection 'app_parser' means: a save is a NOTE tag the MODEL wrote (parsed by the app's ClickyReplyTagParser via eval/assemble_prompt_driver). Notes for recall are injected by the app's ClickyPromptAssembler into each scenario's system prompt, so context_injection is 'none' here (no second injection).",
+  "enabled": true,
+  "disabled_reason": null,
+  "save_detection": {
+    "type": "app_parser",
+    "regex": null,
+    "flags": "s",
+    "title_group": "title",
+    "body_group": "body",
+    "tool_name": null,
+    "tool_title_field": "title",
+    "tool_body_field": "body"
+  },
+  "strip_from_spoken_regex": null,
+  "request_extras": {},
+  "context_injection": {
+    "mode": "none",
+    "template": "",
+    "note_line_template": ""
+  }
+}

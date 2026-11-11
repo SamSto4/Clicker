@@ -1,0 +1,56 @@
+[
+  {"id": "pt_v01", "split": "visible", "dimension": "pointing", "category": "toolbar-icon",
+   "userPrompt": "Where do I click to run my app?",
+   "screens": ["xcode_main.jpg"],
+   "expect": {"type": "point", "targets": [{"screen": 1, "element": "xcode_run_button"}]}},
+
+  {"id": "pt_v02", "split": "visible", "dimension": "pointing", "category": "menu-bar-item",
+   "userPrompt": "How do I commit my changes from here?",
+   "screens": ["xcode_main.jpg"],
+   "expect": {"type": "point", "targets": [{"screen": 1, "element": "menubar_source_control"}, {"screen": 1, "element": "xcode_navigator_tab_source_control"}]}},
+
+  {"id": "pt_v03", "split": "visible", "dimension": "pointing", "category": "unlabeled-icon",
+   "userPrompt": "Where's the source control tab?",
+   "screens": ["vscode_main.jpg"],
+   "expect": {"type": "point", "targets": [{"screen": 1, "element": "vscode_activity_source_control"}]}},
+
+  {"id": "pt_v04", "split": "visible", "dimension": "pointing", "category": "panel-tab-or-status-item",
+   "userPrompt": "How do I see all the errors in my project?",
+   "screens": ["vscode_main.jpg"],
+   "expect": {"type": "point", "targets": [{"screen": 1, "element": "vscode_panel_tab_problems"}, {"screen": 1, "element": "vscode_status_errors"}]}},
+
+  {"id": "pt_v05", "split": "visible", "dimension": "pointing", "category": "list-row-in-settings",
+   "userPrompt": "I need to give an app screen recording permission. Where do I click?",
+   "screens": ["settings_main.jpg"],
+   "expect": {"type": "point", "targets": [{"screen": 1, "element": "settings_row_screen_and_system_audio_recording"}]}},
+
+  {"id": "pt_v06", "split": "visible", "dimension": "pointing", "category": "browser-chrome-icon",
+   "userPrompt": "How do I reload this page?",
+   "screens": ["browser_main.jpg"],
+   "expect": {"type": "point", "targets": [{"screen": 1, "element": "browser_reload_button"}]}},
+
+  {"id": "pt_v07", "split": "visible", "dimension": "pointing", "category": "text-line-on-screen",
+   "userPrompt": "Which line is the error?",
+   "screens": ["terminal_main.jpg"],
+   "expect": {"type": "point", "targets": [{"screen": 1, "element": "terminal_error_line"}]}},
+
+  {"id": "pt_v08", "split": "visible", "dimension": "pointing", "category": "absent-element-wrong-app",
+   "userPrompt": "Where's the Product menu so I can archive my app?",
+   "screens": ["browser_main.jpg"],
+   "expect": {"type": "none", "honestyRequired": true}},
+
+  {"id": "pt_v09", "split": "visible", "dimension": "pointing", "category": "absent-element-wrong-app",
+   "userPrompt": "Where's the run button?",
+   "screens": ["settings_main.jpg"],
+   "expect": {"type": "none", "honestyRequired": true}},
+
+  {"id": "pt_v10", "split": "visible", "dimension": "pointing", "category": "multi-screen-secondary",
+   "userPrompt": "On my other monitor, where do I click to reload my browser?",
+   "screens": ["xcode_main.jpg", "browser_main.jpg"],
+   "expect": {"type": "point", "targets": [{"screen": 2, "element": "browser_reload_button"}]}},
+
+  {"id": "pt_v11", "split": "visible", "dimension": "pointing", "category": "honest-unknown-live-data",
+   "userPrompt": "What's the price of Bitcoin right now?",
+   "screens": ["xcode_main.jpg"],
+   "expect": {"type": "none", "honestyRequired": true, "honestyKind": "unknown"}}
+]

@@ -1,0 +1,40 @@
+[
+  {"id": "br_v01", "split": "visible", "dimension": "brevity", "category": "factual-question",
+   "userPrompt": "What's the difference between RAM and storage?",
+   "screens": ["xcode_main.jpg"],
+   "expect": {"maxSentences": 2, "maxWords": 45, "pointExpectation": "none"}},
+
+  {"id": "br_v02", "split": "visible", "dimension": "brevity", "category": "small-talk",
+   "userPrompt": "Hey Clicky, how's it going?",
+   "screens": ["browser_main.jpg"],
+   "expect": {"maxSentences": 2, "maxWords": 45, "pointExpectation": "none"}},
+
+  {"id": "br_v03", "split": "visible", "dimension": "brevity", "category": "arithmetic-spoken-numbers",
+   "userPrompt": "What's 15% of 240?",
+   "screens": ["settings_main.jpg"],
+   "expect": {"maxSentences": 2, "maxWords": 45, "pointExpectation": "none", "answerAnyOf": ["thirty six", "thirty-six", "36"]}},
+
+  {"id": "br_v04", "split": "visible", "dimension": "brevity", "category": "concept-definition",
+   "userPrompt": "What is a closure?",
+   "screens": ["xcode_main.jpg"],
+   "expect": {"maxSentences": 2, "maxWords": 50, "pointExpectation": "none"}},
+
+  {"id": "br_v05", "split": "visible", "dimension": "brevity", "category": "advice-no-lists",
+   "userPrompt": "Give me some tips to stay focused while coding.",
+   "screens": ["vscode_main.jpg"],
+   "expect": {"maxSentences": 2, "maxWords": 50, "pointExpectation": "none"}},
+
+  {"id": "br_v06", "split": "visible", "dimension": "brevity", "category": "explicit-elaboration-allowed",
+   "userPrompt": "Can you go deeper and explain dependency injection in detail? Take your time.",
+   "screens": ["xcode_main.jpg"],
+   "expect": {"allowLong": true, "minSentences": 4, "minWords": 80, "pointExpectation": "none"}},
+
+  {"id": "br_v07", "split": "visible", "dimension": "brevity", "category": "follow-up-with-history",
+   "history": [
+     {"user": "What is a REST API?",
+      "assistant": "it's a way for programs to talk to each other over the web using normal http requests like get and post. [POINT:none]"}
+   ],
+   "userPrompt": "And how is that different from GraphQL?",
+   "screens": ["vscode_main.jpg"],
+   "expect": {"maxSentences": 2, "maxWords": 50, "pointExpectation": "none"}}
+]
