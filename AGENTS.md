@@ -22,6 +22,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
+- **Long-term memory**: optional local Python service (`memory_server.py` from the K.I.T-Agent repo) on `127.0.0.1:8765`, reached via `ClickerMemoryClient.swift`. `Info.plist` sets `NSAllowsLocalNetworking` so the app may use plain HTTP to it.
 
 ### API Proxy (Cloudflare Worker)
 
@@ -81,6 +82,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
 | `ClickyWorkerConfiguration.swift` | ~65 | Reads the Worker base URL and app token from the git-ignored `ClickyWorkerSecrets.plist` and adds the `X-Clicky-App-Token` header to Worker requests. |
+| `ClickerMemoryClient.swift` | ~150 | Long-term memory client. Talks to `memory_server.py` (K.I.T-Agent repo) on `http://127.0.0.1:8765`: fetches saved facts + a related past session for the system prompt, sends the user's own transcript to `/learn`, and saves a session summary after 10 idle minutes or on quit. Fails soft when the server isn't running. |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run

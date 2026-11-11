@@ -85,6 +85,19 @@ final class CompanionManager: ObservableObject {
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
 
+    /// Long-term memory across app restarts, served by memory_server.py on this Mac.
+    /// If that server isn't running, Clicker works as before without it.
+    private let clickerMemoryClient = ClickerMemoryClient()
+
+    /// Exchanges not yet saved as a session summary in long-term memory. Unlike
+    /// conversationHistory this isn't capped at 10, so the summary covers the whole session.
+    private var exchangesNotYetSavedToLongTermMemory: [(userTranscript: String, assistantResponse: String)] = []
+
+    /// A session counts as over after this long without talking. Its summary is
+    /// then saved to long-term memory (and also when the app quits).
+    private static let idleTimeBeforeSavingSessionSummaryInSeconds: UInt64 = 10 * 60
+    private var saveSessionSummaryAfterIdleTask: Task<Void, Never>?
+
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
@@ -289,6 +302,26 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+
+        // The app is quitting: save this session to long-term memory now
+        saveSessionSummaryAfterIdleTask?.cancel()
+        clickerMemoryClient.saveSessionSummaryBeforeQuitting(conversationExchanges: exchangesNotYetSavedToLongTermMemory)
+        exchangesNotYetSavedToLongTermMemory.removeAll()
+    }
+
+    /// Restarts the idle countdown after each exchange. When the user has been
+    /// quiet for idleTimeBeforeSavingSessionSummaryInSeconds, the session so
+    /// far is summarized and saved to long-term memory.
+    private func scheduleSessionSummaryAfterIdle() {
+        saveSessionSummaryAfterIdleTask?.cancel()
+        saveSessionSummaryAfterIdleTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.idleTimeBeforeSavingSessionSummaryInSeconds * 1_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+
+            let exchangesToSave = self.exchangesNotYetSavedToLongTermMemory
+            self.exchangesNotYetSavedToLongTermMemory.removeAll()
+            await self.clickerMemoryClient.saveSessionSummary(conversationExchanges: exchangesToSave)
+        }
     }
 
     func refreshAllPermissions() {
@@ -580,6 +613,17 @@ final class CompanionManager: ObservableObject {
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
+            // Long-term memory: learn facts from what the user said, in the
+            // background so it never delays the answer.
+            let clickerMemoryClient = self.clickerMemoryClient
+            Task.detached {
+                await clickerMemoryClient.learnFactsFromUserTranscript(userTranscript: transcript)
+            }
+
+            // Fetch what Clicker remembers while the screenshot is being taken,
+            // so memory adds little or no waiting time.
+            async let longTermMemoryContext = clickerMemoryClient.fetchMemoryContextForSystemPrompt(userTranscript: transcript)
+
             do {
                 // Capture all connected screens so the AI has full context
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
@@ -599,9 +643,17 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                // Add the saved facts and any related past session to the system prompt
+                var systemPromptWithLongTermMemory = Self.companionVoiceResponseSystemPrompt
+                if let longTermMemoryContext = await longTermMemoryContext {
+                    systemPromptWithLongTermMemory += "\n\nlong-term memory (use it when it helps, never list it out loud):\n" + longTermMemoryContext
+                }
+
+                guard !Task.isCancelled else { return }
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: systemPromptWithLongTermMemory,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     onTextChunk: { _ in
@@ -683,6 +735,12 @@ final class CompanionManager: ObservableObject {
                 }
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
+
+                exchangesNotYetSavedToLongTermMemory.append((
+                    userTranscript: transcript,
+                    assistantResponse: spokenText
+                ))
+                scheduleSessionSummaryAfterIdle()
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
