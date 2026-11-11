@@ -255,8 +255,10 @@ nonisolated enum ClickyTurnMetricsLog {
         return appendLine(jsonLine, to: logFileURL)
     }
 
+    /// Not private so the dictation metrics log (`ClickyDictationMetricsLog`) reuses the same
+    /// owner-only file creation and newest-500-lines rotation for its own file.
     @discardableResult
-    private static func appendLine(_ jsonLine: String, to logFileURL: URL) -> Bool {
+    static func appendLine(_ jsonLine: String, to logFileURL: URL) -> Bool {
         do {
             try FileManager.default.createDirectory(
                 at: logFileURL.deletingLastPathComponent(),

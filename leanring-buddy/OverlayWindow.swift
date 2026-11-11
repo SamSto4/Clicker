@@ -181,6 +181,54 @@ struct BlueCursorView: View {
         "found it!"
     ]
 
+    // MARK: - Dictation Feedback
+
+    /// The label (or notice) shown next to the cursor for dictation. Nil when nothing is shown.
+    private var dictationLabelText: String? {
+        switch companionManager.dictationOverlayState {
+        case .hidden, .working:
+            return nil
+        case .listening:
+            return "dictating"
+        case .listeningHandsFree:
+            return "dictating · hands-free"
+        case .notice(let noticeText):
+            return noticeText
+        }
+    }
+
+    private var isShowingDictationNotice: Bool {
+        if case .notice = companionManager.dictationOverlayState {
+            return true
+        }
+        return false
+    }
+
+    /// Dictating gets its own tint on the waveform and spinner so it is never mistaken for asking.
+    private var cursorFeedbackColor: Color {
+        switch companionManager.dictationOverlayState {
+        case .listening, .listeningHandsFree, .working:
+            return DS.Colors.overlayDictationAccent
+        case .hidden, .notice:
+            return DS.Colors.overlayCursorBlue
+        }
+    }
+
+    /// The label sits in a container this wide, anchored to the cursor, so it can be positioned
+    /// without measuring the text. Near the right screen edge it flips to the cursor's left.
+    private let dictationLabelContainerWidth: CGFloat = 360
+
+    private var isDictationLabelPlacedLeftOfCursor: Bool {
+        cursorPosition.x > screenFrame.width - dictationLabelContainerWidth
+    }
+
+    private var dictationLabelCenterX: CGFloat {
+        let gapBetweenCursorAndLabel: CGFloat = 14
+        return isDictationLabelPlacedLeftOfCursor
+            ? cursorPosition.x - gapBetweenCursorAndLabel - dictationLabelContainerWidth / 2
+            : cursorPosition.x + gapBetweenCursorAndLabel + dictationLabelContainerWidth / 2
+    }
+
     var body: some View {
         ZStack {
             // Nearly transparent background (helps with compositing)
@@ -322,19 +370,36 @@ struct BlueCursorView: View {
                     value: triangleRotationDegrees
                 )
 
-            // Blue waveform — replaces the triangle while listening
-            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
+            // Blue waveform — replaces the triangle while listening (green while dictating)
+            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel, barColor: cursorFeedbackColor)
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
             // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
-            BlueCursorSpinnerView()
+            BlueCursorSpinnerView(spinnerColor: cursorFeedbackColor)
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
+
+            // Dictation label or notice — "dictating", "dictating · hands-free", or a short notice
+            // such as "copied. press command v to paste."
+            if isCursorOnThisScreen, let dictationLabelText = dictationLabelText {
+                DictationLabelView(
+                    labelText: dictationLabelText,
+                    isNotice: isShowingDictationNotice,
+                    isPlacedLeftOfCursor: isDictationLabelPlacedLeftOfCursor
+                )
+                .frame(
+                    width: dictationLabelContainerWidth,
+                    alignment: isDictationLabelPlacedLeftOfCursor ? .trailing : .leading
+                )
+                .position(x: dictationLabelCenterX, y: cursorPosition.y + 24)
+                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
+                .allowsHitTesting(false)
+            }
 
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
@@ -708,6 +773,7 @@ struct BlueCursorView: View {
 /// the user is holding the push-to-talk shortcut and speaking.
 private struct BlueCursorWaveformView: View {
     let audioPowerLevel: CGFloat
+    var barColor: Color = DS.Colors.overlayCursorBlue
 
     private let barCount = 5
     private let listeningBarProfile: [CGFloat] = [0.4, 0.7, 1.0, 0.7, 0.4]
@@ -717,7 +783,7 @@ private struct BlueCursorWaveformView: View {
             HStack(alignment: .center, spacing: 2) {
                 ForEach(0..<barCount, id: \.self) { barIndex in
                     RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(DS.Colors.overlayCursorBlue)
+                        .fill(barColor)
                         .frame(
                             width: 2,
                             height: barHeight(
@@ -727,7 +793,7 @@ private struct BlueCursorWaveformView: View {
                         )
                 }
             }
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
+            .shadow(color: barColor.opacity(0.6), radius: 6, x: 0, y: 0)
             .animation(.linear(duration: 0.08), value: audioPowerLevel)
         }
     }
@@ -742,11 +808,42 @@ private struct BlueCursorWaveformView: View {
     }
 }
 
+// MARK: - Dictation Label
+
+/// The small pill next to the cursor while dictating ("dictating", "dictating · hands-free") and
+/// for the short notice after a clipboard fallback. Not interactive, so it shows no hover state.
+private struct DictationLabelView: View {
+    let labelText: String
+    let isNotice: Bool
+    let isPlacedLeftOfCursor: Bool
+
+    var body: some View {
+        Text(labelText)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundColor(.white)
+            .multilineTextAlignment(isPlacedLeftOfCursor ? .trailing : .leading)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isNotice ? DS.Colors.overlayCursorBlue : DS.Colors.overlayDictationAccent)
+                    .shadow(
+                        color: (isNotice ? DS.Colors.overlayCursorBlue : DS.Colors.overlayDictationAccent).opacity(0.5),
+                        radius: 6, x: 0, y: 0
+                    )
+            )
+            .frame(maxWidth: 340, alignment: isPlacedLeftOfCursor ? .trailing : .leading)
+    }
+}
+
 // MARK: - Blue Cursor Spinner
 
 /// A small blue spinning indicator that replaces the triangle cursor
 /// while the AI is processing a voice input.
 private struct BlueCursorSpinnerView: View {
+    var spinnerColor: Color = DS.Colors.overlayCursorBlue
     @State private var isSpinning = false
 
     var body: some View {
@@ -755,8 +852,8 @@ private struct BlueCursorSpinnerView: View {
             .stroke(
                 AngularGradient(
                     colors: [
-                        DS.Colors.overlayCursorBlue.opacity(0.0),
-                        DS.Colors.overlayCursorBlue
+                        spinnerColor.opacity(0.0),
+                        spinnerColor
                     ],
                     center: .center
                 ),
@@ -764,7 +861,7 @@ private struct BlueCursorSpinnerView: View {
             )
             .frame(width: 14, height: 14)
             .rotationEffect(.degrees(isSpinning ? 360 : 0))
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
+            .shadow(color: spinnerColor.opacity(0.6), radius: 6, x: 0, y: 0)
             .onAppear {
                 withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
                     isSpinning = true

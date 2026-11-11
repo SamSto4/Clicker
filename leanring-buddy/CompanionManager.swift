@@ -115,6 +115,9 @@ final class CompanionManager: ObservableObject {
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var escapeKeyCancellable: AnyCancellable?
+    private var dictationChordActionCancellable: AnyCancellable?
+    private var dictationPhaseCancellable: AnyCancellable?
+    private var dictationOverlayStateCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
@@ -132,6 +135,55 @@ final class CompanionManager: ObservableObject {
     /// Whether the blue cursor overlay is currently visible on screen.
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
+
+    // MARK: - Dictation (hold fn + option, speak, release: the words are pasted where the user was typing)
+
+    /// What the cursor overlay shows for dictation (the listening label, hands-free label, a short
+    /// notice). Mirrors `dictationController.overlayState` so the overlay views, which watch this
+    /// object, redraw when it changes.
+    @Published private(set) var dictationOverlayState: ClickyDictationOverlayState = .hidden
+
+    /// The "dictation" switch in the panel. On by default. Persisted to UserDefaults.
+    @Published var isDictationEnabled: Bool = UserDefaults.standard.object(forKey: "isDictationEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isDictationEnabled")
+
+    func setDictationEnabled(_ enabled: Bool) {
+        isDictationEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isDictationEnabled")
+        dictationController.isDictationEnabled = enabled
+        // Switching it off in the middle of a dictation ends that dictation too.
+        if !enabled {
+            dictationController.cancelEverythingWithoutMetrics()
+        }
+    }
+
+    /// Runs the dictation itself. It shares the microphone with ask-Clicky through
+    /// `buddyDictationManager`, and the two never run at the same time: this controller refuses to
+    /// start while the ask shortcut has the microphone, and `handleShortcutTransition` ignores the
+    /// ask shortcut while a dictation is going on.
+    private lazy var dictationController: ClickyDictationController = {
+        ClickyDictationController(
+            dictationManager: buddyDictationManager,
+            cleanupClient: ClickyDictationCleanupClient(),
+            isAnotherFeatureUsingTheMicrophone: { [weak self] in
+                guard let self else { return false }
+                return self.globalPushToTalkShortcutMonitor.isShortcutCurrentlyPressed
+                    || (self.buddyDictationManager.isDictationInProgress && self.dictationController.phase == .idle)
+            },
+            prepareApplicationForDictationStart: { [weak self] in
+                self?.prepareApplicationForDictationStart()
+            },
+            resetShortcutRecogniserAfterAppEndedDictation: { [weak self] in
+                self?.globalPushToTalkShortcutMonitor.resetDictationChordAfterDictationEndedByTheApp()
+            }
+        )
+    }()
+
+    /// True when the ask shortcut was pressed while a dictation was active and so was ignored.
+    /// Its release must then be ignored too: handling it would reset the dictation's microphone
+    /// start (see `BuddyDictationManager.stopPushToTalk`).
+    private var askShortcutPressWasIgnoredBecauseDictationIsActive = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-5-5"
@@ -193,6 +245,7 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        bindDictation()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -304,6 +357,7 @@ final class CompanionManager: ObservableObject {
 
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
+        dictationController.cancelEverythingWithoutMetrics()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
@@ -313,6 +367,9 @@ final class CompanionManager: ObservableObject {
         currentSpeechPrefetch?.cancel()
         shortcutTransitionCancellable?.cancel()
         escapeKeyCancellable?.cancel()
+        dictationChordActionCancellable?.cancel()
+        dictationPhaseCancellable?.cancel()
+        dictationOverlayStateCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
@@ -476,6 +533,9 @@ final class CompanionManager: ObservableObject {
                 // Don't override .responding — the AI response pipeline
                 // manages that state directly until streaming finishes.
                 guard self.voiceState != .responding else { return }
+                // While a dictation is going on it owns the cursor's state (see
+                // `applyDictationPhaseToVoiceState`); this sink only knows about ask-Clicky.
+                guard self.dictationController.phase == .idle else { return }
 
                 if isFinalizing {
                     self.voiceState = .processing
@@ -514,11 +574,94 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func bindDictation() {
+        dictationController.isDictationEnabled = isDictationEnabled
+
+        dictationChordActionCancellable = globalPushToTalkShortcutMonitor
+            .dictationChordActionPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] chordAction in
+                self?.handleDictationChordAction(chordAction)
+            }
+
+        dictationPhaseCancellable = dictationController.$phase
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] dictationPhase in
+                self?.applyDictationPhaseToVoiceState(dictationPhase)
+            }
+
+        dictationOverlayStateCancellable = dictationController.$overlayState
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] overlayState in
+                guard let self else { return }
+                self.dictationOverlayState = overlayState
+                // In transient cursor mode the overlay fades away once the dictation (and its
+                // notice, if any) is over.
+                if overlayState == .hidden && self.dictationController.phase == .idle {
+                    self.scheduleTransientHideIfNeeded()
+                }
+            }
+    }
+
+    private func handleDictationChordAction(_ chordAction: ClickyDictationChordAction) {
+        // Like push-to-talk, dictation is not registered while the onboarding video plays.
+        if case .startCapturing = chordAction, showOnboardingVideo {
+            globalPushToTalkShortcutMonitor.resetDictationChordAfterDictationEndedByTheApp()
+            return
+        }
+        dictationController.handleChordAction(chordAction)
+    }
+
+    /// While dictating, the blue cursor shows what ask-Clicky shows while listening and while
+    /// working (the waveform, then the spinner), tinted differently and with a label.
+    private func applyDictationPhaseToVoiceState(_ dictationPhase: ClickyDictationPhase) {
+        switch dictationPhase {
+        case .holding, .handsFreeLocked:
+            voiceState = .listening
+        case .finishing:
+            voiceState = .processing
+        case .idle:
+            if voiceState != .responding {
+                voiceState = .idle
+            }
+        }
+    }
+
+    /// The same first steps as pressing the ask shortcut: dismiss the panel, stop any spoken
+    /// answer, and bring the cursor back for the interaction if "Show Clicky" is off.
+    private func prepareApplicationForDictationStart() {
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        if !isClickyCursorEnabled && !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        clearDetectedElementLocation()
+    }
+
     /// Escape stops Clicky while it is working out or saying an answer: it ends the audio,
     /// cancels the response task and the early speech fetch, and returns to idle. It does nothing
     /// when Clicky is idle or listening, so Escape keeps working normally everywhere else. The
     /// key itself is never swallowed (the event tap is listen-only).
     private func handleEscapeKeyPressed() {
+        // A dictation in any step (listening, hands-free, cleaning up, pasting) is cancelled first
+        // and nothing is inserted. Escape is used up by it.
+        if dictationController.cancelBecauseEscapeWasPressed() {
+            print("⎋ Clicky: Escape cancelled the dictation")
+            return
+        }
+
         // While the user is holding the keys and talking there is nothing to stop yet.
         guard !buddyDictationManager.isActivelyRecordingAudio, !buddyDictationManager.isPreparingToRecord else {
             return
@@ -588,7 +731,17 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            // Asking and dictating never run together: while a dictation is active the ask shortcut
+            // does nothing, and its release is skipped as well.
+            guard dictationController.phase == .idle else {
+                askShortcutPressWasIgnoredBecauseDictationIsActive = true
+                return
+            }
             guard !buddyDictationManager.isDictationInProgress else { return }
+            // A normal press: forget any ignored press whose release was never seen (for example
+            // because the event tap was restarted while the keys were held). Otherwise that stale
+            // flag would swallow the release of this press and leave the microphone open.
+            askShortcutPressWasIgnoredBecauseDictationIsActive = false
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
 
@@ -643,6 +796,10 @@ final class CompanionManager: ObservableObject {
                 )
             }
         case .released:
+            if askShortcutPressWasIgnoredBecauseDictationIsActive {
+                askShortcutPressWasIgnoredBecauseDictationIsActive = false
+                return
+            }
             // Cancel the pending start task in case the user released the shortcut
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
@@ -1075,6 +1232,13 @@ final class CompanionManager: ObservableObject {
             // Wait for pointing animation to finish (location is cleared
             // when the buddy flies back to the cursor)
             while detectedElementScreenLocation != nil {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+
+            // Wait for a dictation (and its notice, such as "copied. press command v to paste.")
+            // to be over, so the notice is not faded away before it can be read.
+            while dictationOverlayState != .hidden {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }

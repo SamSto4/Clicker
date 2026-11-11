@@ -31,6 +31,12 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                dictationRow
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -639,6 +645,46 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    // MARK: - Dictation
+
+    /// The on/off switch for dictation (hold fn + option, speak, release: the words are pasted
+    /// where you were typing). Asking Clicky with control + option is unaffected by it.
+    private var dictationRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "text.cursor")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Dictation")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Text("hold fn + option")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+
+            Spacer()
+
+            // A switch is a clickable control, so it gets the pointing-hand cursor on hover like
+            // every button in the panel. The native switch already animates when toggled.
+            Toggle("", isOn: Binding(
+                get: { companionManager.isDictationEnabled },
+                set: { companionManager.setDictationEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+            .pointerCursor()
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: - DM Farza Button

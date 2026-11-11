@@ -143,6 +143,10 @@ enum DS {
         /// (screen overlay vs in-app UI).
         static let overlayCursorBlue = Color(hex: "#3380FF")
 
+        /// The tint of the waveform, spinner and label while the user is dictating into a text
+        /// field. Green, so dictating is never mistaken for asking Clicky (which is blue).
+        static let overlayDictationAccent = Color(hex: "#2FCB9A")
+
         // ── Floating Button Gradient ─────────────────────────────────
 
         /// The floating session button gradient colors (unchanged from original —
