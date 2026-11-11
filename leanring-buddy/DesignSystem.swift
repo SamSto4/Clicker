@@ -168,6 +168,27 @@ enum DS {
         /// The words on a sticky note: a dark warm brown, easy to read on the yellow paper.
         static let overlayDrawingStickyNoteText = Color(hex: "#3A2E0A")
 
+        /// The light edge around the pen tip that leads each stroke while Clicky draws, so the
+        /// ink-coloured tip can be told apart from the line it has just drawn.
+        static let overlayDrawingPenEdge = Color(hex: "#FFF6EF")
+
+        // ── Status Pill ──────────────────────────────────────────────
+
+        /// The status pill at the top of the screen on a display without a notch: almost black,
+        /// used slightly see-through (see `DS.StatusPill.backgroundOpacity`).
+        static let overlayStatusPillBackground = Color(hex: "#0E1010")
+
+        /// The status pill under a notch: pure black, the colour of the notch itself, so the pill
+        /// reads as a piece of the notch hanging down.
+        static let overlayStatusPillNotchBackground = Color(hex: "#000000")
+
+        /// A faint edge that keeps the dark pill visible on a dark page. Not used under a notch,
+        /// where an edge would show the seam between the notch and the pill.
+        static let overlayStatusPillBorder = Color(hex: "#343837")
+
+        /// The word in the status pill: the panel's primary text colour, light on the dark pill.
+        static let overlayStatusPillText = Color(hex: "#ECEEED")
+
         // ── Floating Button Gradient ─────────────────────────────────
 
         /// The floating session button gradient colors (unchanged from original —
@@ -233,6 +254,62 @@ enum DS {
         static let extraLarge: CGFloat = 12
         /// Pill-shaped buttons (the continue button).
         static let pill: CGFloat = .infinity
+    }
+
+    // MARK: - Status Pill (the small state pill at the top of the screen)
+
+    enum StatusPill {
+        static let heightInPoints: CGFloat = 26
+        static let horizontalPaddingInPoints: CGFloat = 12
+        /// The room kept for the live indicator (bars, dots or wave) to the left of the word.
+        static let indicatorWidthInPoints: CGFloat = 22
+        static let indicatorHeightInPoints: CGFloat = 16
+        static let indicatorToTextGapInPoints: CGFloat = 7
+        /// A long notice is cut off with an ellipsis at this width instead of covering the menu bar.
+        static let maximumWidthInPoints: CGFloat = 440
+        /// The space between the menu bar and the pill on a display without a notch.
+        static let gapBelowMenuBarInPoints: CGFloat = 6
+        /// Under a notch the pill starts this far inside the notch, so no line of the page shows
+        /// between the two.
+        static let notchOverlapInPoints: CGFloat = 1
+        static let screenEdgeMarginInPoints: CGFloat = 8
+        /// The rounding of the two lower corners of a pill that hangs from a notch.
+        static let notchCornerRadiusInPoints: CGFloat = 12
+        static let borderWidthInPoints: CGFloat = 1
+        static let backgroundOpacity: CGFloat = 0.94
+        static let textFontSizeInPoints: CGFloat = 12
+
+        /// The pill fades in and out this fast: quick enough to feel instant, slow enough not to pop.
+        static let fadeSeconds: Double = 0.15
+
+        // Listening bars: five thin bars whose height follows the microphone level.
+        static let barCount = 5
+        static let barWidthInPoints: CGFloat = 2.5
+        static let barSpacingInPoints: CGFloat = 2
+        static let barMinimumHeightInPoints: CGFloat = 4
+        static let barMaximumHeightInPoints: CGFloat = 15
+        /// The bars breathe a little even in silence, so the pill never looks frozen.
+        static let barIdlePulseSmallestScale: CGFloat = 0.82
+        static let barIdlePulseLargestScale: CGFloat = 1.12
+        static let barIdlePulseSeconds: Double = 0.45
+        static let barIdlePulseStaggerSeconds: Double = 0.09
+        /// How fast a bar moves to a new height when the microphone level changes.
+        static let barLevelChangeSeconds: Double = 0.09
+
+        // Thinking dots: three dots that light up one after the other.
+        static let dotCount = 3
+        static let dotDiameterInPoints: CGFloat = 5
+        static let dotSpacingInPoints: CGFloat = 3.5
+        static let dotDimmestOpacity: Float = 0.28
+        static let dotSmallestScale: CGFloat = 0.78
+        static let dotPulseCycleSeconds: Double = 0.9
+        static let dotPulseStaggerSeconds: Double = 0.16
+
+        // Speaking wave: one smooth wave line that keeps travelling to the left.
+        static let waveLineWidthInPoints: CGFloat = 2
+        static let waveHeightInPoints: CGFloat = 9
+        static let waveLengthInPoints: CGFloat = 11
+        static let waveTravelSecondsPerWaveLength: Double = 0.55
     }
 
     // MARK: - Animation Durations

@@ -3,8 +3,8 @@
 //  leanring-buddy
 //
 //  Turns one drawing mark into Core Animation layers: wobbly ink strokes that are revealed along
-//  their length, label pills, and sticky note cards. All movement is Core Animation; nothing here
-//  is redrawn per frame by SwiftUI.
+//  their length with a small pen tip leading them, label pills, and sticky note cards in a
+//  handwriting typeface. All movement is Core Animation; nothing here is redrawn per frame by SwiftUI.
 //
 
 import AppKit
@@ -40,7 +40,13 @@ enum ClickyDrawingMarkLayerBuilder {
     /// Room left around a mark's strokes inside its layer, for the line width and the shadow.
     static let inkLayerPaddingInPoints: CGFloat = 10
 
-    static let labelFontSizeInPoints: CGFloat = 13
+    /// The pen tip that leads a stroke: filled with the stroke's own colour, with a thin light
+    /// edge so it stands out from the line it has just drawn. Its shape and lean are in
+    /// `ClickyDrawingPenPath`.
+    static let penTipEdgeLineWidthInPoints: CGFloat = 1.25
+    /// The pen lifts off the page (fades) this fast once the last stroke of its mark is done.
+    static let penTipFadeOutSeconds: Double = 0.15
+
     static let labelHorizontalPaddingInPoints: CGFloat = 10
     static let labelVerticalPaddingInPoints: CGFloat = 5
     static let labelBorderWidthInPoints: CGFloat = 1.5
@@ -48,7 +54,6 @@ enum ClickyDrawingMarkLayerBuilder {
 
     static let stickyNoteWidthInPoints: CGFloat = 200
     static let stickyNotePaddingInPoints: CGFloat = 12
-    static let stickyNoteFontSizeInPoints: CGFloat = 13
     static let stickyNoteCornerRadiusInPoints: CGFloat = 3
     /// A sticky note sits slightly crooked, as if stuck on by hand. The tilt is between minus and
     /// plus this many degrees, decided by the mark's seed so it never changes for a given note.
@@ -68,6 +73,75 @@ enum ClickyDrawingMarkLayerBuilder {
     private static let revealStartShareLayerKey = "clickyRevealStartShareOfPenTime"
     private static let revealEndShareLayerKey = "clickyRevealEndShareOfPenTime"
     private static let penRevealAnimationKey = "clickyPenReveal"
+    /// The mark layer remembers its pen tip layer and the legs of the pen's journey (each a path
+    /// with its start and end share of the pen time), so the appearance animation can move the
+    /// pen without building the strokes a second time.
+    private static let penTipLayerKey = "clickyPenTipLayer"
+    private static let penTipJourneyLegsKey = "clickyPenTipJourneyLegs"
+    private static let penTipMoveAnimationKey = "clickyPenTipMove"
+    private static let penTipVisibilityAnimationKey = "clickyPenTipVisibility"
+
+    /// One leg of the pen's journey, ready for Core Animation: the path is in the mark layer's
+    /// own coordinates. A class so it can be stored on a layer by key.
+    private final class PenTipJourneyLeg: NSObject {
+        let pathInMarkLayer: CGPath
+        let startShareOfPenTime: Double
+        let endShareOfPenTime: Double
+
+        init(pathInMarkLayer: CGPath, startShareOfPenTime: Double, endShareOfPenTime: Double) {
+            self.pathInMarkLayer = pathInMarkLayer
+            self.startShareOfPenTime = startShareOfPenTime
+            self.endShareOfPenTime = endShareOfPenTime
+        }
+    }
+
+    // MARK: - Handwriting typeface for drawn text
+
+    /// The typeface chosen for labels and sticky notes on this Mac, looked up once: the first
+    /// handwriting-style face that is installed (see `ClickyDrawingHandwritingFontChoice`), or
+    /// nil when there is none and the rounded system font is used. Nothing is bundled.
+    static let handwritingFontChoice: ClickyDrawingHandwritingFontChoice? = {
+        ClickyDrawingHandwritingFontChoice.firstAvailableChoice { fontFamilyName in
+            NSFontManager.shared.availableMembers(ofFontFamily: fontFamilyName)?.isEmpty == false
+        }
+    }()
+
+    /// The name of the typeface drawn text uses on this Mac, for the console and the reports.
+    static var drawnTextFontDescription: String {
+        handwritingFontChoice?.fontFamilyName ?? "rounded system font (no handwriting typeface installed)"
+    }
+
+    static var labelFont: NSFont {
+        drawnTextFont(
+            handwritingFontSizeInPoints: handwritingFontChoice?.labelFontSizeInPoints,
+            fallbackSystemFontWeight: .semibold
+        )
+    }
+
+    static var stickyNoteFont: NSFont {
+        drawnTextFont(
+            handwritingFontSizeInPoints: handwritingFontChoice?.stickyNoteFontSizeInPoints,
+            fallbackSystemFontWeight: .medium
+        )
+    }
+
+    private static func drawnTextFont(handwritingFontSizeInPoints: Double?, fallbackSystemFontWeight: NSFont.Weight) -> NSFont {
+        let fallbackFont = roundedSystemFont(
+            ofSize: CGFloat(ClickyDrawingHandwritingFontChoice.fallbackSystemFontSizeInPoints),
+            weight: fallbackSystemFontWeight
+        )
+        guard let handwritingFontChoice, let handwritingFontSizeInPoints else {
+            return fallbackFont
+        }
+        // Weight 5 is the font manager's "regular". A family that only ships a bold face (Bradley
+        // Hand) answers with that face, which is the one wanted: it stays readable at small sizes.
+        return NSFontManager.shared.font(
+            withFamily: handwritingFontChoice.fontFamilyName,
+            traits: [],
+            weight: 5,
+            size: CGFloat(handwritingFontSizeInPoints)
+        ) ?? fallbackFont
+    }
 
     // MARK: - Building
 
@@ -156,18 +230,9 @@ enum ClickyDrawingMarkLayerBuilder {
         }
 
         // The parts of a mark are drawn one after the other (an arrow's shaft, then its head).
-        // Each part gets a share of the pen time in proportion to its length.
-        let firstPassStrokes = handDrawnStrokes.filter { $0.passIndex == 0 }
-        let totalFirstPassLength = max(1, firstPassStrokes.reduce(0) { $0 + $1.lengthInPoints })
-        var partStartShareOfPenTimeByPartIndex: [Int: Double] = [:]
-        var partShareOfPenTimeByPartIndex: [Int: Double] = [:]
-        var shareOfPenTimeUsedSoFar = 0.0
-        for firstPassStroke in firstPassStrokes.sorted(by: { $0.partIndex < $1.partIndex }) {
-            let partShareOfPenTime = firstPassStroke.lengthInPoints / totalFirstPassLength
-            partStartShareOfPenTimeByPartIndex[firstPassStroke.partIndex] = shareOfPenTimeUsedSoFar
-            partShareOfPenTimeByPartIndex[firstPassStroke.partIndex] = partShareOfPenTime
-            shareOfPenTimeUsedSoFar += partShareOfPenTime
-        }
+        // Each part gets a share of the pen time in proportion to its length. The pen tip uses
+        // the same shares, so it stays on the end of the line being revealed.
+        let timeSharesByPartIndex = ClickyDrawingPenPath.timeSharesByPartIndex(forStrokes: handDrawnStrokes)
 
         for handDrawnStroke in handDrawnStrokes {
             let strokeLayer = CAShapeLayer()
@@ -192,18 +257,87 @@ enum ClickyDrawingMarkLayerBuilder {
                 strokeLayer.opacity = isSecondPass ? secondPassInkOpacity : firstPassInkOpacity
             }
 
-            let partStartShareOfPenTime = partStartShareOfPenTimeByPartIndex[handDrawnStroke.partIndex] ?? 0
-            let partShareOfPenTime = partShareOfPenTimeByPartIndex[handDrawnStroke.partIndex] ?? 1
-            let revealStartShareOfPenTime = partStartShareOfPenTime
+            let partTimeShares = timeSharesByPartIndex[handDrawnStroke.partIndex] ?? (startShareOfPenTime: 0, endShareOfPenTime: 1)
+            let partShareOfPenTime = partTimeShares.endShareOfPenTime - partTimeShares.startShareOfPenTime
+            let revealStartShareOfPenTime = partTimeShares.startShareOfPenTime
                 + (isSecondPass ? secondPassStartShareOfPenTime * partShareOfPenTime : 0)
-            let revealEndShareOfPenTime = partStartShareOfPenTime + partShareOfPenTime
+            let revealEndShareOfPenTime = partTimeShares.endShareOfPenTime
             strokeLayer.setValue(revealStartShareOfPenTime, forKey: revealStartShareLayerKey)
             strokeLayer.setValue(revealEndShareOfPenTime, forKey: revealEndShareLayerKey)
 
             markLayer.addSublayer(strokeLayer)
         }
 
+        addPenTip(
+            to: markLayer,
+            following: ClickyDrawingPenPath.parts(forStrokes: handDrawnStrokes),
+            markFrameFromTopLeft: markFrameFromTopLeft,
+            penTipFillColor: isHighlighterMark
+                ? NSColor(DS.Colors.overlayDrawingHighlighter).cgColor
+                : NSColor(DS.Colors.overlayDrawingInk).cgColor,
+            backingScaleFactor: backingScaleFactor
+        )
+
         return markLayer
+    }
+
+    /// Adds the pen tip that leads the strokes of a mark while they are revealed. It is one small
+    /// layer on top of the strokes, invisible until `animateAppearance` moves it along the legs
+    /// of its journey, and invisible again once the mark is drawn.
+    private static func addPenTip(
+        to markLayer: CALayer,
+        following penPathParts: [ClickyDrawingPenPathPart],
+        markFrameFromTopLeft: CGRect,
+        penTipFillColor: CGColor,
+        backingScaleFactor: CGFloat
+    ) {
+        let penTipJourneyLegs = penPathParts.map { penPathPart in
+            PenTipJourneyLeg(
+                // The very same smooth path the first pass of the stroke is drawn with, so the
+                // tip travels on the ink and not beside it.
+                pathInMarkLayer: smoothPath(through: penPathPart.points, insideMarkFrameFromTopLeft: markFrameFromTopLeft),
+                startShareOfPenTime: penPathPart.startShareOfPenTime,
+                endShareOfPenTime: penPathPart.endShareOfPenTime
+            )
+        }
+        guard let lastPenTipJourneyLeg = penTipJourneyLegs.last else {
+            return
+        }
+
+        // A plain layer of no size whose position is the point of the nib. The nib is drawn by a
+        // shape layer inside it. Keeping the shape one level down means the code that looks for a
+        // mark's stroke layers (the shape layers directly inside the mark layer) never mistakes
+        // the pen for a stroke.
+        let penTipLayer = CALayer()
+        penTipLayer.bounds = .zero
+        penTipLayer.position = lastPenTipJourneyLeg.pathInMarkLayer.currentPoint
+        // Hidden unless the appearance animation is showing it.
+        penTipLayer.opacity = 0
+
+        let nibOutlinePath = CGMutablePath()
+        for (outlinePointIndex, nibOutlinePoint) in ClickyDrawingPenPath.nibOutlinePoints().enumerated() {
+            // The outline is given with y growing downwards; a layer's y grows upwards.
+            let nibOutlinePointInLayer = CGPoint(x: CGFloat(nibOutlinePoint.x), y: -CGFloat(nibOutlinePoint.y))
+            if outlinePointIndex == 0 {
+                nibOutlinePath.move(to: nibOutlinePointInLayer)
+            } else {
+                nibOutlinePath.addLine(to: nibOutlinePointInLayer)
+            }
+        }
+        nibOutlinePath.closeSubpath()
+
+        let nibShapeLayer = CAShapeLayer()
+        nibShapeLayer.path = nibOutlinePath
+        nibShapeLayer.fillColor = penTipFillColor
+        nibShapeLayer.strokeColor = NSColor(DS.Colors.overlayDrawingPenEdge).cgColor
+        nibShapeLayer.lineWidth = penTipEdgeLineWidthInPoints
+        nibShapeLayer.lineJoin = .round
+        nibShapeLayer.contentsScale = backingScaleFactor
+        penTipLayer.addSublayer(nibShapeLayer)
+
+        markLayer.addSublayer(penTipLayer)
+        markLayer.setValue(penTipLayer, forKey: penTipLayerKey)
+        markLayer.setValue(penTipJourneyLegs, forKey: penTipJourneyLegsKey)
     }
 
     private static func makeLabelLayer(
@@ -213,7 +347,7 @@ enum ClickyDrawingMarkLayerBuilder {
         backingScaleFactor: CGFloat
     ) -> CALayer {
         let attributedLabelText = NSAttributedString(string: text, attributes: [
-            .font: roundedSystemFont(ofSize: labelFontSizeInPoints, weight: .semibold),
+            .font: labelFont,
             .foregroundColor: NSColor(DS.Colors.overlayDrawingLabelText),
         ])
         let measuredTextSize = attributedLabelText.size()
@@ -261,7 +395,7 @@ enum ClickyDrawingMarkLayerBuilder {
         backingScaleFactor: CGFloat
     ) -> CALayer {
         let attributedNoteText = NSAttributedString(string: text, attributes: [
-            .font: roundedSystemFont(ofSize: stickyNoteFontSizeInPoints, weight: .medium),
+            .font: stickyNoteFont,
             .foregroundColor: NSColor(DS.Colors.overlayDrawingStickyNoteText),
         ])
         let textWidth = stickyNoteWidthInPoints - 2 * stickyNotePaddingInPoints
@@ -350,6 +484,59 @@ enum ClickyDrawingMarkLayerBuilder {
             penRevealAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             strokeLayer.add(penRevealAnimation, forKey: penRevealAnimationKey)
         }
+
+        animatePenTip(of: markLayer, penDurationSeconds: penDurationSeconds)
+    }
+
+    /// Moves the pen tip along the legs of its journey in step with the strokes being revealed,
+    /// then lets it fade.
+    private static func animatePenTip(of markLayer: CALayer, penDurationSeconds: Double) {
+        guard let penTipLayer = markLayer.value(forKey: penTipLayerKey) as? CALayer,
+              let penTipJourneyLegs = markLayer.value(forKey: penTipJourneyLegsKey) as? [PenTipJourneyLeg],
+              !penTipJourneyLegs.isEmpty else {
+            return
+        }
+
+        // One movement per leg, each with the start time, duration and easing of the stroke
+        // reveal it follows. "Paced" moves the tip at an even speed along the path's length,
+        // which is how `strokeEnd` uncovers a stroke, so with the same easing the tip stays on
+        // the end of the line. The legs are grouped so they share one clock.
+        var legMoveAnimations: [CAAnimation] = []
+        var latestLegEndSeconds = 0.0
+        for penTipJourneyLeg in penTipJourneyLegs {
+            let legMoveAnimation = CAKeyframeAnimation(keyPath: "position")
+            legMoveAnimation.path = penTipJourneyLeg.pathInMarkLayer
+            legMoveAnimation.calculationMode = .paced
+            legMoveAnimation.beginTime = penTipJourneyLeg.startShareOfPenTime * penDurationSeconds
+            legMoveAnimation.duration = max(
+                0.05,
+                (penTipJourneyLeg.endShareOfPenTime - penTipJourneyLeg.startShareOfPenTime) * penDurationSeconds
+            )
+            legMoveAnimation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            // "forwards" keeps the tip at the end of a leg until the next leg takes over, so it
+            // never jumps back to its resting place for a frame in between.
+            legMoveAnimation.fillMode = .forwards
+            legMoveAnimations.append(legMoveAnimation)
+            latestLegEndSeconds = max(latestLegEndSeconds, legMoveAnimation.beginTime + legMoveAnimation.duration)
+        }
+
+        let secondsPenTipIsOnScreen = latestLegEndSeconds + penTipFadeOutSeconds
+        let animationStartTime = penTipLayer.convertTime(CACurrentMediaTime(), from: nil)
+
+        let penTipMoveAnimationGroup = CAAnimationGroup()
+        penTipMoveAnimationGroup.animations = legMoveAnimations
+        penTipMoveAnimationGroup.beginTime = animationStartTime
+        penTipMoveAnimationGroup.duration = secondsPenTipIsOnScreen
+        penTipLayer.add(penTipMoveAnimationGroup, forKey: penTipMoveAnimationKey)
+
+        // Fully visible while drawing, then faded out. The layer's own opacity is 0, so when the
+        // animation is over the pen stays hidden without any further work.
+        let penTipVisibilityAnimation = CAKeyframeAnimation(keyPath: "opacity")
+        penTipVisibilityAnimation.values = [1, 1, 0]
+        penTipVisibilityAnimation.keyTimes = [0, NSNumber(value: latestLegEndSeconds / secondsPenTipIsOnScreen), 1]
+        penTipVisibilityAnimation.beginTime = animationStartTime
+        penTipVisibilityAnimation.duration = secondsPenTipIsOnScreen
+        penTipLayer.add(penTipVisibilityAnimation, forKey: penTipVisibilityAnimationKey)
     }
 
     /// Fades a mark out and takes its layer off the screen when the fade is done.

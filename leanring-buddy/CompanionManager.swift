@@ -159,6 +159,114 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Status pill (the small state pill at the top of the screen)
+
+    /// Shows "listening", "thinking", "speaking" or "dictating" at the top centre of the screen
+    /// (hanging from the notch where there is one). It has its own small panel that never takes
+    /// focus; see `ClickyStatusPillController`.
+    let statusPillController = ClickyStatusPillController()
+
+    /// The "Status pill" switch in the panel. On by default. Persisted to UserDefaults.
+    @Published var isStatusPillEnabled: Bool = UserDefaults.standard.object(forKey: "isStatusPillEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isStatusPillEnabled")
+
+    func setStatusPillEnabled(_ enabled: Bool) {
+        isStatusPillEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isStatusPillEnabled")
+        // Switching it off hides a pill that is showing; switching it on shows one at once if
+        // Clicky is busy right now.
+        refreshStatusPill()
+    }
+
+    private var statusPillStateCancellable: AnyCancellable?
+    private var statusPillAudioPowerCancellable: AnyCancellable?
+    /// Waits for the spoken answer to end so the pill can stop saying "speaking". The audio
+    /// player publishes nothing when it finishes, so this asks it now and then, the same way
+    /// the response turn and the transient cursor already wait for speech to end.
+    private var statusPillSpeechEndWatchTask: Task<Void, Never>?
+
+    /// The pill has no state of its own. It is worked out again, from what the app already
+    /// tracks, every time one of those things changes.
+    private func bindStatusPill() {
+        statusPillStateCancellable = $voiceState
+            .combineLatest($dictationOverlayState, buddyDictationManager.$isPreparingToRecord)
+            // After the hop the properties themselves hold the new values, so
+            // `refreshStatusPill` can simply read them.
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _, _, _ in
+                self?.refreshStatusPill()
+            }
+
+        statusPillAudioPowerCancellable = buddyDictationManager.$currentAudioPowerLevel
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] audioPowerLevel in
+                self?.statusPillController.updateListeningAudioPowerLevel(audioPowerLevel)
+            }
+    }
+
+    private func refreshStatusPill() {
+        guard isStatusPillEnabled else {
+            statusPillController.hide()
+            return
+        }
+
+        let isSpeechAudioPlaying = elevenLabsTTSClient.isPlaying
+        let statusPillContent = ClickyStatusPillContent.content(
+            voiceActivity: statusPillVoiceActivity,
+            dictationActivity: statusPillDictationActivity,
+            isMicrophoneStartingUp: buddyDictationManager.isPreparingToRecord,
+            isSpeechAudioPlaying: isSpeechAudioPlaying
+        )
+
+        if let statusPillContent, let screenUnderCursor = Self.screenUnderCursor() {
+            statusPillController.show(statusPillContent, onScreen: screenUnderCursor)
+        } else {
+            statusPillController.hide()
+        }
+
+        if isSpeechAudioPlaying {
+            refreshStatusPillWhenSpeechEnds()
+        }
+    }
+
+    private func refreshStatusPillWhenSpeechEnds() {
+        guard statusPillSpeechEndWatchTask == nil else { return }
+        statusPillSpeechEndWatchTask = Task { @MainActor [weak self] in
+            while let self, self.elevenLabsTTSClient.isPlaying, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.statusPillSpeechEndWatchTask = nil
+            self.refreshStatusPill()
+        }
+    }
+
+    private var statusPillVoiceActivity: ClickyStatusPillVoiceActivity {
+        switch voiceState {
+        case .idle: return .idle
+        case .listening: return .listening
+        case .processing: return .processing
+        case .responding: return .responding
+        }
+    }
+
+    private var statusPillDictationActivity: ClickyStatusPillDictationActivity {
+        switch dictationOverlayState {
+        case .hidden: return .hidden
+        case .listening: return .listening
+        case .listeningHandsFree: return .listeningHandsFree
+        case .working: return .working
+        case .notice(let noticeText): return .notice(noticeText)
+        }
+    }
+
+    /// The screen the mouse cursor is on, which is where the user is looking.
+    private static func screenUnderCursor() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
     /// Runs the dictation itself. It shares the microphone with ask-Clicky through
     /// `buddyDictationManager`, and the two never run at the same time: this controller refuses to
     /// start while the ask shortcut has the microphone, and `handleShortcutTransition` ignores the
@@ -247,6 +355,7 @@ final class CompanionManager: ObservableObject {
         bindAudioPowerLevel()
         bindShortcutTransitions()
         bindDictation()
+        bindStatusPill()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -376,6 +485,10 @@ final class CompanionManager: ObservableObject {
         dictationChordActionCancellable?.cancel()
         dictationPhaseCancellable?.cancel()
         dictationOverlayStateCancellable?.cancel()
+        statusPillStateCancellable?.cancel()
+        statusPillAudioPowerCancellable?.cancel()
+        statusPillSpeechEndWatchTask?.cancel()
+        statusPillController.hide()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
@@ -419,8 +532,10 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Debug aid: when the app is launched with CLICKY_DRAW_SELF_TEST=1 it draws a few sample
-    /// marks on every screen a few seconds after launch, with no voice and no model call, so the
-    /// drawing surface can be checked without speaking. It does nothing in normal use.
+    /// marks (pen-drawn strokes, a label and a sticky note) on every screen a few seconds after
+    /// launch and shows the status pill saying "thinking", with no voice and no model call, so
+    /// the drawing surface, the handwriting text and the pill can be checked without speaking.
+    /// It does nothing in normal use.
     private func runDrawingSelfTestIfRequested() {
         guard ProcessInfo.processInfo.environment["CLICKY_DRAW_SELF_TEST"] == "1" else { return }
         Task { @MainActor in
@@ -430,7 +545,7 @@ final class CompanionManager: ObservableObject {
                 overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
             }
-            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [POINT:none]"
+            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [DRAW:sticky:880,180:self test: pen-drawn marks, a handwriting label and this sticky note] [POINT:none]"
             let parsedSampleReply = ClickyDrawTagParser.parse(sampleReplyText)
             let samplePlacements = NSScreen.screens.map { screen in
                 ClickyDrawingDisplayPlacement(
@@ -443,7 +558,24 @@ final class CompanionManager: ObservableObject {
                     )
                 )
             }
-            print("✏️ draw self test: screens=\(NSScreen.screens.count) commands=\(parsedSampleReply.commands.count) overlayVisible=\(isOverlayVisible) cursorEnabled=\(isClickyCursorEnabled)")
+            print("✏️ draw self test: screens=\(NSScreen.screens.count) commands=\(parsedSampleReply.commands.count) overlayVisible=\(isOverlayVisible) cursorEnabled=\(isClickyCursorEnabled) drawnTextFont=\(ClickyDrawingMarkLayerBuilder.drawnTextFontDescription)")
+
+            // The status pill in one state, on the main display (the one the proof picture is
+            // taken of), whatever the "Status pill" switch says. It is normally hidden from
+            // every capture, so for the proof picture alone it is made capturable.
+            let selfTestImagePathFromEnvironment = ProcessInfo.processInfo.environment["CLICKY_DRAW_SELF_TEST_IMAGE"]
+            if let mainDisplayScreen = NSScreen.screens.first {
+                statusPillController.setVisibleInScreenCapturesForSelfTest(selfTestImagePathFromEnvironment != nil)
+                statusPillController.show(
+                    ClickyStatusPillContent(
+                        word: ClickyStatusPillContent.thinkingWord,
+                        indicator: .thinkingDots,
+                        accent: .asking
+                    ),
+                    onScreen: mainDisplayScreen
+                )
+                print("✏️ draw self test: status pill shown saying \"\(ClickyStatusPillContent.thinkingWord)\" notch=\(mainDisplayScreen.safeAreaInsets.top > 0)")
+            }
             overlayWindowManager.drawingOverlayController.performDrawCommands(
                 parsedSampleReply.commands,
                 displayPlacementsInScreenshotOrder: samplePlacements,
@@ -452,7 +584,7 @@ final class CompanionManager: ObservableObject {
             )
 
             // Optional proof picture: only Clicky's own windows, saved where the launcher asked.
-            if let selfTestImagePath = ProcessInfo.processInfo.environment["CLICKY_DRAW_SELF_TEST_IMAGE"] {
+            if let selfTestImagePath = selfTestImagePathFromEnvironment {
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
                 do {
                     if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
@@ -464,7 +596,14 @@ final class CompanionManager: ObservableObject {
                 } catch {
                     print("✏️ draw self test: capture failed: \(error.localizedDescription)")
                 }
+            } else {
+                // No picture was asked for: leave the pill up long enough to be looked at.
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
             }
+
+            // The pill goes back to being hidden from captures and to showing Clicky's real state.
+            statusPillController.setVisibleInScreenCapturesForSelfTest(false)
+            refreshStatusPill()
         }
     }
 

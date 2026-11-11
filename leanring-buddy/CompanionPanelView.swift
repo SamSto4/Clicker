@@ -37,6 +37,12 @@ struct CompanionPanelView: View {
 
                 dictationRow
                     .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                statusPillRow
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -677,6 +683,47 @@ struct CompanionPanelView: View {
             Toggle("", isOn: Binding(
                 get: { companionManager.isDictationEnabled },
                 set: { companionManager.setDictationEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+            .pointerCursor()
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Status Pill
+
+    /// The on/off switch for the status pill: the small pill at the top of the screen that says
+    /// what Clicky is doing ("listening", "thinking", "speaking", "dictating").
+    private var statusPillRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "capsule")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Status pill")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Text("shows what clicky is doing")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+
+            Spacer()
+
+            // Like the dictation switch: a clickable control, so it gets the pointing-hand cursor
+            // on hover. The native switch gives its own visual feedback when toggled; the row
+            // itself is not clickable and so shows no hover state.
+            Toggle("", isOn: Binding(
+                get: { companionManager.isStatusPillEnabled },
+                set: { companionManager.setStatusPillEnabled($0) }
             ))
             .toggleStyle(.switch)
             .labelsHidden()
