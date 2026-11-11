@@ -280,10 +280,27 @@ final class ClickyDrawingOverlayController {
                 penTravelLengthInPoints: ClickyHandDrawnPathGenerator.penTravelLengthInPoints(forShapeInDisplayPoints: shapeInDisplayPoints)
             ))
         }
+        // Numbers only: how many marks were asked for, how many found a screen to go on, and how
+        // many screens have a drawing surface. A drawing that never appears shows up here.
+        print("✏️ draw: asked=\(parsedDrawCommands.count) placed=\(placedDrawCommands.count) surfaces=\(drawingSurfaceViews.count) audioSeconds=\(speechAudioDurationSeconds.map { String(format: "%.1f", $0) } ?? "none")")
         guard !placedDrawCommands.isEmpty else { return }
 
+        // A mark is drawn as its sentence BEGINS, not as it ends. Drawing at the end made the
+        // first mark wait for a whole spoken sentence, which felt slow. A tag sits right after its
+        // sentence, so the sentence began where the previous group of tags sat (or at the start of
+        // the reply for the first group).
+        let spokenFractionsBeforeTags = placedDrawCommands.map(\.parsedDrawCommand.spokenFractionBeforeTag)
+        let distinctSpokenFractionsInOrder = Array(Set(spokenFractionsBeforeTags)).sorted()
+        let spokenFractionsWhereSentencesBegin = spokenFractionsBeforeTags.map { spokenFractionBeforeTag -> Double in
+            guard let positionAmongDistinctFractions = distinctSpokenFractionsInOrder.firstIndex(of: spokenFractionBeforeTag),
+                  positionAmongDistinctFractions > 0 else {
+                return 0
+            }
+            return distinctSpokenFractionsInOrder[positionAmongDistinctFractions - 1]
+        }
+
         let scheduledTimes = ClickyDrawingSchedule.scheduledTimes(
-            forSpokenFractionsBeforeTags: placedDrawCommands.map(\.parsedDrawCommand.spokenFractionBeforeTag),
+            forSpokenFractionsBeforeTags: spokenFractionsWhereSentencesBegin,
             penTravelLengthsInPoints: placedDrawCommands.map(\.penTravelLengthInPoints),
             speechAudioDurationSeconds: speechAudioDurationSeconds
         )
@@ -434,6 +451,7 @@ final class ClickyDrawingOverlayController {
         guard displayFramesByMarkNumber[mark.markNumber] != nil,
               let drawingSurfaceView = drawingSurfaceView(forDisplayFrame: displayPlacement.displayFrame),
               let surfaceLayer = drawingSurfaceView.layer else {
+            print("✏️ draw: mark m\(mark.markNumber) not drawn (stillWanted=\(displayFramesByMarkNumber[mark.markNumber] != nil) surfaces=\(drawingSurfaceViews.count))")
             return
         }
 
@@ -452,6 +470,8 @@ final class ClickyDrawingOverlayController {
         surfaceLayer.addSublayer(markLayer)
         CATransaction.commit()
         markLayersByMarkNumber[mark.markNumber] = markLayer
+        let surfaceWindow = drawingSurfaceView.window
+        print("✏️ draw: mark m\(mark.markNumber) drawn layerFrame=\(markLayer.frame.integral) surfaceFrame=\(drawingSurfaceView.frame.integral) inWindow=\(surfaceWindow != nil) windowVisible=\(surfaceWindow?.isVisible ?? false) windowAlpha=\(surfaceWindow?.alphaValue ?? -1) hidden=\(drawingSurfaceView.isHiddenOrHasHiddenAncestor)")
 
         ClickyDrawingMarkLayerBuilder.animateAppearance(of: markLayer, penDurationSeconds: penDurationSeconds)
     }

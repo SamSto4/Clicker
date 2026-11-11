@@ -250,7 +250,12 @@ final class CompanionManager: ObservableObject {
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+        // Keep a copy of the notes and the profile in memory, so a turn's prompt is built without
+        // waiting for ~/Documents (which sometimes took several seconds to answer).
+        ClickyMemoryFileSnapshotCache.shared.enable(forDirectory: ClickyNoteStore.defaultNotesDirectoryURL)
+        refreshNotesAndProfileCopyInBackground()
         warmUpPromptAssemblyInBackground()
+        runDrawingSelfTestIfRequested()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -394,6 +399,72 @@ final class CompanionManager: ObservableObject {
             let exchangesToSave = self.exchangesNotYetSavedToLongTermMemory
             self.exchangesNotYetSavedToLongTermMemory.removeAll()
             await self.clickerMemoryClient.saveSessionSummary(conversationExchanges: exchangesToSave)
+        }
+    }
+
+    /// Re-reads the notes folder off the main thread. Called at launch and each time the
+    /// push-to-talk keys go down, so files edited by hand are picked up by the time the user has
+    /// finished speaking. If the disk is slow, the turn simply uses the previous copy.
+    private func refreshNotesAndProfileCopyInBackground() {
+        let notesDirectoryURL = ClickyNoteStore.defaultNotesDirectoryURL
+        Task.detached(priority: .utility) {
+            let refreshStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+            ClickyMemoryFileSnapshotCache.shared.refresh(directory: notesDirectoryURL)
+            let refreshMilliseconds = ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: refreshStartedUptimeSeconds)
+            // A number only. Printed when slow, so a stalling disk can be seen in the console.
+            if refreshMilliseconds >= 200 {
+                print("⏱ notes and profile copy refreshed in \(refreshMilliseconds)ms")
+            }
+        }
+    }
+
+    /// Debug aid: when the app is launched with CLICKY_DRAW_SELF_TEST=1 it draws a few sample
+    /// marks on every screen a few seconds after launch, with no voice and no model call, so the
+    /// drawing surface can be checked without speaking. It does nothing in normal use.
+    private func runDrawingSelfTestIfRequested() {
+        guard ProcessInfo.processInfo.environment["CLICKY_DRAW_SELF_TEST"] == "1" else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if !isOverlayVisible {
+                overlayWindowManager.hasShownOverlayBefore = true
+                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                isOverlayVisible = true
+            }
+            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [POINT:none]"
+            let parsedSampleReply = ClickyDrawTagParser.parse(sampleReplyText)
+            let samplePlacements = NSScreen.screens.map { screen in
+                ClickyDrawingDisplayPlacement(
+                    displayFrame: screen.frame,
+                    screenshotToDisplayMapping: ClickyScreenshotToDisplayMapping(
+                        screenshotWidthInPixels: 1280,
+                        screenshotHeightInPixels: Double(1280 * screen.frame.height / screen.frame.width),
+                        displayWidthInPoints: Double(screen.frame.width),
+                        displayHeightInPoints: Double(screen.frame.height)
+                    )
+                )
+            }
+            print("✏️ draw self test: screens=\(NSScreen.screens.count) commands=\(parsedSampleReply.commands.count) overlayVisible=\(isOverlayVisible) cursorEnabled=\(isClickyCursorEnabled)")
+            overlayWindowManager.drawingOverlayController.performDrawCommands(
+                parsedSampleReply.commands,
+                displayPlacementsInScreenshotOrder: samplePlacements,
+                cursorScreenshotIndex: 0,
+                speechAudioDurationSeconds: nil
+            )
+
+            // Optional proof picture: only Clicky's own windows, saved where the launcher asked.
+            if let selfTestImagePath = ProcessInfo.processInfo.environment["CLICKY_DRAW_SELF_TEST_IMAGE"] {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                do {
+                    if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
+                        try ownWindowsPNGData.write(to: URL(fileURLWithPath: selfTestImagePath))
+                        print("✏️ draw self test: saved picture of Clicky's own windows (\(ownWindowsPNGData.count) bytes)")
+                    } else {
+                        print("✏️ draw self test: no display to capture")
+                    }
+                } catch {
+                    print("✏️ draw self test: capture failed: \(error.localizedDescription)")
+                }
+            }
         }
     }
 
@@ -797,6 +868,7 @@ final class CompanionManager: ObservableObject {
             }
 
             ClickyAnalytics.trackPushToTalkStarted()
+            refreshNotesAndProfileCopyInBackground()
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
@@ -989,6 +1061,7 @@ final class CompanionManager: ObservableObject {
                 // The marks Clicky drew that are still on the screen. Clicky's windows are left
                 // out of the screenshots, so this list is the only way Claude knows about them.
                 // It is empty on an ordinary turn, which then gets no extra prompt text.
+                let storesCreatedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                 let drawingMarksOnScreen = drawingOverlayController.drawingMarksForPrompt(
                     displayFramesInScreenshotOrder: screenCaptures.map(\.displayFrame)
                 )
@@ -1008,6 +1081,9 @@ final class CompanionManager: ObservableObject {
                 turnMetrics.promptAssemblyMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
                     sinceUptimeSeconds: promptAssemblyStartedUptimeSeconds
                 )
+                // Numbers only: where a slow assembly spends its time (creating the stores, or
+                // reading the prompt files, notes and profile).
+                print("⏱ assembly parts: stores \(ClickyTurnMetrics.millisecondsBetween(startUptimeSeconds: promptAssemblyStartedUptimeSeconds, endUptimeSeconds: storesCreatedUptimeSeconds))ms, marks+prepare \(ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: storesCreatedUptimeSeconds))ms")
                 turnMetrics.skillCount = preparedPrompt.selectedSkillNames.count
                 turnMetrics.noteCount = preparedPrompt.includedNotes.count
 
@@ -1030,10 +1106,6 @@ final class CompanionManager: ObservableObject {
                 // so the API can reuse the base prompt instead of processing it again each turn.
                 turnStepInProgress = .claudeRequest
                 let elevenLabsTTSClientForSpeechPrefetch = elevenLabsTTSClient
-                // A draw reply has tags between its sentences, so the words before the first tag
-                // are not the whole spoken answer and audio fetched for them would always be
-                // thrown away. The early fetch is skipped for such a turn.
-                let drawSkillIsSelectedForThisTurn = preparedPrompt.selectedSkillNames.contains(ClickySkillLibrary.drawSkillName)
                 let claudeRequestStartedUptimeSecondsForThisCall = ClickyTurnMetrics.currentUptimeSeconds
                 claudeRequestStartedUptimeSeconds = claudeRequestStartedUptimeSecondsForThisCall
                 let streamingResult = try await claudeAPI.analyzeImageStreaming(
@@ -1048,7 +1120,10 @@ final class CompanionManager: ObservableObject {
                         // the early speech fetch once the first reply tag has opened (the words
                         // before it are final). Nothing is played from here.
                         replyTextArrivalClock.markReplyTextArrived()
-                        guard !drawSkillIsSelectedForThisTurn else { return }
+                        // A draw reply has tags between its sentences, so the words before its
+                        // closing tag are not the whole spoken answer and audio fetched for them
+                        // would always be thrown away. The early fetch is skipped for such a reply.
+                        guard accumulatedReplyText.range(of: "[DRAW", options: .caseInsensitive) == nil else { return }
                         speechPrefetch.startIfFirstReplyTagHasOpened(
                             accumulatedReplyText: accumulatedReplyText,
                             userTranscript: transcript,

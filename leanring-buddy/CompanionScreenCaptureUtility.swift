@@ -27,6 +27,26 @@ enum CompanionScreenCaptureUtility {
     /// Captures all connected displays as JPEG data, labeling each with
     /// whether the user's cursor is on that screen. This gives the AI
     /// full context across multiple monitors.
+    /// Debug aid for the drawing self test: a picture of the main display that shows ONLY
+    /// Clicky's own windows (the overlay with its marks), never the user's apps. It answers the
+    /// question "did the marks really reach the screen" without capturing anything private.
+    static func captureOnlyOwnWindowsOnMainDisplayAsPNG() async throws -> Data? {
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        guard let mainDisplay = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else {
+            return nil
+        }
+        let ownBundleIdentifier = Bundle.main.bundleIdentifier
+        let ownAppWindows = content.windows.filter { window in
+            window.owningApplication?.bundleIdentifier == ownBundleIdentifier
+        }
+        let filter = SCContentFilter(display: mainDisplay, including: ownAppWindows)
+        let configuration = SCStreamConfiguration()
+        configuration.width = 1280
+        configuration.height = Int(1280 * CGFloat(mainDisplay.height) / CGFloat(mainDisplay.width))
+        let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        return NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:])
+    }
+
     static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 

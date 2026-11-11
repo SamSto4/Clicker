@@ -901,9 +901,15 @@ class OverlayWindowManager {
             )
 
             let hostingView = NSHostingView(rootView: contentView)
-            hostingView.frame = screen.frame
-            window.contentView = hostingView
-            drawingOverlayController.addDrawingSurface(onTopOf: hostingView, displayFrame: screen.frame)
+            // The SwiftUI content and the drawing surface sit side by side in a plain container.
+            // The drawing surface used to be a subview of the hosting view itself, and its marks
+            // never reached the screen: NSHostingView does not show views added inside it.
+            let overlayContainerView = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
+            hostingView.frame = overlayContainerView.bounds
+            hostingView.autoresizingMask = [.width, .height]
+            overlayContainerView.addSubview(hostingView)
+            window.contentView = overlayContainerView
+            drawingOverlayController.addDrawingSurface(onTopOf: overlayContainerView, displayFrame: screen.frame)
 
             overlayWindows.append(window)
             window.orderFrontRegardless()
