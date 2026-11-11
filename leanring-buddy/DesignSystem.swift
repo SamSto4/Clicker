@@ -154,7 +154,7 @@ enum DS {
         static let overlayDrawingInk = Color(hex: "#FF5A36")
 
         /// The highlighter band Clicky draws over text. Used see-through, so the text stays readable.
-        static let overlayDrawingHighlighter = Color(hex: "#FFD23F")
+        static let overlayDrawingHighlighter = Color(hex: "#FFC400")
 
         /// The dark pill behind a drawn label, so its words can be read on any background.
         static let overlayDrawingLabelBackground = Color(hex: "#211A17")

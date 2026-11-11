@@ -25,7 +25,9 @@ enum ClickyDrawingMarkLayerBuilder {
 
     /// Each pass of the highlighter is this see-through, so text under the band stays readable
     /// and the overlap of the two passes is a little stronger, like a real marker.
-    static let highlighterOpacityPerPass: Float = 0.22
+    /// Raised from 0.22 after real use: two passes at 0.22 were nearly invisible over a white page,
+    /// because a window layer cannot multiply-blend with the app underneath as real marker ink does.
+    static let highlighterOpacityPerPass: Float = 0.36
 
     /// The second pass starts this far into the pen time, so it visibly follows the first.
     static let secondPassStartShareOfPenTime: Double = 0.12

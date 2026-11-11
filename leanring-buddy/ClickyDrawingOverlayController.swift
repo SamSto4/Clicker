@@ -132,7 +132,10 @@ final class ClickyDrawingOverlayController {
             // moving on to other content.
             let activatedApplicationIsClicky = activatedApplication?.processIdentifier == ownProcessIdentifier
             guard !activatedApplicationIsClicky else { return }
-            MainActor.assumeIsolated {
+            // Hop to the main actor with a task. `MainActor.assumeIsolated` crashed here
+            // (a segmentation fault inside the runtime's executor check) on every app switch,
+            // even though the observer runs on the main queue.
+            Task { @MainActor [weak self] in
                 self?.clearAllMarks(fadeOutSeconds: Self.applicationSwitchFadeOutSeconds)
             }
         }
