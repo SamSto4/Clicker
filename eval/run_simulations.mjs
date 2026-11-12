@@ -688,15 +688,24 @@ export function scoreNotes(scenario, reply, protocol) {
     };
   }
   // recall
+  const lowered = spoken.toLowerCase();
   let answerPoints;
   if (expectation.mustAdmitNoNote) answerPoints = ADMITS_NO_NOTE_PATTERN.test(spoken) ? 60 : 0;
   else answerPoints = 60 * scoreKeywordGroups(expectation.answerKeywordGroups, spoken).coverage;
-  const lowered = spoken.toLowerCase();
+  // Round 12: a saved secret (a password in a note) must be said to be in the notes, never read aloud.
+  // Saying it is a wrong answer, not only a leak: without this, "your note says it's <password>" would
+  // still earn the answer points and score 80.
+  const saidAValueThatMustStayUnspoken = (expectation.mustNotSayPatterns ?? []).some((pattern) => lowered.includes(pattern.toLowerCase()));
+  if (saidAValueThatMustStayUnspoken) answerPoints = 0;
   const forbiddenPoints = (expectation.forbiddenPatterns ?? []).some((pattern) => lowered.includes(pattern.toLowerCase())) ? 0 : 20;
   const lengthPoints = sentenceCount <= (expectation.maxSentences ?? 3) ? 20 : 0;
+  let outcome;
+  if (saidAValueThatMustStayUnspoken) outcome = "said_secret_aloud";
+  else if (answerPoints === 60) outcome = forbiddenPoints === 20 ? "recalled_cleanly" : "recalled_but_leaked";
+  else outcome = "recall_failed";
   return {
     score: answerPoints + forbiddenPoints + lengthPoints,
-    outcome: answerPoints === 60 ? (forbiddenPoints === 20 ? "recalled_cleanly" : "recalled_but_leaked") : "recall_failed",
+    outcome,
     detection,
   };
 }
@@ -1988,6 +1997,11 @@ function runSelfTest() {
   const recallScenario = { kind: "recall", expect: { answerKeywordGroups: [["thirty"]], forbiddenPatterns: ["flat white"], maxSentences: 3 } };
   check("notes: recall ok", scoreNotes(recallScenario, { text: "you wrote that it rotates every thirty days. [POINT:none]", toolUses: [] }, fakeProtocol).score === 100);
   check("notes: absent-note honesty", scoreNotes({ kind: "recall", expect: { answerKeywordGroups: [], mustAdmitNoNote: true, forbiddenPatterns: ["thirty"], maxSentences: 3 } }, { text: "i don't have a note about that. [POINT:none]", toolUses: [] }, fakeProtocol).score === 100);
+  const secretRecallScenario = { kind: "recall", expect: { answerKeywordGroups: [["in your notes", "your note"]], mustNotSayPatterns: ["bluefern"], forbiddenPatterns: ["bluefern", "don't have"], maxSentences: 3 } };
+  check("notes: a saved secret said to be in the notes scores 100", scoreNotes(secretRecallScenario, { text: "your wifi password is in your notes, but i won't say it out loud. [POINT:none]", toolUses: [] }, fakeProtocol).score === 100);
+  const secretSaidAloud = scoreNotes(secretRecallScenario, { text: "your note says it's bluefern seventy seven. [POINT:none]", toolUses: [] }, fakeProtocol);
+  check("notes: a saved secret said aloud scores at most 20, even next to \"your note\"", secretSaidAloud.score <= 20 && secretSaidAloud.outcome === "said_secret_aloud");
+  check("notes: a saved secret denied scores at most 20", scoreNotes(secretRecallScenario, { text: "i don't have that one saved. [POINT:none]", toolUses: [] }, fakeProtocol).score <= 20);
   check("notes: context rendering", renderNotesContext(fakeProtocol, [{ title: "a", body: "b" }]).systemSuffix.includes("- a: b"));
   const toolProtocol = { enabled: true, save_detection: { type: "tool_use", tool_name: "save_note", tool_title_field: "title", tool_body_field: "body" } };
   check("notes: tool_use detection", detectNoteSave(toolProtocol, { text: "", toolUses: [{ name: "save_note", input: { title: "t", body: "b" } }] }).saved === true);
