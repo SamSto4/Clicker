@@ -99,6 +99,14 @@ nonisolated struct ClickyChatPanelEscapeDeduplicator {
     }
 }
 
+/// One exchange of the conversation history the model sees: what the user said, Clicky's reply as
+/// written for the history, and the screen the user was on (nil when it is not known).
+typealias ClickyConversationHistoryEntry = (
+    userTranscript: String,
+    assistantResponse: String,
+    screenOfExchange: ClickyScreenDescription?
+)
+
 /// Turns a chat the user continues into the conversation history the model sees: its last
 /// exchanges, the same cap the live conversation uses.
 nonisolated enum ClickyConversationHistoryLoader {
@@ -107,15 +115,21 @@ nonisolated enum ClickyConversationHistoryLoader {
 
     /// The history text of each exchange (the reply with its [NOTE:], [PROFILE:] and draw tags in
     /// canonical form, as the model saw it at the time). An exchange stored with the placeholder
-    /// for a secret loads as that placeholder: the secret itself was never written.
+    /// for a secret loads as that placeholder: the secret itself was never written. The screen of
+    /// each exchange comes along; a chat saved before screens were recorded has none, which is
+    /// "unknown" and never produces the "another screen" note.
     static func conversationHistoryEntries(
         from chat: ClickyChat,
         maximumExchangeCount: Int = maximumConversationHistoryExchangeCount
-    ) -> [(userTranscript: String, assistantResponse: String)] {
+    ) -> [ClickyConversationHistoryEntry] {
         chat.exchanges
             .suffix(max(0, maximumExchangeCount))
             .map { exchange in
-                (userTranscript: exchange.userText, assistantResponse: exchange.replyHistoryText)
+                (
+                    userTranscript: exchange.userText,
+                    assistantResponse: exchange.replyHistoryText,
+                    screenOfExchange: exchange.screenOfExchange
+                )
             }
     }
 }

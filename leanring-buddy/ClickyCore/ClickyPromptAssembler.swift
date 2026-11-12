@@ -10,6 +10,20 @@ nonisolated struct ClickyTurnContext {
     /// The marks Clicky drew that are still on the screen, oldest first, with screen numbers that
     /// match this turn's screenshots. Empty on an ordinary turn, which then gets no extra text.
     var drawingMarksOnScreen: [ClickyDrawingMark] = []
+    /// The title of the frontmost app's focused window, as read through Accessibility. It is text
+    /// that another program chose, so the assembler cleans it (`ClickyWindowTitleText`) before it
+    /// enters the prompt. nil when the app has no window title or it could not be read.
+    var frontmostWindowTitle: String? = nil
+    /// The screen of the last exchange in the conversation history. nil when the history is empty
+    /// (a new chat, or cleared after ten quiet minutes) or when that exchange has no recorded
+    /// screen (a continued chat from before screens were recorded). With nil, no note is added.
+    var screenOfLastExchange: ClickyScreenDescription? = nil
+
+    /// The screen of this turn, worked out the same way for the prompt, for the comparison with
+    /// the last exchange and for the record kept with this turn's exchange.
+    var screenNow: ClickyScreenDescription? {
+        ClickyScreenDescription.describing(applicationName: frontmostApplicationName, rawWindowTitle: frontmostWindowTitle)
+    }
 }
 
 nonisolated struct ClickyPreparedPrompt {
@@ -20,8 +34,9 @@ nonisolated struct ClickyPreparedPrompt {
     /// The base prompt exactly as loaded, with nothing added (no date, no app name, no skills).
     /// It is the same on every turn, which is what lets the API cache it.
     let staticSystemPromptText: String
-    /// Everything that follows the base prompt: matching skills, the "right now" block, the user's
-    /// profile, and notes. It changes from turn to turn, so it must stay outside the cached block.
+    /// Everything that follows the base prompt: matching skills, the "right now" block, the note
+    /// about a changed screen (only after a switch), the user's profile, and notes. It changes
+    /// from turn to turn, so it must stay outside the cached block.
     let dynamicSystemPromptText: String
     let selectedSkillNames: [String]
     let includedNotes: [ClickyNote]
@@ -130,7 +145,8 @@ nonisolated enum ClickyPromptAssembler {
         return staticSystemPromptText + systemPromptSectionSeparator + dynamicSystemPromptText
     }
 
-    /// Everything after the base prompt: skills for this question, the "right now" block, the
+    /// Everything after the base prompt: skills for this question, the "right now" block, the note
+    /// about a changed screen (if the screen is not the one the earlier messages were about), the
     /// marks drawn on the screen (if any), the user's profile, and notes. This is the part that
     /// differs between turns.
     static func assembleDynamicSystemPromptText(selectedSkills: [ClickySkill], includedNotes: [ClickyNote], includedProfileFactTexts: [String] = [], context: ClickyTurnContext) -> String {
@@ -145,6 +161,16 @@ nonisolated enum ClickyPromptAssembler {
         }
 
         sectionTexts.append(rightNowSectionText(for: context))
+
+        // Only after a switch of tab, window or app since the last exchange. The base prompt is
+        // not touched (it is the cached block), so this per-turn block is where Clicky is told
+        // that the earlier messages were about another screen and not to remark on it.
+        if let screenChangedNoteText = ClickyScreenChange.noteText(
+            screenOfLastExchange: context.screenOfLastExchange,
+            screenNow: context.screenNow
+        ) {
+            sectionTexts.append(screenChangedNoteText)
+        }
 
         // Only present while a drawing is on the screen. It belongs with "right now": it is what
         // the user currently sees that the screenshot cannot show.
@@ -174,12 +200,18 @@ nonisolated enum ClickyPromptAssembler {
         }
         let screenCountDescription = context.screenCount == 1 ? "one screen" : "\(context.screenCount) screens"
 
-        return """
-        right now:
-        - today is \(todayText).
-        - the frontmost app is \(frontmostApplicationDescription).
-        - the user has \(screenCountDescription).
-        """
+        var rightNowLineTexts = [
+            "right now:",
+            "- today is \(todayText).",
+            "- the frontmost app is \(frontmostApplicationDescription).",
+        ]
+        // The title is shown on screen but chosen by someone else (a web page, a document), so it
+        // is cleaned and quoted. Left out when the app has no title or it could not be read.
+        if let cleanedWindowTitle = ClickyWindowTitleText.cleanedWindowTitle(from: context.frontmostWindowTitle) {
+            rightNowLineTexts.append("- the frontmost window is titled \(ClickyWindowTitleText.quoted(cleanedWindowTitle)).")
+        }
+        rightNowLineTexts.append("- the user has \(screenCountDescription).")
+        return rightNowLineTexts.joined(separator: "\n")
     }
 
     /// The profile is data about the user, not instructions, so a fact that reads like a command

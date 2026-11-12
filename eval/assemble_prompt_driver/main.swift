@@ -1,7 +1,7 @@
 // Eval-only driver for the Clicky prompt pipeline.
 //
 // Compile (from /Users/samsto/Clicker, never run xcodebuild):
-//   swiftc -O -o <binary> eval/assemble_prompt_driver/main.swift leanring-buddy/ClickyCore/*.swift
+//   swiftc -swift-version 5 -O -o <binary> eval/assemble_prompt_driver/main.swift leanring-buddy/ClickyCore/*.swift
 //
 // It calls the same two entry points the app calls, so the harness scores what the app would do:
 //   prepare  <input.json> <output.json> <promptsDirectory> <notesRootDirectory>
@@ -26,6 +26,14 @@
 // rebuilds the same board, parses the new reply with ClickyDrawTagParser (with the row count of the card on
 // screen, as the app does), applies its commands, and reports the commands, the dropped tag count and the
 // board before and after. The harness scores those records and never re-implements the grammar.
+//
+// Round 14 (old screen context): `prepare` also reads the optional `screenContextNow` and
+// `screenContextOfHistory` objects, each `{ "app": "...", "windowTitle": "..." }`. The window title of
+// "now" becomes the turn context's `frontmostWindowTitle` (so the "right now" block gets its title line;
+// the app of "now" is the `appName` the harness already sends as the frontmost app). The pair for the
+// history becomes `screenOfLastExchange`, which is what the app records with the last exchange of the
+// conversation history; when it differs from the screen now, the assembler adds the "earlier in this
+// conversation" note to the dynamic block. Without the objects the prompt is exactly what it was.
 //
 // SAFETY: every note and profile operation goes to a directory under notesRootDirectory. That directory must be
 // a folder whose name starts with "clicky-eval-notes-" and must not be the real Clicky notes folder.
@@ -296,6 +304,18 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
         let seededDrawingBoard = drawingBoard(fromSeedDrawTagTexts: (scenarioInput["seedDrawTagTexts"] as? [String]) ?? [])
         let drawingMarksOnScreen = drawingMarksForPrompt(on: seededDrawingBoard, screenCount: screenCount)
 
+        // Round 14: the window title of the screen now, and the screen the last exchange of the history
+        // was on (the app records it with each exchange; here the harness states it for the scenario).
+        // Both are built with the app's own `ClickyScreenDescription` so cleaning and comparing are the app's.
+        let screenContextNow = scenarioInput["screenContextNow"] as? [String: Any]
+        let screenContextOfHistory = scenarioInput["screenContextOfHistory"] as? [String: Any]
+        let screenOfLastExchange = screenContextOfHistory.flatMap { screenContextOfHistoryObject in
+            ClickyScreenDescription.describing(
+                applicationName: screenContextOfHistoryObject["app"] as? String,
+                rawWindowTitle: screenContextOfHistoryObject["windowTitle"] as? String
+            )
+        }
+
         let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
             for: ClickyTurnContext(
                 userTranscript: userTranscript,
@@ -303,7 +323,9 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
                 frontmostApplicationName: applicationName,
                 screenCount: screenCount,
                 currentDate: Date(),
-                drawingMarksOnScreen: drawingMarksOnScreen
+                drawingMarksOnScreen: drawingMarksOnScreen,
+                frontmostWindowTitle: screenContextNow?["windowTitle"] as? String,
+                screenOfLastExchange: screenOfLastExchange
             ),
             promptsDirectoryURL: promptsDirectoryURL,
             noteStore: noteStore,

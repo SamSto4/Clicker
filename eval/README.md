@@ -234,7 +234,12 @@ Scenarios live in `eval/scenarios/visible|holdout/context.json` (6 + 6) and use 
 - `targets` (pointing-after-switch only): the element boxes from `fixtures/manifest.json`, scored with the pointing scorer (4 px of slack);
 - `exampleCorrectReply`: a made-up correct reply. `--self-test` scores it and requires 100 and `clean`, which proves the forbidden words cannot appear in it and the keyword groups can be met. The self-test also requires every forbidden phrase to occur in the scenario's own history text (only words the history contains can bleed from it).
 
-The harness passes `screenContextOfHistory` and `screenContextNow` into the driver's prepare input JSON under the same names, for the app change that will read them; the driver ignores them today. For these scenarios `screenContextNow.app` also decides the frontmost app in the "right now" block (the fixture-prefix table calls every `browser_*` fixture Safari, but `browser_main.jpg` shows Chrome).
+The harness passes `screenContextOfHistory` and `screenContextNow` into the driver's prepare input JSON under the same names. Since round 14 the driver reads them:
+- the window title "now" becomes the "right now" title line;
+- the earlier screen becomes `screenOfLastExchange`;
+- the app adds the "earlier in this conversation" note when the two differ.
+
+A driver built before round 14 ignores them, which is how the baseline was measured. For these scenarios `screenContextNow.app` also decides the frontmost app in the "right now" block (the fixture-prefix table calls every `browser_*` fixture Safari, but `browser_main.jpg` shows Chrome).
 
 | kind | what it tests | n (visible + holdout) |
 |---|---|---|
