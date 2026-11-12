@@ -95,6 +95,31 @@ enum ClickyDrawingMarkLayerBuilder {
         }
     }
 
+    /// How the ink of a mark looks. Marks on the screen use `screenMarkInkLook`; the small boxes
+    /// and arrows on an explanation card and the leader line of a callout pass a finer one.
+    struct InkLook {
+        var firstPassLineWidthInPoints: CGFloat
+        var secondPassLineWidthInPoints: CGFloat
+        /// The soft dark shadow that keeps ink visible on any page. Ink on the card's own paper
+        /// does not need it.
+        var castsShadow: Bool
+        var inkColor: CGColor
+        /// Parts of the mark drawn in another colour than `inkColor`, by part index.
+        var inkColorsByPartIndex: [Int: CGColor] = [:]
+        /// The colour of the pen tip that leads the strokes.
+        var penTipFillColor: CGColor
+    }
+
+    static var screenMarkInkLook: InkLook {
+        InkLook(
+            firstPassLineWidthInPoints: firstPassInkLineWidthInPoints,
+            secondPassLineWidthInPoints: secondPassInkLineWidthInPoints,
+            castsShadow: true,
+            inkColor: NSColor(DS.Colors.overlayDrawingInk).cgColor,
+            penTipFillColor: NSColor(DS.Colors.overlayDrawingInk).cgColor
+        )
+    }
+
     // MARK: - Handwriting typeface for drawn text
 
     /// The typeface chosen for labels and sticky notes on this Mac, looked up once: the first
@@ -185,12 +210,28 @@ enum ClickyDrawingMarkLayerBuilder {
                 seed: wobbleSeed
             )
             return makeInkLayer(for: handDrawnStrokes, displaySizeInPoints: displaySizeInPoints, backingScaleFactor: backingScaleFactor)
+        case .callout, .explanationCard:
+            // The app decides where these go, so they need more than a shape to be built. The
+            // overlay controller builds them with `ClickyExplanationCardLayerBuilder`.
+            return CALayer()
         }
     }
 
     /// One layer just large enough for the strokes (so its shadow is cheap to draw), holding one
     /// shape layer per stroke.
-    private static func makeInkLayer(for handDrawnStrokes: [ClickyHandDrawnStroke], displaySizeInPoints: CGSize, backingScaleFactor: CGFloat) -> CALayer {
+    ///
+    /// The strokes' points are measured from the top-left corner of an area `displaySizeInPoints`
+    /// large (the display for a mark on the screen), and the layer is placed for a parent layer
+    /// that covers that area.
+    static func makeInkLayer(
+        for handDrawnStrokes: [ClickyHandDrawnStroke],
+        displaySizeInPoints: CGSize,
+        backingScaleFactor: CGFloat,
+        inkLook customInkLook: InkLook? = nil
+    ) -> CALayer {
+        // nil means the look of a mark on the screen. (A default value in the parameter list
+        // cannot read a main-actor property, so it is filled in here.)
+        let inkLook = customInkLook ?? screenMarkInkLook
         let markLayer = CALayer()
 
         let allStrokePoints = handDrawnStrokes.flatMap(\.points)
@@ -221,7 +262,7 @@ enum ClickyDrawingMarkLayerBuilder {
         markLayer.frame = frameFromBottomLeft(forFrameFromTopLeft: markFrameFromTopLeft, displaySizeInPoints: displaySizeInPoints)
 
         // A highlighter is see-through, so a shadow under it would only muddy the text.
-        if !isHighlighterMark {
+        if !isHighlighterMark && inkLook.castsShadow {
             markLayer.shadowColor = NSColor.black.cgColor
             markLayer.shadowOpacity = inkShadowOpacity
             markLayer.shadowRadius = inkShadowRadiusInPoints
@@ -252,8 +293,8 @@ enum ClickyDrawingMarkLayerBuilder {
                 strokeLayer.lineWidth = CGFloat(highlighterBandWidthInPoints)
                 strokeLayer.opacity = highlighterOpacityPerPass
             } else {
-                strokeLayer.strokeColor = NSColor(DS.Colors.overlayDrawingInk).cgColor
-                strokeLayer.lineWidth = isSecondPass ? secondPassInkLineWidthInPoints : firstPassInkLineWidthInPoints
+                strokeLayer.strokeColor = inkLook.inkColorsByPartIndex[handDrawnStroke.partIndex] ?? inkLook.inkColor
+                strokeLayer.lineWidth = isSecondPass ? inkLook.secondPassLineWidthInPoints : inkLook.firstPassLineWidthInPoints
                 strokeLayer.opacity = isSecondPass ? secondPassInkOpacity : firstPassInkOpacity
             }
 
@@ -274,7 +315,7 @@ enum ClickyDrawingMarkLayerBuilder {
             markFrameFromTopLeft: markFrameFromTopLeft,
             penTipFillColor: isHighlighterMark
                 ? NSColor(DS.Colors.overlayDrawingHighlighter).cgColor
-                : NSColor(DS.Colors.overlayDrawingInk).cgColor,
+                : inkLook.penTipFillColor,
             backingScaleFactor: backingScaleFactor
         )
 
@@ -608,7 +649,7 @@ enum ClickyDrawingMarkLayerBuilder {
 
     /// The same rectangle measured from the display's bottom-left corner, which is how Core
     /// Animation places layers on the Mac.
-    private static func frameFromBottomLeft(forFrameFromTopLeft frameFromTopLeft: CGRect, displaySizeInPoints: CGSize) -> CGRect {
+    static func frameFromBottomLeft(forFrameFromTopLeft frameFromTopLeft: CGRect, displaySizeInPoints: CGSize) -> CGRect {
         CGRect(
             x: frameFromTopLeft.minX,
             y: displaySizeInPoints.height - frameFromTopLeft.maxY,
@@ -618,7 +659,7 @@ enum ClickyDrawingMarkLayerBuilder {
     }
 
     /// The system font in its rounded design: friendly, and nothing has to be bundled.
-    private static func roundedSystemFont(ofSize fontSize: CGFloat, weight: NSFont.Weight) -> NSFont {
+    static func roundedSystemFont(ofSize fontSize: CGFloat, weight: NSFont.Weight) -> NSFont {
         let systemFont = NSFont.systemFont(ofSize: fontSize, weight: weight)
         guard let roundedFontDescriptor = systemFont.fontDescriptor.withDesign(.rounded) else {
             return systemFont

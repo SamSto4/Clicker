@@ -104,8 +104,17 @@ nonisolated enum ClickyHandDrawnPathGenerator {
 
     /// The strokes of a shape given in display points. A label or sticky note has no strokes: it
     /// is text on a card, not ink.
-    static func strokes(forShapeInDisplayPoints shape: ClickyDrawingShape, seed: UInt64) -> [ClickyHandDrawnStroke] {
+    ///
+    /// `maximumWobbleDistance` is the full wobble for marks on the screen. The small boxes and
+    /// arrows on an explanation card pass a smaller one.
+    static func strokes(
+        forShapeInDisplayPoints shape: ClickyDrawingShape,
+        seed: UInt64,
+        maximumWobbleDistance: Double = maximumWobbleDistanceInPoints
+    ) -> [ClickyHandDrawnStroke] {
         var strokes: [ClickyHandDrawnStroke] = []
+        // The short strokes of an arrowhead get the smallest wobble, and never more than the rest.
+        let maximumArrowheadWobbleDistance = min(minimumWobbleDistanceInPoints, maximumWobbleDistance)
 
         for passIndex in 0..<passCount {
             // Each pass gets its own stream of random numbers, so the second pass is a different
@@ -117,7 +126,7 @@ nonisolated enum ClickyHandDrawnPathGenerator {
             switch shape {
             case .underline(let start, let end):
                 strokes.append(ClickyHandDrawnStroke(
-                    points: wobblyLinePoints(from: start, to: end, maximumWobbleDistance: maximumWobbleDistanceInPoints, randomNumberGenerator: &randomNumberGenerator),
+                    points: wobblyLinePoints(from: start, to: end, maximumWobbleDistance: maximumWobbleDistance, randomNumberGenerator: &randomNumberGenerator),
                     passIndex: passIndex,
                     partIndex: 0,
                     highlighterBandWidthInPoints: nil
@@ -125,15 +134,15 @@ nonisolated enum ClickyHandDrawnPathGenerator {
 
             case .arrow(let tail, let head):
                 strokes.append(ClickyHandDrawnStroke(
-                    points: wobblyLinePoints(from: tail, to: head, maximumWobbleDistance: maximumWobbleDistanceInPoints, randomNumberGenerator: &randomNumberGenerator),
+                    points: wobblyLinePoints(from: tail, to: head, maximumWobbleDistance: maximumWobbleDistance, randomNumberGenerator: &randomNumberGenerator),
                     passIndex: passIndex,
                     partIndex: 0,
                     highlighterBandWidthInPoints: nil
                 ))
                 let arrowheadBarbEnds = arrowheadBarbEnds(tail: tail, head: head)
                 // One stroke: in from the first barb to the tip, then out along the second barb.
-                let firstBarbPoints = wobblyLinePoints(from: arrowheadBarbEnds.first, to: head, maximumWobbleDistance: minimumWobbleDistanceInPoints, randomNumberGenerator: &randomNumberGenerator)
-                let secondBarbPoints = wobblyLinePoints(from: head, to: arrowheadBarbEnds.second, maximumWobbleDistance: minimumWobbleDistanceInPoints, randomNumberGenerator: &randomNumberGenerator)
+                let firstBarbPoints = wobblyLinePoints(from: arrowheadBarbEnds.first, to: head, maximumWobbleDistance: maximumArrowheadWobbleDistance, randomNumberGenerator: &randomNumberGenerator)
+                let secondBarbPoints = wobblyLinePoints(from: head, to: arrowheadBarbEnds.second, maximumWobbleDistance: maximumArrowheadWobbleDistance, randomNumberGenerator: &randomNumberGenerator)
                 strokes.append(ClickyHandDrawnStroke(
                     points: firstBarbPoints + secondBarbPoints,
                     passIndex: passIndex,
@@ -143,7 +152,7 @@ nonisolated enum ClickyHandDrawnPathGenerator {
 
             case .circle(let center, let radius):
                 strokes.append(ClickyHandDrawnStroke(
-                    points: wobblyCirclePoints(center: center, radius: radius, randomNumberGenerator: &randomNumberGenerator),
+                    points: wobblyCirclePoints(center: center, radius: radius, maximumWobbleDistance: maximumWobbleDistance, randomNumberGenerator: &randomNumberGenerator),
                     passIndex: passIndex,
                     partIndex: 0,
                     highlighterBandWidthInPoints: nil
@@ -157,7 +166,7 @@ nonisolated enum ClickyHandDrawnPathGenerator {
                 for cornerIndex in cornerPoints.indices {
                     let sideStart = cornerPoints[cornerIndex]
                     let sideEnd = cornerPoints[(cornerIndex + 1) % cornerPoints.count]
-                    boxPoints += wobblyLinePoints(from: sideStart, to: sideEnd, maximumWobbleDistance: maximumWobbleDistanceInPoints, randomNumberGenerator: &randomNumberGenerator)
+                    boxPoints += wobblyLinePoints(from: sideStart, to: sideEnd, maximumWobbleDistance: maximumWobbleDistance, randomNumberGenerator: &randomNumberGenerator)
                 }
                 strokes.append(ClickyHandDrawnStroke(points: boxPoints, passIndex: passIndex, partIndex: 0, highlighterBandWidthInPoints: nil))
 
@@ -170,7 +179,9 @@ nonisolated enum ClickyHandDrawnPathGenerator {
                     highlighterBandWidthInPoints: size.height
                 ))
 
-            case .label, .stickyNote:
+            case .label, .stickyNote, .callout, .explanationCard:
+                // Text on a pill or a card, not ink. The leader line of a callout and the ink on
+                // a card are built from arrows, boxes and lines by their own layouts.
                 break
             }
         }
@@ -192,7 +203,10 @@ nonisolated enum ClickyHandDrawnPathGenerator {
             return 2 * (size.width + size.height)
         case .highlight(_, let size):
             return size.width
-        case .label, .stickyNote:
+        case .callout:
+            // The leader line is always about this long, wherever the app puts the tag.
+            return ClickyCalloutPlacement.distanceFromTargetInPoints
+        case .label, .stickyNote, .explanationCard:
             return 0
         }
     }
@@ -328,9 +342,10 @@ nonisolated enum ClickyHandDrawnPathGenerator {
     private static func wobblyCirclePoints(
         center: ClickyDrawingPoint,
         radius: Double,
+        maximumWobbleDistance: Double,
         randomNumberGenerator: inout ClickyDeterministicRandomNumberGenerator
     ) -> [ClickyDrawingPoint] {
-        let allowedWobbleDistance = wobbleDistance(forStrokeSizeInPoints: 2 * radius, maximumWobbleDistance: maximumWobbleDistanceInPoints)
+        let allowedWobbleDistance = wobbleDistance(forStrokeSizeInPoints: 2 * radius, maximumWobbleDistance: maximumWobbleDistance)
         let wobbleProfile = WobbleProfile(allowedWobbleDistance: allowedWobbleDistance, randomNumberGenerator: &randomNumberGenerator)
 
         // A person starts a circle somewhere near the top and goes round past the starting point.

@@ -26,6 +26,12 @@ nonisolated enum ClickyDrawingShape: Equatable {
     case label(topLeftCorner: ClickyDrawingPoint, text: String)
     /// A note card with a little more text.
     case stickyNote(topLeftCorner: ClickyDrawingPoint, text: String)
+    /// A small numbered tag joined by a leader line to `target`. The app decides where the tag
+    /// itself goes (see `ClickyCalloutPlacement`). `calloutNumber` counts 1, 2, 3 within a reply.
+    case callout(target: ClickyDrawingPoint, text: String, calloutNumber: Int)
+    /// A paper card with a title and rows, written while Clicky explains something. It carries no
+    /// position: the app places it (see `ClickyExplanationCardPlacement`).
+    case explanationCard(ClickyExplanationCard)
 
     /// The word used for this shape in a `[DRAW:...]` tag and in the "marks on screen" list.
     var tagKindName: String {
@@ -37,17 +43,49 @@ nonisolated enum ClickyDrawingShape: Equatable {
         case .highlight: return "highlight"
         case .label: return "label"
         case .stickyNote: return "sticky"
+        case .callout: return "callout"
+        case .explanationCard: return "card"
         }
     }
 
-    /// A sticky note is a note to the user, not a pointer at something on the page, so it stays
-    /// when the page scrolls. Every other shape marks a place in the content and would be wrong
-    /// the moment that content moves.
+    /// A sticky note and an explanation card are written for the user, not pointed at something
+    /// on the page, so they stay when the page scrolls. Every other shape marks a place in the
+    /// content and would be wrong the moment that content moves.
     var pointsAtScreenContent: Bool {
-        if case .stickyNote = self {
+        switch self {
+        case .stickyNote, .explanationCard:
             return false
+        case .arrow, .circle, .box, .underline, .highlight, .label, .callout:
+            return true
         }
-        return true
+    }
+
+    var isExplanationCard: Bool {
+        if case .explanationCard = self {
+            return true
+        }
+        return false
+    }
+
+    /// The one place this shape is about, used to tell which half of the screen a reply marks so
+    /// the explanation card can go on the other. nil for the card itself, which marks no place.
+    var placeTheShapeIsAbout: ClickyDrawingPoint? {
+        switch self {
+        case .arrow(_, let head):
+            return head
+        case .circle(let center, _):
+            return center
+        case .box(let topLeftCorner, let size), .highlight(let topLeftCorner, let size):
+            return ClickyDrawingPoint(x: topLeftCorner.x + size.width / 2, y: topLeftCorner.y + size.height / 2)
+        case .underline(let start, let end):
+            return ClickyDrawingPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        case .label(let topLeftCorner, _), .stickyNote(let topLeftCorner, _):
+            return topLeftCorner
+        case .callout(let target, _, _):
+            return target
+        case .explanationCard:
+            return nil
+        }
     }
 }
 
@@ -73,6 +111,8 @@ nonisolated enum ClickyDrawCommand: Equatable {
     case eraseMark(markIdentifier: String)
     case undoNewestMark
     case clearAllMarks
+    /// From a `[ROW:...]` tag: one more row on the explanation card that is on the board.
+    case addCardRow(ClickyExplanationCardRow)
 
     /// True for the commands that put something new on the screen.
     var addsAMark: Bool {
@@ -88,7 +128,11 @@ nonisolated enum ClickyDrawingBoardChange: Equatable {
     /// `marksRemovedToMakeRoom` is not empty only when the board was full.
     case addedMark(ClickyDrawingMark, marksRemovedToMakeRoom: [ClickyDrawingMark])
     case removedMarks([ClickyDrawingMark])
-    /// An erase of an unknown id, or an undo or clear with nothing drawn.
+    /// A row was written on the card. `cardMark` is the card with the row already on it, and
+    /// `rowIndex` is the new row's place in it.
+    case addedRowToCard(cardMark: ClickyDrawingMark, rowIndex: Int)
+    /// An erase of an unknown id, an undo or clear with nothing drawn, or a row with no card to
+    /// go on (or a card that is already full).
     case nothingChanged
 }
 
@@ -116,11 +160,17 @@ nonisolated struct ClickyDrawingBoard: Equatable {
     mutating func apply(_ drawCommand: ClickyDrawCommand) -> ClickyDrawingBoardChange {
         switch drawCommand {
         case .addMark(let shape, let screenNumber):
+            var marksRemovedToMakeRoom: [ClickyDrawingMark] = []
+            // There is one explanation card at a time: opening a new one replaces the old one.
+            if shape.isExplanationCard {
+                marksRemovedToMakeRoom += marks.filter { $0.shape.isExplanationCard }
+                marks.removeAll { $0.shape.isExplanationCard }
+            }
+
             let addedMark = ClickyDrawingMark(markNumber: nextMarkNumber, shape: shape, screenNumber: screenNumber)
             nextMarkNumber += 1
             marks.append(addedMark)
 
-            var marksRemovedToMakeRoom: [ClickyDrawingMark] = []
             while marks.count > Self.maximumMarkCountOnScreen {
                 marksRemovedToMakeRoom.append(marks.removeFirst())
             }
@@ -141,7 +191,43 @@ nonisolated struct ClickyDrawingBoard: Equatable {
 
         case .clearAllMarks:
             return removeMarks { _ in true }
+
+        case .addCardRow(let row):
+            guard let cardMarkIndex = marks.lastIndex(where: { $0.shape.isExplanationCard }),
+                  case .explanationCard(let card) = marks[cardMarkIndex].shape,
+                  card.rows.count < ClickyExplanationCard.maximumRowCount else {
+                return .nothingChanged
+            }
+            // The card keeps its number and its place in the order of the marks: it is the same
+            // mark with one more row.
+            let cardMarkWithRow = ClickyDrawingMark(
+                markNumber: marks[cardMarkIndex].markNumber,
+                shape: .explanationCard(card.addingRow(row)),
+                screenNumber: marks[cardMarkIndex].screenNumber
+            )
+            marks[cardMarkIndex] = cardMarkWithRow
+            return .addedRowToCard(cardMark: cardMarkWithRow, rowIndex: card.rows.count)
         }
+    }
+
+    /// The explanation card on the board, if there is one.
+    var explanationCardMark: ClickyDrawingMark? {
+        marks.last { $0.shape.isExplanationCard }
+    }
+
+    /// Takes rows back off a card: used when the rows of an interrupted reply were accepted but
+    /// never written on the screen, so the board and the screen agree again.
+    mutating func keepOnlyFirstRows(_ rowCountToKeep: Int, ofCardWithMarkNumber cardMarkNumber: Int) {
+        guard let cardMarkIndex = marks.firstIndex(where: { $0.markNumber == cardMarkNumber }),
+              case .explanationCard(let card) = marks[cardMarkIndex].shape,
+              card.rows.count > rowCountToKeep else {
+            return
+        }
+        marks[cardMarkIndex] = ClickyDrawingMark(
+            markNumber: cardMarkNumber,
+            shape: .explanationCard(card.keepingFirstRows(rowCountToKeep)),
+            screenNumber: marks[cardMarkIndex].screenNumber
+        )
     }
 
     /// Removes the marks the overlay took off the screen by itself (the lifetime ran out, the page
@@ -192,6 +278,18 @@ nonisolated enum ClickyDrawingMarksOnScreenText {
             shapeDescription = "label at \(coordinateText(topLeftCorner)) saying \"\(text)\""
         case .stickyNote(let topLeftCorner, let text):
             shapeDescription = "sticky note at \(coordinateText(topLeftCorner)) saying \"\(text)\""
+        case .callout(let target, let text, let calloutNumber):
+            shapeDescription = "callout \(calloutNumber) pointing at \(coordinateText(target)) saying \"\(text)\""
+        case .explanationCard(let card):
+            // The card has no position to give: the app placed it. Its rows are listed the way
+            // their tags are written, so the model can see what is on it and add to it.
+            let rowsDescription = card.rows.isEmpty
+                ? "no rows yet"
+                : "rows: " + card.rows.map { "[ROW:\($0.canonicalTagBody)]" }.joined(separator: " ")
+            let roomDescription = card.rows.count < ClickyExplanationCard.maximumRowCount
+                ? "add a row with [ROW:...]"
+                : "it is full"
+            shapeDescription = "card titled \"\(card.title)\", \(rowsDescription) (\(roomDescription); a new [CARD:title] replaces it)"
         }
 
         let screenDescription = mark.screenNumber.map { " (screen \($0))" } ?? ""

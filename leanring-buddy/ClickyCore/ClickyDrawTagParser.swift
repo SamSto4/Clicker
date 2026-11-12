@@ -1,6 +1,6 @@
 import Foundation
 
-/// One `[DRAW:...]` tag of a reply, with where it sits in the spoken text.
+/// One `[DRAW:...]`, `[CARD:...]` or `[ROW:...]` tag of a reply, with where it sits in the spoken text.
 nonisolated struct ClickyParsedDrawCommand: Equatable {
     let command: ClickyDrawCommand
     /// How much of the spoken text comes before this tag, from 0 (the tag opens the reply) to 1
@@ -10,10 +10,11 @@ nonisolated struct ClickyParsedDrawCommand: Equatable {
 }
 
 nonisolated struct ClickyParsedDrawReply: Equatable {
-    /// In the order they were written. At most `ClickyDrawTagParser.maximumDrawTagCountPerReply`.
+    /// In the order they were written. At most `ClickyDrawTagParser.maximumDrawTagCountPerReply`
+    /// from `[DRAW:...]` tags, plus at most one card and the rows that fit on it.
     let commands: [ClickyParsedDrawCommand]
-    /// Draw tags that were dropped: malformed, out of range, or past the per-reply limit. They are
-    /// still removed from the spoken text by `ClickyReplyTagParser`.
+    /// Draw, card and row tags that were dropped: malformed, out of range, past a limit, or a row
+    /// with no card to go on. They are still removed from the spoken text by `ClickyReplyTagParser`.
     let ignoredDrawTagCount: Int
 }
 
@@ -28,7 +29,14 @@ nonisolated struct ClickyParsedDrawReply: Equatable {
 /// - `[DRAW:highlight:x,y:width,height]`
 /// - `[DRAW:label:x,y:text]`
 /// - `[DRAW:sticky:x,y:text]`
+/// - `[DRAW:callout:x,y:text]` a numbered tag pointing at x,y; the numbers run 1, 2, 3 in a reply
 /// - `[DRAW:erase:m3]`, `[DRAW:undo]`, `[DRAW:clear]`
+///
+/// An explanation card has tags of its own, which do not count towards the draw tag limit:
+/// - `[CARD:title]` opens a card (one per reply; it replaces a card already on screen)
+/// - `[ROW:text:words]`, `[ROW:boxes:a|b|c -> d]`, `[ROW:flow:a > b > c]`,
+///   `[ROW:timeline:when=what|when=what]` add a row to the card opened in this reply, or to the
+///   card already on screen
 ///
 /// This parser only finds and validates draw tags. Removing them from the spoken text stays the
 /// job of `ClickyReplyTagParser`, which knows the tag name so they are never read aloud.
@@ -54,9 +62,10 @@ nonisolated enum ClickyDrawTagParser {
     static let minimumCircleRadius: Double = 2
     static let maximumCircleRadius: Double = 5_000
 
-    /// The pattern of one complete draw tag. Group 1 is everything after "DRAW:". Brackets are
-    /// excluded from the body so one tag can never swallow the next.
-    private static let completeDrawTagPattern = "\\[\\s*DRAW\\s*:([^\\[\\]]*)\\]"
+    /// The pattern of one complete draw, card or row tag. Group 1 is the tag name and group 2 is
+    /// everything after its colon. Brackets are excluded from the body so one tag can never
+    /// swallow the next.
+    private static let completeDrawTagPattern = "\\[\\s*(DRAW|CARD|ROW)\\s*:([^\\[\\]]*)\\]"
 
     private struct DrawTagOccurrence {
         let rangeInReplyText: Range<String.Index>
@@ -64,8 +73,11 @@ nonisolated enum ClickyDrawTagParser {
         let command: ClickyDrawCommand?
     }
 
-    static func parse(_ rawReplyText: String) -> ClickyParsedDrawReply {
-        let drawTagOccurrences = drawTagOccurrences(in: rawReplyText)
+    /// `rowCountOfCardAlreadyOnScreen` is how many rows the explanation card on the screen has, or
+    /// nil when no card is on the screen. A `[ROW:...]` tag needs a card to go on: the one opened
+    /// earlier in the same reply, or else the one on screen.
+    static func parse(_ rawReplyText: String, rowCountOfCardAlreadyOnScreen: Int? = nil) -> ClickyParsedDrawReply {
+        let drawTagOccurrences = drawTagOccurrences(in: rawReplyText, rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen)
         guard !drawTagOccurrences.isEmpty else {
             return ClickyParsedDrawReply(commands: [], ignoredDrawTagCount: 0)
         }
@@ -98,7 +110,9 @@ nonisolated enum ClickyDrawTagParser {
 
     /// Reads the body of one draw tag (everything after "DRAW:"), such as "circle:120,11:34" or
     /// "undo". Returns nil for anything that is not exactly one of the documented forms.
-    static func command(fromTagBody tagBody: String) -> ClickyDrawCommand? {
+    ///
+    /// `calloutNumber` is the number a callout gets if this tag is one; the caller counts them.
+    static func command(fromTagBody tagBody: String, calloutNumber: Int = 1) -> ClickyDrawCommand? {
         // The untrimmed pieces are kept as well: the text of a label is put back together from
         // them, so "step 1: open it" keeps the space after its colon.
         var untrimmedColonSeparatedComponents = tagBody
@@ -126,7 +140,7 @@ nonisolated enum ClickyDrawTagParser {
             break
         }
 
-        let kindHoldsText = kindName == "label" || kindName == "sticky"
+        let kindHoldsText = kindName == "label" || kindName == "sticky" || kindName == "callout"
 
         // A trailing "screenN" picks the screen. For a label or sticky note it only counts when
         // some text is left before it, so a label that says just "screen 2" keeps its text.
@@ -148,14 +162,22 @@ nonisolated enum ClickyDrawTagParser {
         if kindHoldsText {
             // The text may itself contain colons, so everything after the position is rejoined.
             let rejoinedText = untrimmedColonSeparatedComponents.dropFirst(2).joined(separator: ":")
-            let maximumCharacterCount = kindName == "label" ? maximumLabelCharacterCount : maximumStickyNoteCharacterCount
+            let maximumCharacterCount: Int
+            switch kindName {
+            case "label": maximumCharacterCount = maximumLabelCharacterCount
+            case "callout": maximumCharacterCount = ClickyCalloutPlacement.maximumCalloutCharacterCount
+            default: maximumCharacterCount = maximumStickyNoteCharacterCount
+            }
             let markText = singleLineText(rejoinedText, cutToCharacterCount: maximumCharacterCount)
             guard !markText.isEmpty else {
                 return nil
             }
-            let shape: ClickyDrawingShape = kindName == "label"
-                ? .label(topLeftCorner: firstPoint, text: markText)
-                : .stickyNote(topLeftCorner: firstPoint, text: markText)
+            let shape: ClickyDrawingShape
+            switch kindName {
+            case "label": shape = .label(topLeftCorner: firstPoint, text: markText)
+            case "callout": shape = .callout(target: firstPoint, text: markText, calloutNumber: calloutNumber)
+            default: shape = .stickyNote(topLeftCorner: firstPoint, text: markText)
+            }
             return .addMark(shape: shape, screenNumber: screenNumber)
         }
 
@@ -208,6 +230,11 @@ nonisolated enum ClickyDrawTagParser {
             return "[DRAW:clear]"
         case .eraseMark(let markIdentifier):
             return "[DRAW:erase:\(markIdentifier)]"
+        case .addCardRow(let row):
+            return "[ROW:\(row.canonicalTagBody)]"
+        case .addMark(.explanationCard(let card), _):
+            // A card is opened by its title alone; its rows are tags of their own.
+            return "[CARD:\(card.title)]"
         case .addMark(let shape, let screenNumber):
             let coordinateText = ClickyDrawingMarksOnScreenText.coordinateText
             let wholeNumberText = ClickyDrawingMarksOnScreenText.wholeNumberText
@@ -223,6 +250,11 @@ nonisolated enum ClickyDrawTagParser {
                 tagBodyAfterKind = "\(coordinateText(topLeftCorner)):\(wholeNumberText(size.width)),\(wholeNumberText(size.height))"
             case .label(let topLeftCorner, let text), .stickyNote(let topLeftCorner, let text):
                 tagBodyAfterKind = "\(coordinateText(topLeftCorner)):\(text)"
+            case .callout(let target, let text, _):
+                // The number is not written: it comes from the tag's place in the reply.
+                tagBodyAfterKind = "\(coordinateText(target)):\(text)"
+            case .explanationCard(let card):
+                tagBodyAfterKind = card.title
             }
             let screenSuffix = screenNumber.map { ":screen\($0)" } ?? ""
             return "[DRAW:\(shape.tagKindName):\(tagBodyAfterKind)\(screenSuffix)]"
@@ -243,9 +275,10 @@ nonisolated enum ClickyDrawTagParser {
     static func historyAssistantText(
         rawReplyText: String,
         finishedSpokenText: String,
-        finishedHistoryAssistantText: String
+        finishedHistoryAssistantText: String,
+        rowCountOfCardAlreadyOnScreen: Int? = nil
     ) -> String {
-        let drawTagOccurrences = drawTagOccurrences(in: rawReplyText)
+        let drawTagOccurrences = drawTagOccurrences(in: rawReplyText, rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen)
         let canonicalTagTexts = drawTagOccurrences.compactMap { drawTagOccurrence in
             drawTagOccurrence.command.map { canonicalTagText(for: $0) }
         }
@@ -287,9 +320,9 @@ nonisolated enum ClickyDrawTagParser {
 
     // MARK: - Finding the tags
 
-    /// Every complete draw tag of the reply, in order, each with its command or nil. The per-reply
-    /// limit is applied here so parsing and the history text always agree on which tags count.
-    private static func drawTagOccurrences(in rawReplyText: String) -> [DrawTagOccurrence] {
+    /// Every complete draw, card and row tag of the reply, in order, each with its command or nil.
+    /// The limits are applied here so parsing and the history text always agree on which tags count.
+    private static func drawTagOccurrences(in rawReplyText: String, rowCountOfCardAlreadyOnScreen: Int?) -> [DrawTagOccurrence] {
         let completeDrawTagRegex = try! NSRegularExpression(pattern: completeDrawTagPattern, options: [.caseInsensitive])
         let completeDrawTagMatches = completeDrawTagRegex.matches(
             in: rawReplyText,
@@ -297,24 +330,152 @@ nonisolated enum ClickyDrawTagParser {
         )
 
         var drawTagOccurrences: [DrawTagOccurrence] = []
-        var acceptedCommandCount = 0
+        var acceptedDrawCommandCount = 0
+        var nextCalloutNumber = 1
+        var hasOpenedACardInThisReply = false
+        // How many rows the card a `[ROW:...]` tag would go on has at this point of the reply.
+        // nil while there is no card for a row to go on.
+        var rowCountOfCardRowsGoOn = rowCountOfCardAlreadyOnScreen
+
         for completeDrawTagMatch in completeDrawTagMatches {
             guard let rangeInReplyText = Range(completeDrawTagMatch.range, in: rawReplyText),
-                  let tagBodyRange = Range(completeDrawTagMatch.range(at: 1), in: rawReplyText) else {
+                  let tagNameRange = Range(completeDrawTagMatch.range(at: 1), in: rawReplyText),
+                  let tagBodyRange = Range(completeDrawTagMatch.range(at: 2), in: rawReplyText) else {
                 continue
             }
+            let tagName = rawReplyText[tagNameRange].uppercased()
+            let tagBody = String(rawReplyText[tagBodyRange])
 
-            var command = self.command(fromTagBody: String(rawReplyText[tagBodyRange]))
-            if command != nil {
-                if acceptedCommandCount >= maximumDrawTagCountPerReply {
-                    command = nil
-                } else {
-                    acceptedCommandCount += 1
+            var command: ClickyDrawCommand?
+            switch tagName {
+            case "CARD":
+                // One card per reply: a second one would replace the first while its rows are
+                // still being spoken about.
+                if !hasOpenedACardInThisReply, let cardTitle = cardTitle(fromTagBody: tagBody) {
+                    command = .addMark(shape: .explanationCard(ClickyExplanationCard(title: cardTitle, rows: [])), screenNumber: nil)
+                    hasOpenedACardInThisReply = true
+                    rowCountOfCardRowsGoOn = 0
+                }
+
+            case "ROW":
+                if let rowCountSoFar = rowCountOfCardRowsGoOn,
+                   rowCountSoFar < ClickyExplanationCard.maximumRowCount,
+                   let cardRow = cardRow(fromTagBody: tagBody) {
+                    command = .addCardRow(cardRow)
+                    rowCountOfCardRowsGoOn = rowCountSoFar + 1
+                }
+
+            default:
+                command = self.command(fromTagBody: tagBody, calloutNumber: nextCalloutNumber)
+                if command != nil {
+                    if acceptedDrawCommandCount >= maximumDrawTagCountPerReply {
+                        command = nil
+                    } else {
+                        acceptedDrawCommandCount += 1
+                    }
+                }
+                if case .addMark(.callout, _) = command {
+                    nextCalloutNumber += 1
+                }
+                if case .clearAllMarks = command {
+                    // The card went with everything else, so a later row has nothing to go on.
+                    rowCountOfCardRowsGoOn = nil
                 }
             }
             drawTagOccurrences.append(DrawTagOccurrence(rangeInReplyText: rangeInReplyText, command: command))
         }
         return drawTagOccurrences
+    }
+
+    // MARK: - Reading a card and its rows
+
+    /// Reads the body of a `[CARD:...]` tag: all of it is the title, colons included.
+    static func cardTitle(fromTagBody tagBody: String) -> String? {
+        let cardTitle = singleLineText(tagBody, cutToCharacterCount: ClickyExplanationCard.maximumTitleCharacterCount)
+        return cardTitle.isEmpty ? nil : cardTitle
+    }
+
+    /// Reads the body of a `[ROW:...]` tag, such as "boxes:the|sky|is -> blue". Returns nil for an
+    /// unknown kind, an empty row, or a row with too few or too many parts.
+    static func cardRow(fromTagBody tagBody: String) -> ClickyExplanationCardRow? {
+        guard let firstColonIndex = tagBody.firstIndex(of: ":") else {
+            return nil
+        }
+        let kindName = tagBody[..<firstColonIndex].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let rowContent = String(tagBody[tagBody.index(after: firstColonIndex)...])
+        let maximumPartCharacterCount = ClickyExplanationCard.maximumRowPartCharacterCount
+
+        switch kindName {
+        case "text":
+            let rowText = singleLineText(rowContent, cutToCharacterCount: ClickyExplanationCard.maximumTextRowCharacterCount)
+            return rowText.isEmpty ? nil : .text(rowText)
+
+        case "boxes":
+            // Everything before the first "->" is the boxes; what follows it is the result.
+            let boxesAndResult = rowContent.replacingOccurrences(of: "→", with: "->").components(separatedBy: "->")
+            let inputTexts = rowParts(of: boxesAndResult[0], separatedBy: "|", cutToCharacterCount: maximumPartCharacterCount)
+            guard inputTexts.count >= ClickyExplanationCard.minimumBoxCountPerBoxesRow,
+                  inputTexts.count <= ClickyExplanationCard.maximumBoxCountPerBoxesRow else {
+                return nil
+            }
+            let resultText = boxesAndResult.count > 1
+                ? singleLineText(boxesAndResult.dropFirst().joined(separator: " "), cutToCharacterCount: maximumPartCharacterCount)
+                : ""
+            return .boxes(inputTexts: inputTexts, resultText: resultText.isEmpty ? nil : resultText)
+
+        case "flow":
+            // The grammar joins the nodes with ">". An arrow written as "->" or "→" means the same.
+            let rowContentWithOneSeparator = rowContent
+                .replacingOccurrences(of: "→", with: ">")
+                .replacingOccurrences(of: "->", with: ">")
+            let nodeTexts = rowParts(of: rowContentWithOneSeparator, separatedBy: ">", cutToCharacterCount: maximumPartCharacterCount)
+            guard nodeTexts.count >= ClickyExplanationCard.minimumPartCountPerFlowOrTimelineRow,
+                  nodeTexts.count <= ClickyExplanationCard.maximumPartCountPerFlowOrTimelineRow else {
+                return nil
+            }
+            return .flow(nodeTexts: nodeTexts)
+
+        case "timeline":
+            var timelinePoints: [ClickyExplanationCardTimelinePoint] = []
+            for pointText in rowContent.components(separatedBy: "|") {
+                if pointText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    continue
+                }
+                // "when=what". A point without both halves makes the whole row unreadable.
+                guard let firstEqualsIndex = pointText.firstIndex(of: "=") else {
+                    return nil
+                }
+                let whenText = singleLineText(
+                    String(pointText[..<firstEqualsIndex]),
+                    cutToCharacterCount: ClickyExplanationCard.maximumTimelineWhenCharacterCount
+                )
+                let whatText = singleLineText(
+                    String(pointText[pointText.index(after: firstEqualsIndex)...]),
+                    cutToCharacterCount: maximumPartCharacterCount
+                )
+                guard !whenText.isEmpty, !whatText.isEmpty else {
+                    return nil
+                }
+                timelinePoints.append(ClickyExplanationCardTimelinePoint(whenText: whenText, whatText: whatText))
+            }
+            guard timelinePoints.count >= ClickyExplanationCard.minimumPartCountPerFlowOrTimelineRow,
+                  timelinePoints.count <= ClickyExplanationCard.maximumPartCountPerFlowOrTimelineRow else {
+                return nil
+            }
+            return .timeline(points: timelinePoints)
+
+        default:
+            return nil
+        }
+    }
+
+    /// The parts of a row between its separators, each one line and cut to the limit. Empty parts
+    /// (from "a||b" or a trailing separator) are left out.
+    private static func rowParts(of rowContent: String, separatedBy separator: String, cutToCharacterCount maximumCharacterCount: Int) -> [String] {
+        rowContent
+            .components(separatedBy: separator)
+            .map { singleLineText($0, cutToCharacterCount: maximumCharacterCount) }
+            .filter { !$0.isEmpty }
     }
 
     // MARK: - Reading the pieces of a tag

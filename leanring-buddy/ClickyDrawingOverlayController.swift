@@ -3,7 +3,7 @@
 //  leanring-buddy
 //
 //  Shows the marks Clicky draws on the screen (arrows, circles, boxes, underlines, highlights,
-//  labels, sticky notes) and decides how long they stay. The marks are Core Animation layers in a
+//  labels, sticky notes, numbered callouts and the explanation card) and decides how long they stay. The marks are Core Animation layers in a
 //  click-through view on top of each screen's existing overlay window, so no extra windows exist
 //  and Clicky's screenshots, which already leave out all of Clicky's windows, never contain them.
 //
@@ -66,6 +66,10 @@ final class ClickyDrawingOverlayController {
     /// Marks stay this long after Clicky has finished speaking, then fade.
     static let secondsMarksStayAfterReplyEnds: TimeInterval = 12
 
+    /// The explanation card is something to read, not a pointer at the page, so it stays longer
+    /// than the other marks after Clicky has finished speaking.
+    static let secondsExplanationCardStaysAfterReplyEnds: TimeInterval = 20
+
     /// A turn that never finishes (the transcript was empty, a request hung) must not leave marks
     /// on the screen for ever. After this long without a finished reply they fade anyway.
     static let maximumSecondsMarksAreKeptWithoutAFinishedReply: TimeInterval = 60
@@ -90,8 +94,24 @@ final class ClickyDrawingOverlayController {
     /// The layers of the marks that have actually been drawn.
     private var markLayersByMarkNumber: [Int: CALayer] = [:]
 
+    /// Where the app put the explanation card, in points from its display's top-left corner. The
+    /// card has an entry from the moment its command is accepted until it is removed.
+    private var explanationCardFramesFromTopLeftByMarkNumber: [Int: CGRect] = [:]
+
+    /// Where the tag of each callout on the screen was put, and the place it points at, both in
+    /// points from the display's top-left corner. A new callout is kept clear of them.
+    private var calloutTagFramesFromTopLeftByMarkNumber: [Int: CGRect] = [:]
+    private var calloutTargetsFromTopLeftByMarkNumber: [Int: CGPoint] = [:]
+
+    /// Set by the drawing self test while it runs, so a user who happens to scroll or switch apps
+    /// during those few seconds does not wipe the sample marks before their picture is taken.
+    /// Escape still clears everything.
+    var isIgnoringScrollAndApplicationSwitchClearing = false
+
     private enum PendingScheduledWork {
         case drawMark(markNumber: Int)
+        /// A row of the explanation card. `rowIndex` is the row's place on the card.
+        case drawCardRow(cardMarkNumber: Int, rowIndex: Int)
         case removeMarks(markNumbers: [Int], fadeOutSeconds: Double)
     }
 
@@ -136,7 +156,8 @@ final class ClickyDrawingOverlayController {
             // (a segmentation fault inside the runtime's executor check) on every app switch,
             // even though the observer runs on the main queue.
             Task { @MainActor [weak self] in
-                self?.clearAllMarks(fadeOutSeconds: Self.applicationSwitchFadeOutSeconds)
+                guard let self, !self.isIgnoringScrollAndApplicationSwitchClearing else { return }
+                self.clearAllMarks(fadeOutSeconds: Self.applicationSwitchFadeOutSeconds)
             }
         }
     }
@@ -219,13 +240,28 @@ final class ClickyDrawingOverlayController {
         // Without audio the marks are still being drawn when the turn ends; the countdown starts
         // when the last of them is done.
         let secondsUntilLastMarkIsDrawn = max(0, latestScheduledDrawingEndUptimeSeconds - ClickyTurnMetrics.currentUptimeSeconds)
-        scheduleLifetimeFade(afterSeconds: secondsUntilLastMarkIsDrawn + Self.secondsMarksStayAfterReplyEnds)
+        scheduleLifetimeFade(
+            afterSeconds: secondsUntilLastMarkIsDrawn + Self.secondsMarksStayAfterReplyEnds,
+            extraSecondsExplanationCardStays: Self.secondsExplanationCardStaysAfterReplyEnds - Self.secondsMarksStayAfterReplyEnds
+        )
     }
 
-    private func scheduleLifetimeFade(afterSeconds secondsUntilFade: TimeInterval) {
+    /// Schedules the fade of every mark. With `extraSecondsExplanationCardStays` above zero, an
+    /// explanation card on the board is left when the other marks fade and goes that much later.
+    private func scheduleLifetimeFade(afterSeconds secondsUntilFade: TimeInterval, extraSecondsExplanationCardStays: TimeInterval = 0) {
         lifetimeFadeWorkItem?.cancel()
         let fadeWorkItem = DispatchWorkItem { [weak self] in
-            self?.clearAllMarks(fadeOutSeconds: Self.lifetimeFadeOutSeconds)
+            guard let self else { return }
+            guard extraSecondsExplanationCardStays > 0, let explanationCardMark = self.drawingBoard.explanationCardMark else {
+                self.clearAllMarks(fadeOutSeconds: Self.lifetimeFadeOutSeconds)
+                return
+            }
+            // Everything but the card fades now; the card gets its own countdown.
+            self.drawingBoard.removeMarks { $0.markNumber != explanationCardMark.markNumber }
+            for markNumber in Array(self.displayFramesByMarkNumber.keys) where markNumber != explanationCardMark.markNumber {
+                self.removeMarkFromScreen(markNumber: markNumber, fadeOutSeconds: Self.lifetimeFadeOutSeconds)
+            }
+            self.scheduleLifetimeFade(afterSeconds: extraSecondsExplanationCardStays)
         }
         lifetimeFadeWorkItem = fadeWorkItem
         DispatchQueue.main.asyncAfter(deadline: .now() + secondsUntilFade, execute: fadeWorkItem)
@@ -257,7 +293,13 @@ final class ClickyDrawingOverlayController {
         var placedDrawCommands: [PlacedDrawCommand] = []
         for parsedDrawCommand in parsedDrawCommands {
             guard case .addMark(let shapeInScreenshotPixels, let screenNumber) = parsedDrawCommand.command else {
-                placedDrawCommands.append(PlacedDrawCommand(parsedDrawCommand: parsedDrawCommand, displayPlacement: nil, penTravelLengthInPoints: 0))
+                // A row of the explanation card is written with the pen, so it takes as long as
+                // its boxes, arrows and words are long. Erase, undo and clear draw nothing.
+                var penTravelLengthInPoints = 0.0
+                if case .addCardRow(let cardRow) = parsedDrawCommand.command {
+                    penTravelLengthInPoints = ClickyExplanationCardLayerBuilder.penTravelLengthInPoints(for: cardRow)
+                }
+                placedDrawCommands.append(PlacedDrawCommand(parsedDrawCommand: parsedDrawCommand, displayPlacement: nil, penTravelLengthInPoints: penTravelLengthInPoints))
                 continue
             }
             guard let screenshotIndex = ClickyScreenshotToDisplayMapping.screenshotIndex(
@@ -306,7 +348,7 @@ final class ClickyDrawingOverlayController {
         )
 
         let nowUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
-        for (placedDrawCommand, scheduledTime) in zip(placedDrawCommands, scheduledTimes) {
+        for (placedCommandIndex, (placedDrawCommand, scheduledTime)) in zip(placedDrawCommands, scheduledTimes).enumerated() {
             // The board changes at once, so ids are given in the order the tags were written and a
             // later tag of the same reply (an undo, say) sees the marks before it. Only what
             // happens on screen waits for its moment.
@@ -316,6 +358,45 @@ final class ClickyDrawingOverlayController {
             case .addedMark(let addedMark, let marksRemovedToMakeRoom):
                 guard let displayPlacement = placedDrawCommand.displayPlacement else { continue }
                 displayFramesByMarkNumber[addedMark.markNumber] = displayPlacement.displayFrame
+                if case .explanationCard(let openedCard) = addedMark.shape {
+                    // The card is placed now, while every mark of the reply is known: it goes on
+                    // the side this reply does not draw on, and is centred for the height it will
+                    // have once the rows that follow it in this reply are written.
+                    var cardWithRowsOfThisReply = openedCard
+                    var marksOfThisReplyOnTheCardsDisplay: [ClickyDrawingShape] = []
+                    for (otherCommandIndex, otherPlacedDrawCommand) in placedDrawCommands.enumerated() {
+                        switch otherPlacedDrawCommand.parsedDrawCommand.command {
+                        case .addCardRow(let cardRow):
+                            if otherCommandIndex > placedCommandIndex, cardWithRowsOfThisReply.rows.count < ClickyExplanationCard.maximumRowCount {
+                                cardWithRowsOfThisReply = cardWithRowsOfThisReply.addingRow(cardRow)
+                            }
+                        case .addMark(let otherShapeInScreenshotPixels, _):
+                            if let otherDisplayPlacement = otherPlacedDrawCommand.displayPlacement,
+                               otherDisplayPlacement.displayFrame == displayPlacement.displayFrame {
+                                marksOfThisReplyOnTheCardsDisplay.append(otherDisplayPlacement.screenshotToDisplayMapping.shapeInDisplayPoints(
+                                    forShapeInScreenshotPixels: otherShapeInScreenshotPixels
+                                ))
+                            }
+                        case .eraseMark, .undoNewestMark, .clearAllMarks:
+                            break
+                        }
+                    }
+                    let displaySizeInPoints = displayPlacement.displayFrame.size
+                    let plannedCardFrame = ClickyExplanationCardPlacement.cardFrame(
+                        forCardSize: ClickyExplanationCardLayerBuilder.cardLayout(for: cardWithRowsOfThisReply).cardSize,
+                        displaySizeInPoints: displaySizeInPoints,
+                        menuBarHeightInPoints: menuBarHeightInPoints(forDisplayFrame: displayPlacement.displayFrame),
+                        placesCardInLeftThird: ClickyExplanationCardPlacement.marksAreMostlyOnRightHalf(
+                            markAnchorXsInDisplayPoints: marksOfThisReplyOnTheCardsDisplay.compactMap { $0.placeTheShapeIsAbout?.x },
+                            displayWidthInPoints: Double(displaySizeInPoints.width)
+                        )
+                    )
+                    // It opens with its title alone and grows downwards from this corner.
+                    explanationCardFramesFromTopLeftByMarkNumber[addedMark.markNumber] = CGRect(
+                        origin: plannedCardFrame.origin,
+                        size: ClickyExplanationCardLayerBuilder.cardLayout(for: openedCard).cardSize
+                    )
+                }
                 schedule(
                     .drawMark(markNumber: addedMark.markNumber),
                     afterSeconds: scheduledTime.startSecondsAfterSpeechBegins
@@ -343,8 +424,25 @@ final class ClickyDrawingOverlayController {
                     afterSeconds: scheduledTime.startSecondsAfterSpeechBegins
                 )
 
+            case .addedRowToCard(let cardMark, let rowIndex):
+                schedule(
+                    .drawCardRow(cardMarkNumber: cardMark.markNumber, rowIndex: rowIndex),
+                    afterSeconds: scheduledTime.startSecondsAfterSpeechBegins
+                ) { [weak self] in
+                    self?.drawCardRowOnScreen(
+                        cardMark: cardMark,
+                        rowIndex: rowIndex,
+                        penDurationSeconds: scheduledTime.penDurationSeconds
+                    )
+                }
+                latestScheduledDrawingEndUptimeSeconds = max(
+                    latestScheduledDrawingEndUptimeSeconds,
+                    nowUptimeSeconds + scheduledTime.startSecondsAfterSpeechBegins + scheduledTime.penDurationSeconds
+                )
+
             case .nothingChanged:
-                // An erase of an id that is not on the board, or an undo with nothing to undo.
+                // An erase of an id that is not on the board, an undo with nothing to undo, or a
+                // row with no card to go on.
                 break
             }
         }
@@ -369,6 +467,10 @@ final class ClickyDrawingOverlayController {
             case .drawMark(let markNumber):
                 drawingBoard.removeMarks { $0.markNumber == markNumber }
                 removeMarkFromScreen(markNumber: markNumber, fadeOutSeconds: 0)
+            case .drawCardRow(let cardMarkNumber, let rowIndex):
+                // The row was never written, so it comes back off the card on the board. Rows are
+                // written in order, so every row from this one on is one that was not written.
+                drawingBoard.keepOnlyFirstRows(rowIndex, ofCardWithMarkNumber: cardMarkNumber)
             case .removeMarks(let markNumbers, let fadeOutSeconds):
                 for markNumber in markNumbers {
                     removeMarkFromScreen(markNumber: markNumber, fadeOutSeconds: fadeOutSeconds)
@@ -398,9 +500,10 @@ final class ClickyDrawingOverlayController {
     }
 
     /// The page under the marks moved, so everything that points at a place on it is now wrong
-    /// and fades. Sticky notes are notes to the user and stay. Marks of the current reply that
+    /// and fades. Sticky notes and the explanation card are written for the user and stay. Marks of the current reply that
     /// have not been drawn yet are dropped too: they would land on content that has moved.
     func fadeMarksThatPointAtScreenContent() {
+        guard !isIgnoringScrollAndApplicationSwitchClearing else { return }
         guard case .removedMarks(let removedMarks) = drawingBoard.removeMarks(where: { $0.shape.pointsAtScreenContent }) else {
             return
         }
@@ -446,6 +549,15 @@ final class ClickyDrawingOverlayController {
         drawingSurfaceViews.first { $0.displayFrame == displayFrame }
     }
 
+    /// The height of the menu bar on a display, so the card and callouts stay below it. Zero for a
+    /// display that is no longer connected.
+    private func menuBarHeightInPoints(forDisplayFrame displayFrame: CGRect) -> Double {
+        guard let screen = NSScreen.screens.first(where: { $0.frame == displayFrame }) else {
+            return 0
+        }
+        return Double(max(0, screen.frame.maxY - screen.visibleFrame.maxY))
+    }
+
     private func drawMarkOnScreen(_ mark: ClickyDrawingMark, displayPlacement: ClickyDrawingDisplayPlacement, penDurationSeconds: Double) {
         // No entry means the mark was removed (erased, scrolled away, cleared) while it waited.
         guard displayFramesByMarkNumber[mark.markNumber] != nil,
@@ -458,12 +570,64 @@ final class ClickyDrawingOverlayController {
         let shapeInDisplayPoints = displayPlacement.screenshotToDisplayMapping.shapeInDisplayPoints(
             forShapeInScreenshotPixels: mark.shape
         )
-        let markLayer = ClickyDrawingMarkLayerBuilder.makeMarkLayer(
-            forMarkNumber: mark.markNumber,
-            shapeInDisplayPoints: shapeInDisplayPoints,
-            displaySizeInPoints: drawingSurfaceView.displayFrame.size,
-            backingScaleFactor: drawingSurfaceView.window?.backingScaleFactor ?? 2
-        )
+        let displaySizeInPoints = drawingSurfaceView.displayFrame.size
+        let backingScaleFactor = drawingSurfaceView.window?.backingScaleFactor ?? 2
+
+        let markLayer: CALayer
+        switch shapeInDisplayPoints {
+        case .explanationCard(let card):
+            guard let cardFrameFromTopLeft = explanationCardFramesFromTopLeftByMarkNumber[mark.markNumber] else { return }
+            markLayer = ClickyExplanationCardLayerBuilder.makeCardLayer(
+                forMarkNumber: mark.markNumber,
+                card: card,
+                cardFrameFromTopLeft: cardFrameFromTopLeft,
+                displaySizeInPoints: displaySizeInPoints,
+                backingScaleFactor: backingScaleFactor
+            )
+
+        case .callout(let target, let text, let calloutNumber):
+            let targetInDisplayPoints = CGPoint(x: target.x, y: target.y)
+            // The tag is placed now, clear of what is already on this display: the tags of the
+            // other callouts, the places they point at, and the explanation card.
+            var occupiedFrames: [CGRect] = []
+            for (otherMarkNumber, otherDisplayFrame) in displayFramesByMarkNumber where otherDisplayFrame == displayPlacement.displayFrame {
+                if let otherTagFrame = calloutTagFramesFromTopLeftByMarkNumber[otherMarkNumber] {
+                    occupiedFrames.append(otherTagFrame)
+                }
+                if let otherTarget = calloutTargetsFromTopLeftByMarkNumber[otherMarkNumber] {
+                    occupiedFrames.append(ClickyCalloutPlacement.clearFrame(aroundTarget: otherTarget))
+                }
+                if let cardFrame = explanationCardFramesFromTopLeftByMarkNumber[otherMarkNumber] {
+                    occupiedFrames.append(cardFrame)
+                }
+            }
+            let tagFrameFromTopLeft = ClickyCalloutPlacement.tagFrame(
+                forTargetInDisplayPoints: targetInDisplayPoints,
+                tagSize: ClickyExplanationCardLayerBuilder.calloutTagSize(forText: text),
+                displaySizeInPoints: displaySizeInPoints,
+                menuBarHeightInPoints: menuBarHeightInPoints(forDisplayFrame: displayPlacement.displayFrame),
+                occupiedFrames: occupiedFrames
+            )
+            calloutTagFramesFromTopLeftByMarkNumber[mark.markNumber] = tagFrameFromTopLeft
+            calloutTargetsFromTopLeftByMarkNumber[mark.markNumber] = targetInDisplayPoints
+            markLayer = ClickyExplanationCardLayerBuilder.makeCalloutLayer(
+                forMarkNumber: mark.markNumber,
+                targetInDisplayPoints: targetInDisplayPoints,
+                text: text,
+                calloutNumber: calloutNumber,
+                tagFrameFromTopLeft: tagFrameFromTopLeft,
+                displaySizeInPoints: displaySizeInPoints,
+                backingScaleFactor: backingScaleFactor
+            )
+
+        case .arrow, .circle, .box, .underline, .highlight, .label, .stickyNote:
+            markLayer = ClickyDrawingMarkLayerBuilder.makeMarkLayer(
+                forMarkNumber: mark.markNumber,
+                shapeInDisplayPoints: shapeInDisplayPoints,
+                displaySizeInPoints: displaySizeInPoints,
+                backingScaleFactor: backingScaleFactor
+            )
+        }
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -471,13 +635,58 @@ final class ClickyDrawingOverlayController {
         CATransaction.commit()
         markLayersByMarkNumber[mark.markNumber] = markLayer
         let surfaceWindow = drawingSurfaceView.window
-        print("✏️ draw: mark m\(mark.markNumber) drawn layerFrame=\(markLayer.frame.integral) surfaceFrame=\(drawingSurfaceView.frame.integral) inWindow=\(surfaceWindow != nil) windowVisible=\(surfaceWindow?.isVisible ?? false) windowAlpha=\(surfaceWindow?.alphaValue ?? -1) hidden=\(drawingSurfaceView.isHiddenOrHasHiddenAncestor)")
+        print("✏️ draw: mark m\(mark.markNumber) \(mark.shape.tagKindName) drawn layerFrame=\(markLayer.frame.integral) surfaceFrame=\(drawingSurfaceView.frame.integral) inWindow=\(surfaceWindow != nil) windowVisible=\(surfaceWindow?.isVisible ?? false) windowAlpha=\(surfaceWindow?.alphaValue ?? -1) hidden=\(drawingSurfaceView.isHiddenOrHasHiddenAncestor)")
 
-        ClickyDrawingMarkLayerBuilder.animateAppearance(of: markLayer, penDurationSeconds: penDurationSeconds)
+        if case .callout = shapeInDisplayPoints {
+            // The tag fades in while the pen draws the leader line.
+            ClickyExplanationCardLayerBuilder.animateCalloutAppearance(of: markLayer, penDurationSeconds: penDurationSeconds)
+        } else {
+            // Ink is revealed with the pen; a label, a sticky note and the card fade and grow in.
+            ClickyDrawingMarkLayerBuilder.animateAppearance(of: markLayer, penDurationSeconds: penDurationSeconds)
+        }
+    }
+
+    /// Writes one row on the explanation card that is on the screen. `cardMark` is the card with
+    /// the row already on it. Nothing happens when the card has gone (erased, cleared, faded)
+    /// while the row waited for its moment.
+    private func drawCardRowOnScreen(cardMark: ClickyDrawingMark, rowIndex: Int, penDurationSeconds: Double) {
+        guard case .explanationCard(let cardWithRow) = cardMark.shape,
+              let cardLayer = markLayersByMarkNumber[cardMark.markNumber],
+              let currentCardFrameFromTopLeft = explanationCardFramesFromTopLeftByMarkNumber[cardMark.markNumber],
+              let cardDisplayFrame = displayFramesByMarkNumber[cardMark.markNumber],
+              let drawingSurfaceView = drawingSurfaceView(forDisplayFrame: cardDisplayFrame) else {
+            print("✏️ draw: row \(rowIndex + 1) of card m\(cardMark.markNumber) not drawn (the card is not on screen)")
+            return
+        }
+
+        let displaySizeInPoints = drawingSurfaceView.displayFrame.size
+        // The card grows downwards by the row, and moves up only if it would leave the screen.
+        let grownCardFrameFromTopLeft = ClickyExplanationCardPlacement.cardFrameAfterGrowing(
+            from: currentCardFrameFromTopLeft,
+            toCardSize: ClickyExplanationCardLayerBuilder.cardLayout(for: cardWithRow).cardSize,
+            displaySizeInPoints: displaySizeInPoints,
+            menuBarHeightInPoints: menuBarHeightInPoints(forDisplayFrame: cardDisplayFrame)
+        )
+        explanationCardFramesFromTopLeftByMarkNumber[cardMark.markNumber] = grownCardFrameFromTopLeft
+
+        ClickyExplanationCardLayerBuilder.addRow(
+            atRowIndex: rowIndex,
+            of: cardWithRow,
+            to: cardLayer,
+            markNumber: cardMark.markNumber,
+            cardFrameFromTopLeft: grownCardFrameFromTopLeft,
+            displaySizeInPoints: displaySizeInPoints,
+            backingScaleFactor: drawingSurfaceView.window?.backingScaleFactor ?? 2,
+            penDurationSeconds: penDurationSeconds
+        )
+        print("✏️ draw: row \(rowIndex + 1) of card m\(cardMark.markNumber) drawn cardFrame=\(grownCardFrameFromTopLeft.integral)")
     }
 
     private func removeMarkFromScreen(markNumber: Int, fadeOutSeconds: Double) {
         displayFramesByMarkNumber[markNumber] = nil
+        explanationCardFramesFromTopLeftByMarkNumber[markNumber] = nil
+        calloutTagFramesFromTopLeftByMarkNumber[markNumber] = nil
+        calloutTargetsFromTopLeftByMarkNumber[markNumber] = nil
         guard let markLayer = markLayersByMarkNumber.removeValue(forKey: markNumber) else {
             return
         }

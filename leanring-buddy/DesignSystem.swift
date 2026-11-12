@@ -172,6 +172,33 @@ enum DS {
         /// ink-coloured tip can be told apart from the line it has just drawn.
         static let overlayDrawingPenEdge = Color(hex: "#FFF6EF")
 
+        /// The paper of the explanation card Clicky writes on while it explains something: a
+        /// warm cream, lighter and calmer than the yellow of a sticky note.
+        static let overlayDrawingCardPaper = Color(hex: "#FBF5E6")
+
+        /// The faint squared grid printed on the card's paper.
+        static let overlayDrawingCardGridLine = Color(hex: "#EBE1C8")
+
+        /// The thin edge around the card, so the cream paper ends clearly on a white page.
+        static let overlayDrawingCardEdge = Color(hex: "#DDD0B2")
+
+        /// The handwriting on the card: a dark warm brown, like soft pencil on cream paper.
+        static let overlayDrawingCardText = Color(hex: "#2E2618")
+
+        /// The pencil outline of the small boxes on the card.
+        static let overlayDrawingCardPencil = Color(hex: "#5B4E3A")
+
+        /// The light fill of an ordinary box on the card.
+        static let overlayDrawingCardBoxFill = Color(hex: "#F1E5C4")
+
+        /// The fill of a result box (the box an arrow leads to): a second soft tint, a pale
+        /// green, so the outcome stands apart from what goes into it.
+        static let overlayDrawingCardResultBoxFill = Color(hex: "#CFE7D4")
+
+        /// The dates of a timeline on the card: the marker ink darkened until it reads easily as
+        /// small handwriting on cream paper.
+        static let overlayDrawingCardAccentText = Color(hex: "#C23F1D")
+
         // ── Status Pill ──────────────────────────────────────────────
 
         /// The status pill at the top of the screen on a display without a notch: almost black,

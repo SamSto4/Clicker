@@ -61,6 +61,17 @@ nonisolated enum ClickySpeechPrefetch {
         return .spokenTextIsComplete(spokenText: spokenText)
     }
 
+    /// True when the reply so far holds a tag that sits between its sentences: a `[DRAW`, `[CARD`
+    /// or `[ROW` tag. In such a reply the words before the first tag are not the whole spoken
+    /// answer, so audio fetched for them would always be thrown away, and the early fetch is
+    /// skipped. A half-arrived "[DRA" does not count yet; the next chunk settles it.
+    static func replyHoldsTagsBetweenItsSentences(_ accumulatedReplyText: String) -> Bool {
+        accumulatedReplyText.range(
+            of: #"\[\s*(?:DRAW|CARD|ROW)"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
     /// False when the user's own words are about memory: a save command, a lasting fact or
     /// preference, forgetting, or anything that looks like a secret. In those turns the finisher
     /// often rewrites what is spoken ("i won't keep that."), so fetching early would send text to
