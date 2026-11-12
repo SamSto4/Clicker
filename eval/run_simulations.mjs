@@ -35,7 +35,9 @@ const DIMENSION_ORDER = ["pointing", "brevity", "coding", "notes"];
 // total. It is not run by default; ask for it with --dimensions personalization (needs --assembler).
 // Round 6: visual (drawing on the screen and the explanation card) is tracked the same way: on its
 // own, with --dimensions visual and --assembler, and never part of the weighted total.
-const EXTRA_DIMENSIONS = ["personalization", "visual"];
+// Round 14: context (does Clicky keep an old screen apart from the screen now?) is tracked the same way:
+// on its own, with --dimensions context and --assembler, and never part of the weighted total.
+const EXTRA_DIMENSIONS = ["personalization", "visual", "context"];
 const ALL_DIMENSIONS = [...DIMENSION_ORDER, ...EXTRA_DIMENSIONS];
 
 const POINTING_BOX_TOLERANCE_PIXELS = 4;
@@ -115,6 +117,8 @@ function parseArguments(argumentList) {
     resummarize: null,
     // Round 6: re-finish and re-score the stored replies of a visual run after a scorer fix. Zero API calls.
     rescoreVisual: null,
+    // Round 14: re-finish and re-score the stored replies of a context run after a scorer fix. Zero API calls.
+    rescoreContext: null,
   };
   for (let index = 0; index < argumentList.length; index++) {
     const argument = argumentList[index];
@@ -141,6 +145,7 @@ function parseArguments(argumentList) {
       case "--self-test": options.selfTest = true; break;
       case "--resummarize": options.resummarize = nextValue(); break;
       case "--rescore-visual": options.rescoreVisual = nextValue(); break;
+      case "--rescore-context": options.rescoreContext = nextValue(); break;
       default: throw new Error(`unknown argument: ${argument}`);
     }
   }
@@ -156,6 +161,9 @@ function parseArguments(argumentList) {
   }
   if (options.dimensions.includes("visual") && !options.assembler && !options.resummarize && !options.selfTest) {
     throw new Error("the visual dimension needs --assembler: draw, card and row tags are read by the app's own ClickyDrawTagParser through the driver");
+  }
+  if (options.dimensions.includes("context") && !options.assembler && !options.resummarize && !options.selfTest) {
+    throw new Error("the context dimension needs --assembler: the spoken text it scores comes from the app's own turn finisher through the driver");
   }
   return options;
 }
@@ -1344,6 +1352,122 @@ export function scoreVisual(scenario, finishedTurn, rawReplyText, manifest) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Scoring: CONTEXT (round 14, tracked separately, excluded from the weighted total)
+//
+// Does Clicky keep an old screen apart from the screen now? Every turn sends only the current
+// screenshots, while the conversation history is plain text that may describe an earlier screen. After
+// the user switches tab, window or app, the right behaviour is: answer about the screen now, never
+// remark on or apologise for the switch, and still use the earlier messages when the new question
+// continues them. The history carries no images, so "the old screen" exists only in the assistant text
+// each scenario writes; `forbiddenOldTopicPhrases` holds words taken from that text which cannot
+// appear in a correct answer about the current screen.
+//
+// Rubric (100 points, documented in README.md "Context (round 14)"):
+//   50  answer keyword groups (about the current screen, or about the earlier topic for follow-ups)
+//   30  no old-topic words and no meta remark about the switch
+//   10  at most two spoken sentences
+//   10  right pointing behaviour (the hit for pointing-after-switch, else a valid POINT tag or none)
+// ---------------------------------------------------------------------------------------------
+
+export const CONTEXT_KINDS = ["switch-new-topic", "switch-ambiguous-this", "follow-up-across-switch", "same-screen-follow-up", "pointing-after-switch"];
+const CONTEXT_FOLLOW_UP_KINDS = ["follow-up-across-switch", "same-screen-follow-up"];
+const CONTEXT_MAX_SPOKEN_SENTENCES = 2;
+
+// Remarks about the switch itself or apologies for it. A correct answer about the screen now has no
+// reason to use any of them ("apolog" is a stem on purpose: apologize, apologies, apologise).
+export const CONTEXT_META_REMARK_PHRASES = [
+  "my mistake", "sorry", "apolog", "no longer", "not looking at", "aren't looking", "anymore",
+  "different screen", "switched", "you've moved", "now you're on",
+];
+// Added after the first baseline run, from reading its replies: the brief's list above missed replies that
+// correct themselves ("i was wrong earlier", "my last answer was wrong") or comment on what is and is not
+// on screen now ("i don't see xcode on screen right now, just the workers dashboard"). Those are the same
+// failure Sam described (a remark about the switch), so they count as meta remarks too. The summary keeps
+// the count by the brief's list alone next to the count by both lists. None of these can appear in a
+// correct answer about the screen now ("earlier" alone is not listed: "the fix from earlier was
+// mutating" is a normal way to continue the earlier topic).
+export const CONTEXT_SWITCH_COMMENTARY_PHRASES = [
+  "i was wrong", "my last answer", "was mistaken", "on screen right now", "on your screen right now",
+  "i don't see your", "i can't see your",
+];
+// A follow-up that continues the earlier topic must not claim it has lost the thread.
+export const CONTEXT_LOST_THREAD_PHRASES = ["not sure what you"];
+
+// Lowercase, straight apostrophes, hyphens and underscores read as spaces ("clicky-proxy" and
+// "clicky proxy" are the same spoken words, as are fetch_prices and "fetch prices"), single spaces.
+export function normalizeForContextMatching(text) {
+  return String(text ?? "").toLowerCase().replace(/[\u2018\u2019\u02bc]/g, "'").replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function contextPhrasesFoundIn(normalizedText, phrases) {
+  return phrases.filter((phrase) => normalizedText.includes(normalizeForContextMatching(phrase)));
+}
+
+export function scoreContext(scenario, replyTextOrView, manifest) {
+  const parsed = typeof replyTextOrView === "string" ? parsePointTag(replyTextOrView) : replyTextOrView;
+  const expectation = scenario.expect;
+  const isFollowUp = CONTEXT_FOLLOW_UP_KINDS.includes(scenario.kind);
+  const spokenText = normalizeForContextMatching(parsed.spokenText);
+
+  const keywordResult = scoreKeywordGroups(expectation.answerKeywordGroups.map((group) => group.map(normalizeForContextMatching)), spokenText);
+  const oldTopicPhrasesSpoken = contextPhrasesFoundIn(spokenText, expectation.forbiddenOldTopicPhrases ?? []);
+  const metaPhrasesFromBriefListSpoken = contextPhrasesFoundIn(spokenText, CONTEXT_META_REMARK_PHRASES);
+  const metaPhrasesSpoken = [...metaPhrasesFromBriefListSpoken, ...contextPhrasesFoundIn(spokenText, CONTEXT_SWITCH_COMMENTARY_PHRASES)];
+  const lostThreadPhrasesSpoken = isFollowUp ? contextPhrasesFoundIn(spokenText, CONTEXT_LOST_THREAD_PHRASES) : [];
+  const spokenSentenceCount = countSentences(parsed.spokenText);
+
+  let pointingIsRight;
+  let pointingOutcome = null;
+  if (scenario.kind === "pointing-after-switch") {
+    // Reuse the pointing scorer: the point must land inside the element's box (4 px of slack).
+    const pointingResult = scorePointing({ screens: scenario.screens, expect: { type: "point", targets: expectation.targets } }, parsed, manifest);
+    pointingIsRight = pointingResult.outcome === "hit";
+    pointingOutcome = pointingResult.outcome;
+  } else {
+    // Anything else: the reply ends with a POINT tag that is none or lands on the screen.
+    const pointedScreenFixture = manifest[scenario.screens[(parsed.screenNumber ?? 1) - 1]];
+    const coordinatesAreOnScreen = parsed.isNone || (Boolean(pointedScreenFixture) && parsed.x <= pointedScreenFixture.width && parsed.y <= pointedScreenFixture.height);
+    pointingIsRight = parsed.hasTag && (parsed.tagAtEnd ?? true) && coordinatesAreOnScreen;
+    pointingOutcome = pointingIsRight ? (parsed.isNone ? "none" : "valid_point") : (parsed.hasTag ? "invalid_point" : "no_tag");
+  }
+
+  const checks = {};
+  const award = (name, points, earned, note = null) => { checks[name] = { points, earned: Math.round(earned * 10) / 10, ...(note ? { note } : {}) }; };
+  award("answer_keywords", 50, 50 * keywordResult.coverage, `${keywordResult.groupHits.filter(Boolean).length} of ${keywordResult.groupHits.length} keyword groups`);
+  const keptApartFromOldScreen = oldTopicPhrasesSpoken.length === 0 && metaPhrasesSpoken.length === 0 && lostThreadPhrasesSpoken.length === 0;
+  award("no_bleed_or_meta_remark", 30, keptApartFromOldScreen ? 30 : 0);
+  award("at_most_two_sentences", 10, spokenSentenceCount <= CONTEXT_MAX_SPOKEN_SENTENCES ? 10 : 0, `${spokenSentenceCount} sentence(s)`);
+  award("pointing_behaviour", 10, pointingIsRight ? 10 : 0, pointingOutcome);
+
+  // Precedence: an answer about the wrong screen is the worst failure, then a remark about the switch,
+  // then a missed answer, then a wrong point. "clean" is about the context behaviour only: an answer
+  // that is right but runs to three sentences is still "clean" and shows the lost points in its score.
+  let outcome = "clean";
+  if (oldTopicPhrasesSpoken.length > 0) outcome = "bled_old_screen";
+  else if (metaPhrasesSpoken.length > 0) outcome = "meta_remark";
+  else if (isFollowUp && (lostThreadPhrasesSpoken.length > 0 || keywordResult.coverage < 1)) outcome = "missed_follow_up";
+  else if (keywordResult.coverage < 1) outcome = "missed_current_screen"; // not in the brief's five: a switch answer that is neither bleed nor meta but not about the screen now
+  else if (!pointingIsRight) outcome = "wrong_point";
+
+  const score = Object.values(checks).reduce((sum, check) => sum + check.earned, 0);
+  const failedChecks = Object.entries(checks).filter(([, check]) => check.earned < check.points).map(([name]) => name);
+  return {
+    score, outcome,
+    detail: {
+      kind: scenario.kind, checks, failed_checks: failedChecks,
+      keyword_group_hits: keywordResult.groupHits,
+      old_topic_phrases_checked: (expectation.forbiddenOldTopicPhrases ?? []).length,
+      old_topic_phrases_spoken: oldTopicPhrasesSpoken,
+      meta_phrases_spoken: metaPhrasesSpoken,
+      meta_phrases_from_brief_list_spoken: metaPhrasesFromBriefListSpoken,
+      lost_thread_phrases_spoken: lostThreadPhrasesSpoken,
+      spoken_sentence_count: spokenSentenceCount,
+      pointing_outcome: pointingOutcome,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Scenario loading
 // ---------------------------------------------------------------------------------------------
 
@@ -1389,8 +1513,23 @@ const FRONTMOST_APP_BY_FIXTURE_PREFIX = {
   browser: { bundleId: "com.apple.Safari", name: "Safari" },
 };
 
+// Round 14: a context scenario names the app it is "now" in (screenContextNow.app). The prefix table
+// above calls every browser_* fixture Safari, but browser_main.jpg visibly shows Chrome; telling the model
+// "the frontmost app is Safari" over a Chrome screenshot would invite exactly the kind of remark about
+// the screen that the context dimension counts against the app. So for these scenarios the named app wins.
+const FRONTMOST_APP_BY_APP_NAME = {
+  "Xcode": FRONTMOST_APP_BY_FIXTURE_PREFIX.xcode,
+  "Visual Studio Code": FRONTMOST_APP_BY_FIXTURE_PREFIX.vscode,
+  "Terminal": FRONTMOST_APP_BY_FIXTURE_PREFIX.terminal,
+  "System Settings": FRONTMOST_APP_BY_FIXTURE_PREFIX.settings,
+  "Safari": FRONTMOST_APP_BY_FIXTURE_PREFIX.browser,
+  "Google Chrome": { bundleId: "com.google.Chrome", name: "Google Chrome" },
+};
+
 // Coding and terminal fixtures get their real app; everything else is Safari (a neutral app).
 export function frontmostAppForScenario(scenario) {
+  const appNamedByScenario = FRONTMOST_APP_BY_APP_NAME[scenario.screenContextNow?.app];
+  if (appNamedByScenario) return appNamedByScenario;
   const fixturePrefix = scenario.screens[0].split("_")[0];
   return FRONTMOST_APP_BY_FIXTURE_PREFIX[fixturePrefix] ?? FRONTMOST_APP_BY_FIXTURE_PREFIX.browser;
 }
@@ -1429,6 +1568,10 @@ class PromptAssembler {
         // Round 6: marks already on the screen (earlier reply texts; the driver parses and applies their tags
         // with the app's code, and the assembler adds its own "marks on screen" section).
         ...(scenario.seedDrawTagTexts ? { seedDrawTagTexts: scenario.seedDrawTagTexts } : {}),
+        // Round 14: where the earlier exchange happened and where the user is now. Passed under the same
+        // names the app change will read; the driver ignores them today (it reads only the keys it knows).
+        ...(scenario.screenContextOfHistory ? { screenContextOfHistory: scenario.screenContextOfHistory } : {}),
+        ...(scenario.screenContextNow ? { screenContextNow: scenario.screenContextNow } : {}),
       };
     });
     fs.writeFileSync(inputPath, JSON.stringify(prepareInput));
@@ -1555,6 +1698,11 @@ async function runScenario(scenario, context) {
     const result = scoreVisual(scenario, finishedTurn, reply.text, manifest);
     return { ...common, score: result.score, outcome: result.outcome, detail: result.detail };
   }
+  if (scenario.dimension === "context") {
+    if (!finishedTurn) return { ...common, errored: true, error: "context needs the assembler's finished turn" };
+    const result = scoreContext(scenario, replyViewFromFinishedTurn(reply.text, finishedTurn), manifest);
+    return { ...common, score: result.score, outcome: result.outcome, detail: result.detail };
+  }
   if (scenario.dimension === "personalization") {
     if (!finishedTurn) return { ...common, errored: true, error: "personalization needs the assembler's finished turn" };
     const result = scorePersonalization(scenario, finishedTurn, assembledPrompts.get(scenario.id));
@@ -1673,6 +1821,42 @@ function buildDimensionDetails(dimension, results, notesProtocol) {
       median_output_tokens: median(scored.map((result) => result.output_tokens).filter((value) => value !== null)),
     };
   }
+  if (dimension === "context") {
+    const outcomeCounts = {};
+    const checkFailureCounts = {};
+    for (const result of scored) {
+      outcomeCounts[result.outcome] = (outcomeCounts[result.outcome] ?? 0) + 1;
+      for (const check of result.detail?.failed_checks ?? []) checkFailureCounts[check] = (checkFailureCounts[check] ?? 0) + 1;
+    }
+    const byKind = {};
+    for (const [kind, members] of groupBy(scored, (result) => result.detail.kind)) {
+      byKind[kind] = {
+        n: members.length, score: round1(mean(members.map((member) => member.score))),
+        below_80: members.filter((member) => member.score < 80).map((member) => member.id),
+      };
+    }
+    const percentOf = (count, total) => (total === 0 ? null : round1(100 * count / total));
+    // Old-screen bleed can only be measured where the scenario names words that belong to the old topic
+    // (the switch scenarios and pointing-after-switch); follow-ups use the earlier topic on purpose.
+    const canBleed = scored.filter((result) => (result.detail?.old_topic_phrases_checked ?? 0) > 0);
+    const bled = canBleed.filter((result) => (result.detail.old_topic_phrases_spoken ?? []).length > 0);
+    const remarkedOnTheSwitch = scored.filter((result) => (result.detail?.meta_phrases_spoken ?? []).length > 0);
+    const followUps = scored.filter((result) => ["follow-up-across-switch", "same-screen-follow-up"].includes(result.detail?.kind));
+    const followUpsMissed = followUps.filter((result) => result.outcome === "missed_follow_up" || (result.detail.lost_thread_phrases_spoken ?? []).length > 0);
+    return {
+      ...base, by_kind: byKind, outcome_counts: outcomeCounts, check_failure_counts: checkFailureCounts,
+      clean_replies: outcomeCounts.clean ?? 0, clean_rate_percent: percentOf(outcomeCounts.clean ?? 0, scored.length),
+      old_screen_bleed: { scenarios_where_it_can_show: canBleed.length, replies_that_bled: bled.length, rate_percent: percentOf(bled.length, canBleed.length), scenario_ids: bled.map((result) => result.id) },
+      meta_remark: {
+        replies: remarkedOnTheSwitch.length, of: scored.length, rate_percent: percentOf(remarkedOnTheSwitch.length, scored.length), scenario_ids: remarkedOnTheSwitch.map((result) => result.id),
+        // The same count using only the phrase list the brief gave (see CONTEXT_SWITCH_COMMENTARY_PHRASES).
+        replies_by_the_brief_phrase_list_only: scored.filter((result) => (result.detail?.meta_phrases_from_brief_list_spoken ?? []).length > 0).length,
+      },
+      follow_ups_that_lost_the_thread: { replies: followUpsMissed.length, of: followUps.length, scenario_ids: followUpsMissed.map((result) => result.id) },
+      median_latency_ms: median(latencies), p90_latency_ms: Math.round(percentile(latencies, 0.9)),
+      median_output_tokens: median(scored.map((result) => result.output_tokens).filter((value) => value !== null)),
+    };
+  }
   // notes (enabled)
   const outcomeCounts = {};
   for (const result of scored) outcomeCounts[result.outcome] = (outcomeCounts[result.outcome] ?? 0) + 1;
@@ -1723,7 +1907,7 @@ function describeFailures(dimension, visibleResults, details) {
       failures.push({ dimension, category, description: `category mean ${round1(categoryScore)}/100 (judge ${round1(mean(members.map((member) => member.detail.judge.total)))}/10, keyword coverage ${round1(100 * mean(members.map((member) => member.detail.keyword_coverage)))}%).` });
     }
   }
-  if (dimension === "personalization" || dimension === "visual") {
+  if (dimension === "personalization" || dimension === "visual" || dimension === "context") {
     for (const [category, members] of groupBy(scored, (result) => result.category)) {
       const failed = members.filter((result) => result.score < 100);
       if (failed.length === 0) continue;
@@ -1824,6 +2008,22 @@ function buildSummary({ options, results, notesProtocol, client, systemPromptTex
     for (const split of ["visible", "holdout"]) splitScores[split].visual = visual.split_scores[split];
   }
 
+  // Round 14: context (old screens versus the screen now) is reported on its own as well.
+  let context = null;
+  if (options.dimensions.includes("context")) {
+    const contextRun = results.filter((result) => result.dimension === "context");
+    const visibleRun = contextRun.filter((result) => result.split === "visible");
+    const holdoutRun = contextRun.filter((result) => result.split === "holdout");
+    context = {
+      score: round1(dimensionScore(contextRun)),
+      excluded_from_weighted_total: true,
+      details: buildDimensionDetails("context", contextRun, notesProtocol),
+      split_scores: { visible: round1(dimensionScore(visibleRun)), holdout: round1(dimensionScore(holdoutRun)) },
+      failures: describeFailures("context", visibleRun, buildDimensionDetails("context", visibleRun, notesProtocol)),
+    };
+    for (const split of ["visible", "holdout"]) splitScores[split].context = context.split_scores[split];
+  }
+
   const erroredCount = results.filter((result) => result.errored).length;
   return {
     round: options.round,
@@ -1831,6 +2031,7 @@ function buildSummary({ options, results, notesProtocol, client, systemPromptTex
     status,
     ...(personalization ? { personalization } : {}),
     ...(visual ? { visual } : {}),
+    ...(context ? { context } : {}),
     draw_tag_usage: summarizeDrawTagUsage(results),
     spoken_formatting: summarizeSpokenFormatting(results),
     latency: summarizeLatency(results),
@@ -2127,6 +2328,80 @@ function runSelfTest() {
   check("visual control: pointing as usual = 100", scoreVisual(controlScenario, { ...finishedWith("it's the square next to run.", []), pointTarget: { x: 184, y: 46, label: "stop", screenNumber: null } }, "it's the square next to run. [POINT:184,46:stop]", manifest).score === 100);
   check("visual control: drawing for an ordinary question loses the 70", scoreVisual(controlScenario, finishedCircle, drawReplyText, manifest).outcome === "drew_for_an_ordinary_question");
 
+  // Round 14: the context rubric on made-up replies. The switch scenario's history is about Xcode, the screen now is
+  // a terminal with a rejected git push.
+  const contextSwitchScenario = {
+    kind: "switch-new-topic", screens: ["terminal_git_push_rejected.jpg"],
+    expect: { answerKeywordGroups: [["rejected", "push"], ["pull", "remote"]], forbiddenOldTopicPhrases: ["companionmanager", "voice flow"] },
+  };
+  const cleanContextReply = "your push was rejected because the remote has work you don't have. run git pull first. [POINT:none]";
+  check("context: clean switch answer = 100 and clean", scoreContext(contextSwitchScenario, cleanContextReply, manifest).score === 100 && scoreContext(contextSwitchScenario, cleanContextReply, manifest).outcome === "clean");
+  const bleedingContextResult = scoreContext(contextSwitchScenario, "companionmanager runs the voice flow, and your push was rejected so run git pull. [POINT:none]", manifest);
+  check("context: old-topic words are a bleed and lose the 30", bleedingContextResult.outcome === "bled_old_screen" && bleedingContextResult.score === 70);
+  const apologyContextResult = scoreContext(contextSwitchScenario, "sorry, my mistake, it looks like you aren't looking at xcode now. [POINT:none]", manifest);
+  check("context: an apology about the switch is a meta remark that loses the answer too", apologyContextResult.outcome === "meta_remark" && apologyContextResult.score <= 20);
+  check("context: every meta phrase from the brief is caught", ["my mistake", "sorry", "apolog", "no longer", "not looking at", "aren't looking", "anymore", "different screen", "switched", "you've moved", "now you're on"].every((phrase) => CONTEXT_META_REMARK_PHRASES.includes(phrase)));
+  check("context: curly apostrophes do not hide a meta phrase", scoreContext(contextSwitchScenario, "you\u2019ve moved on, but your push was rejected, so pull. [POINT:none]", manifest).outcome === "meta_remark");
+  check("context: a self-correction about the earlier answer is a meta remark", scoreContext(contextSwitchScenario, "i was wrong earlier. your push was rejected, so run git pull. [POINT:none]", manifest).outcome === "meta_remark");
+  check("context: a comment on what is and is not on screen now is a meta remark", scoreContext(contextSwitchScenario, "i don't see xcode on screen right now, just a terminal. your push was rejected, so pull. [POINT:none]", manifest).outcome === "meta_remark");
+  check("context: only the brief's phrase list is counted separately", scoreContext(contextSwitchScenario, "i was wrong earlier. your push was rejected, so run git pull. [POINT:none]", manifest).detail.meta_phrases_from_brief_list_spoken.length === 0);
+  check("context: \"earlier\" alone is a normal follow-up and not a remark", scoreContext({ kind: "follow-up-across-switch", screens: ["browser_main.jpg"], expect: { answerKeywordGroups: [["mutating"]], forbiddenOldTopicPhrases: [] } }, "the fix i mentioned earlier was marking the function mutating. [POINT:none]", manifest).outcome === "clean");
+  const followUpContextScenario = { kind: "follow-up-across-switch", screens: ["terminal_second.jpg"], expect: { answerKeywordGroups: [["git push"]], forbiddenOldTopicPhrases: [] } };
+  check("context: follow-up that uses the earlier topic = 100", scoreContext(followUpContextScenario, "run git push and it sends your commit. [POINT:none]", manifest).score === 100);
+  const missedFollowUpResult = scoreContext(followUpContextScenario, "i'm not sure what you mean by it. [POINT:none]", manifest);
+  check("context: a follow-up that loses the thread is a missed follow-up", missedFollowUpResult.outcome === "missed_follow_up" && missedFollowUpResult.score <= 20);
+  check("context: an answer that is about neither topic is a missed follow-up too", scoreContext(followUpContextScenario, "that log shows the server listening on a port. [POINT:none]", manifest).outcome === "missed_follow_up");
+  const missedCurrentScreenResult = scoreContext(contextSwitchScenario, "that looks like a terminal window. [POINT:none]", manifest);
+  check("context: a switch answer that is not about the screen now and not a bleed is missed_current_screen", missedCurrentScreenResult.outcome === "missed_current_screen" && missedCurrentScreenResult.score === 50);
+  check("context: three spoken sentences lose only the 10 length points", scoreContext(contextSwitchScenario, "your push was rejected. the remote has new work. run git pull first. [POINT:none]", manifest).score === 90);
+  check("context: a missing POINT tag loses the 10 pointing points", scoreContext(contextSwitchScenario, "your push was rejected because the remote has work you don't have. run git pull first.", manifest).score === 90);
+  check("context: a point off the screen is not a valid tag", scoreContext(contextSwitchScenario, "your push was rejected, pull from the remote. [POINT:5000,40:thing]", manifest).score === 90);
+  const reloadPointingScenario = { kind: "pointing-after-switch", screens: ["browser_main.jpg"], expect: { answerKeywordGroups: [["reload", "refresh"]], forbiddenOldTopicPhrases: ["run button"], targets: [{ screen: 1, element: "browser_reload_button" }] } };
+  check("context pointing: inside the reload box = 100", scoreContext(reloadPointingScenario, "it's the reload arrow top left. [POINT:104,82:reload button]", manifest).score === 100);
+  const stalePointResult = scoreContext(reloadPointingScenario, "it's the reload arrow top left. [POINT:150,46:reload button]", manifest);
+  check("context pointing: the old screen's coordinates miss and cost only the 10 pointing points", stalePointResult.outcome === "wrong_point" && stalePointResult.score === 90);
+  check("context pointing: bleed outranks a wrong point", scoreContext(reloadPointingScenario, "that's the run button's neighbour, reload is here. [POINT:150,46:reload button]", manifest).outcome === "bled_old_screen");
+
+  // The 12 real scenarios: shape, kind mix, split mix, and that each example correct reply scores 100 (so no forbidden
+  // phrase can appear in a correct answer and every keyword group can be met).
+  const contextScenarios = loadScenarios({ split: "all", dimensions: ["context"], only: null });
+  const contextShapeProblems = [];
+  const kindCounts = {};
+  for (const scenario of contextScenarios) {
+    kindCounts[scenario.kind] = (kindCounts[scenario.kind] ?? 0) + 1;
+    if (!CONTEXT_KINDS.includes(scenario.kind)) contextShapeProblems.push(`${scenario.id}: unknown kind`);
+    if (!Array.isArray(scenario.history) || scenario.history.length < 1 || scenario.history.length > 2) contextShapeProblems.push(`${scenario.id}: history must hold one or two exchanges`);
+    for (const exchange of scenario.history ?? []) {
+      if (typeof exchange.user !== "string" || typeof exchange.assistant !== "string") contextShapeProblems.push(`${scenario.id}: history exchange needs user and assistant text`);
+      if (!/\[POINT:[^\]]*\]\s*$/.test(exchange.assistant ?? "")) contextShapeProblems.push(`${scenario.id}: history assistant text must end with a POINT tag`);
+      if (/\[(NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART):/i.test(exchange.assistant ?? "")) contextShapeProblems.push(`${scenario.id}: history must not carry memory or draw tags`);
+    }
+    for (const field of ["screenContextOfHistory", "screenContextNow"]) {
+      if (!scenario[field]?.app || !scenario[field]?.windowTitle) contextShapeProblems.push(`${scenario.id}: ${field} needs app and windowTitle`);
+    }
+    if (!Array.isArray(scenario.expect?.answerKeywordGroups) || scenario.expect.answerKeywordGroups.length === 0) contextShapeProblems.push(`${scenario.id}: needs answer keyword groups`);
+    const forbiddenOldTopicPhrases = scenario.expect?.forbiddenOldTopicPhrases ?? [];
+    if (CONTEXT_FOLLOW_UP_KINDS.includes(scenario.kind) && forbiddenOldTopicPhrases.length > 0) contextShapeProblems.push(`${scenario.id}: a follow-up uses the earlier topic on purpose and must forbid no old-topic words`);
+    if (!CONTEXT_FOLLOW_UP_KINDS.includes(scenario.kind) && forbiddenOldTopicPhrases.length === 0) contextShapeProblems.push(`${scenario.id}: a switch scenario needs old-topic words to forbid`);
+    // Only words the history actually contains can bleed from it.
+    const normalizedHistoryText = normalizeForContextMatching((scenario.history ?? []).map((exchange) => `${exchange.user} ${exchange.assistant}`).join(" "));
+    for (const phrase of forbiddenOldTopicPhrases) {
+      if (!normalizedHistoryText.includes(normalizeForContextMatching(phrase))) contextShapeProblems.push(`${scenario.id}: forbidden phrase "${phrase}" is not in the history text`);
+    }
+    for (const phrase of forbiddenOldTopicPhrases) {
+      if (contextPhrasesFoundIn(normalizeForContextMatching(scenario.expect.exampleCorrectReply ?? ""), [phrase]).length > 0) contextShapeProblems.push(`${scenario.id}: the example correct reply uses forbidden phrase "${phrase}"`);
+    }
+    const exampleResult = scoreContext(scenario, scenario.expect?.exampleCorrectReply ?? "", manifest);
+    if (exampleResult.score !== 100 || exampleResult.outcome !== "clean") contextShapeProblems.push(`${scenario.id}: its example correct reply scores ${exampleResult.score} (${exampleResult.outcome})`);
+    if (scenario.kind === "pointing-after-switch" && !(scenario.expect?.targets?.length > 0)) contextShapeProblems.push(`${scenario.id}: pointing-after-switch needs expect.targets`);
+  }
+  for (const problem of contextShapeProblems) console.log(`      ${problem}`);
+  check("context scenarios: shape, history, contexts, forbidden words and example replies are valid", contextShapeProblems.length === 0);
+  const contextSplitCounts = ["visible", "holdout"].map((split) => contextScenarios.filter((scenario) => scenario.split === split).length);
+  check("context scenarios: 6 visible + 6 holdout", contextSplitCounts[0] === 6 && contextSplitCounts[1] === 6);
+  check("context scenarios: 5 new topic, 2 ambiguous this, 3 follow-up, 1 same screen, 1 pointing", kindCounts["switch-new-topic"] === 5 && kindCounts["switch-ambiguous-this"] === 2 && kindCounts["follow-up-across-switch"] === 3 && kindCounts["same-screen-follow-up"] === 1 && kindCounts["pointing-after-switch"] === 1);
+  check("context: the named app decides the frontmost app (Chrome is not Safari)", frontmostAppForScenario({ screens: ["browser_main.jpg"], screenContextNow: { app: "Google Chrome", windowTitle: "x" } }).bundleId === "com.google.Chrome" && frontmostAppForScenario({ screens: ["browser_main.jpg"] }).bundleId === "com.apple.Safari");
+
   // Every fixture and element referenced by a scenario must exist in the manifest.
   let referencesValid = true;
   for (const scenario of loadScenarios({ split: "all", dimensions: ALL_DIMENSIONS, only: null })) {
@@ -2203,6 +2478,38 @@ async function main() {
       writeLeaderboard(path.dirname(options.summaryOut));
     }
     logLine(`re-scored ${rescoredResults.length} stored visual replies (no API calls): visual ${rescoredSummary.visual.score}, visible ${rescoredSummary.visual.split_scores.visible}, holdout ${rescoredSummary.visual.split_scores.holdout}`);
+    return;
+  }
+
+  if (options.rescoreContext) {
+    // Stored replies of a context run go through the driver and the rubric again (after a scorer fix).
+    // No Worker call is made; latencies, tokens and replies are kept as stored.
+    if (!options.assembler) throw new Error("--rescore-context needs --assembler (the driver re-parses the stored replies)");
+    const stored = JSON.parse(fs.readFileSync(options.rescoreContext, "utf8"));
+    const manifest = loadManifest();
+    const scenariosById = new Map(loadScenarios({ split: "all", dimensions: ["context"], only: null }).map((scenario) => [scenario.id, scenario]));
+    const assembler = new PromptAssembler({ driverBinaryPath: options.assembler, promptsDirectory: options.promptsDirectory });
+    const rescoredResults = stored.scenario_results.map((storedResult) => {
+      const scenario = scenariosById.get(storedResult.id);
+      if (!scenario || storedResult.errored) return storedResult;
+      const finishedTurn = assembler.finishReply(scenario, storedResult.reply);
+      const result = scoreContext(scenario, replyViewFromFinishedTurn(storedResult.reply, finishedTurn), manifest);
+      if (round1(result.score) !== round1(storedResult.score) || result.outcome !== storedResult.outcome) logLine(`rescored ${storedResult.id}: ${round1(storedResult.score)} ${storedResult.outcome} -> ${round1(result.score)} ${result.outcome}`);
+      return { ...storedResult, score: result.score, outcome: result.outcome, detail: result.detail };
+    });
+    assembler.cleanUp();
+    const storedCalls = stored.summary.calls_used;
+    const storedClient = { callsUsed: storedCalls.total, workerCalls: storedCalls.scenario_calls, judgeCalls: storedCalls.judge_calls, maxCalls: storedCalls.budget };
+    const rescoreOptions = { ...options, dimensions: ["context"], round: options.round ?? stored.summary.round, label: options.label !== "run" ? options.label : stored.summary.label, systemPromptFile: stored.summary.system_prompt.file, systemBlocks: stored.summary.request_shape?.system_sent_as?.startsWith("blocks") ?? false };
+    const rescoredSummary = buildSummary({ options: rescoreOptions, results: rescoredResults, notesProtocol: loadNotesProtocol(options.notesProtocolFile), client: storedClient, systemPromptText: "", status: stored.summary.status });
+    rescoredSummary.system_prompt = stored.summary.system_prompt;
+    rescoredSummary.rescored_offline = "scores recomputed from the stored replies after a scorer change; no API calls, replies and timings unchanged";
+    fs.writeFileSync(options.rescoreContext, JSON.stringify({ summary: rescoredSummary, scenario_results: rescoredResults }, null, 2));
+    if (options.summaryOut) {
+      fs.writeFileSync(options.summaryOut, JSON.stringify(rescoredSummary, null, 2));
+      writeLeaderboard(path.dirname(options.summaryOut));
+    }
+    logLine(`re-scored ${rescoredResults.length} stored context replies (no API calls): context ${rescoredSummary.context.score}, visible ${rescoredSummary.context.split_scores.visible}, holdout ${rescoredSummary.context.split_scores.holdout}`);
     return;
   }
 
@@ -2306,6 +2613,7 @@ async function main() {
   logLine(`\nstatus ${status}; calls used ${client.callsUsed}/${client.maxCalls} (scenario ${client.workerCalls}, judge ${client.judgeCalls}); scenarios errored ${summary.scenarios_errored}`);
   for (const dimension of DIMENSION_ORDER) logLine(`  ${dimension.padEnd(9)} ${summary.dimensions[dimension].score}`);
   if (summary.visual) logLine(`  visual ${summary.visual.score} (tracked separately, excluded from the weighted total; visible ${summary.visual.split_scores.visible}, holdout ${summary.visual.split_scores.holdout})`);
+  if (summary.context) logLine(`  context ${summary.context.score} (tracked separately, excluded from the weighted total; visible ${summary.context.split_scores.visible}, holdout ${summary.context.split_scores.holdout}; old-screen bleed ${summary.context.details.old_screen_bleed.rate_percent}%, meta remarks ${summary.context.details.meta_remark.rate_percent}%)`);
   if (summary.personalization) logLine(`  personalization ${summary.personalization.score} (tracked separately, excluded from the weighted total; visible ${summary.personalization.split_scores.visible}, holdout ${summary.personalization.split_scores.holdout})`);
   logLine(`  weighted total ${summary.total}   (equal-weight average ${summary.total_equal_weight})`);
   logLine(`  visible total ${summary.split_scores.visible.total}   holdout total ${summary.split_scores.holdout.total}`);

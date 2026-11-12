@@ -1,0 +1,265 @@
+[
+ {
+  "id": "ctx_v01",
+  "split": "visible",
+  "dimension": "context",
+  "category": "switch-new-topic",
+  "kind": "switch-new-topic",
+  "history": [
+   {
+    "user": "why is there a red underline on user in my function?",
+    "assistant": "find can come back empty, so typescript says user is possibly undefined. add a check before you return its name. [POINT:457,369:user underline]"
+   }
+  ],
+  "screens": [
+   "terminal_port_in_use.jpg"
+  ],
+  "userPrompt": "why did my dev server crash?",
+  "screenContextOfHistory": {
+   "app": "Visual Studio Code",
+   "windowTitle": "clicker-worker"
+  },
+  "screenContextNow": {
+   "app": "Terminal",
+   "windowTitle": "samsto — zsh — 110x34"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "3000",
+     "three thousand"
+    ],
+    [
+     "in use",
+     "eaddrinuse",
+     "already",
+     "taken",
+     "busy",
+     "another process",
+     "something else"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [
+    "undefined",
+    "typescript",
+    "underline"
+   ],
+   "exampleCorrectReply": "something else is already using port three thousand, so the server couldn't start. stop that process or pick another port. [POINT:none]"
+  }
+ },
+ {
+  "id": "ctx_v02",
+  "split": "visible",
+  "dimension": "context",
+  "category": "switch-new-topic",
+  "kind": "switch-new-topic",
+  "history": [
+   {
+    "user": "what's the build error in my terminal?",
+    "assistant": "swift can't find notesFolderURL in scope on line eighteen of NotesStore.swift. declare it or fix the spelling. [POINT:560,387:error line]"
+   }
+  ],
+  "screens": [
+   "xcode_error_mutating.jpg"
+  ],
+  "userPrompt": "how do i fix these two errors?",
+  "screenContextOfHistory": {
+   "app": "Terminal",
+   "windowTitle": "samsto — zsh — 110x34"
+  },
+  "screenContextNow": {
+   "app": "Xcode",
+   "windowTitle": "VisitCounter.swift"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "mutating",
+     "mutate"
+    ],
+    [
+     "struct",
+     "value type",
+     "visitcounter",
+     "recordvisit",
+     "self"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [
+    "notesfolderurl",
+    "notesstore"
+   ],
+   "exampleCorrectReply": "visitCounter is a struct, so recordVisit has to be marked mutating before it can change its properties. [POINT:395,208:recordVisit]"
+  }
+ },
+ {
+  "id": "ctx_v03",
+  "split": "visible",
+  "dimension": "context",
+  "category": "switch-new-topic",
+  "kind": "switch-new-topic",
+  "history": [
+   {
+    "user": "where do i turn on microphone access for an app?",
+    "assistant": "it's the microphone row in this privacy list. [POINT:527,394:microphone row]"
+   }
+  ],
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "which of these workers was deployed most recently?",
+  "screenContextOfHistory": {
+   "app": "System Settings",
+   "windowTitle": "Privacy & Security"
+  },
+  "screenContextNow": {
+   "app": "Google Chrome",
+   "windowTitle": "Workers & Pages - Console"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "clicky-proxy",
+     "clicky proxy"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [
+    "microphone",
+    "privacy"
+   ],
+   "exampleCorrectReply": "clicky-proxy, it went out today at ten twenty-one. [POINT:325,358:clicky-proxy]"
+  }
+ },
+ {
+  "id": "ctx_v04",
+  "split": "visible",
+  "dimension": "context",
+  "category": "switch-ambiguous-this",
+  "kind": "switch-ambiguous-this",
+  "history": [
+   {
+    "user": "what does this class do?",
+    "assistant": "CompanionManager runs the voice flow: it starts listening, then sends the transcript off for a reply. [POINT:425,174:class declaration]"
+   }
+  ],
+  "screens": [
+   "terminal_git_push_rejected.jpg"
+  ],
+  "userPrompt": "what's this?",
+  "screenContextOfHistory": {
+   "app": "Xcode",
+   "windowTitle": "CompanionManager.swift"
+  },
+  "screenContextNow": {
+   "app": "Terminal",
+   "windowTitle": "samsto — zsh — 110x34"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "rejected",
+     "push"
+    ],
+    [
+     "pull",
+     "fetch",
+     "remote",
+     "behind",
+     "origin"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [
+    "companionmanager",
+    "voice flow",
+    "transcript",
+    "listening"
+   ],
+   "exampleCorrectReply": "your push was rejected because the remote has work you don't have yet. run git pull first. [POINT:300,226:rejected line]"
+  }
+ },
+ {
+  "id": "ctx_v05",
+  "split": "visible",
+  "dimension": "context",
+  "category": "follow-up-across-switch",
+  "kind": "follow-up-across-switch",
+  "history": [
+   {
+    "user": "how do i commit these changes?",
+    "assistant": "open source control on the left, write a message and press commit. [POINT:24,170:source control]"
+   }
+  ],
+  "screens": [
+   "terminal_second.jpg"
+  ],
+  "userPrompt": "and how do i push it?",
+  "screenContextOfHistory": {
+   "app": "Visual Studio Code",
+   "windowTitle": "clicker-worker"
+  },
+  "screenContextNow": {
+   "app": "Terminal",
+   "windowTitle": "samsto — zsh — 110x34"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "git push"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [],
+   "exampleCorrectReply": "in the terminal, run git push and it'll send your commit to the remote. [POINT:none]"
+  }
+ },
+ {
+  "id": "ctx_v06",
+  "split": "visible",
+  "dimension": "context",
+  "category": "pointing-after-switch",
+  "kind": "pointing-after-switch",
+  "history": [
+   {
+    "user": "where's the run button?",
+    "assistant": "it's the play button at the top left of the toolbar. [POINT:150,46:run button]"
+   }
+  ],
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "where's the reload button?",
+  "screenContextOfHistory": {
+   "app": "Xcode",
+   "windowTitle": "CompanionManager.swift"
+  },
+  "screenContextNow": {
+   "app": "Google Chrome",
+   "windowTitle": "Workers & Pages - Console"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "reload",
+     "refresh",
+     "circular arrow",
+     "arrow",
+     "next to",
+     "toolbar",
+     "address bar",
+     "top left",
+     "left"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [
+    "run button",
+    "play button"
+   ],
+   "targets": [
+    {
+     "screen": 1,
+     "element": "browser_reload_button"
+    }
+   ],
+   "exampleCorrectReply": "it's the circular arrow next to the forward button, top left. [POINT:104,82:reload button]"
+  }
+ }
+]
