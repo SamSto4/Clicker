@@ -48,8 +48,19 @@ enum ClickyDictationTextInserter {
 
     static func captureInsertionTarget() -> ClickyDictationInsertionTarget {
         ClickyDictationInsertionTarget(
-            frontmostProcessIdentifier: NSWorkspace.shared.frontmostApplication?.processIdentifier
+            frontmostProcessIdentifier: processIdentifierReceivingKeyboardInput()
         )
+    }
+
+    /// The process a paste would reach right now. Normally that is the frontmost application. The
+    /// chat panel is the exception: it takes the keyboard without making Clicky the active app, so
+    /// while it is the key window the frontmost app is still the one behind it, but typing (and so
+    /// a pasted dictation) goes to the panel's text field, which is Clicky's own process.
+    static func processIdentifierReceivingKeyboardInput() -> Int32? {
+        if ClickyChatPanelWindow.isTheKeyWindow {
+            return ProcessInfo.processInfo.processIdentifier
+        }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 
     /// Reads the focused element's role and whether it is a secure text field. Safe to call from
@@ -103,7 +114,7 @@ enum ClickyDictationTextInserter {
         isInsertionStillWanted: () -> Bool,
         onPasteKeystrokePosted: () -> Void
     ) async -> ClickyDictationInsertionOutcome {
-        let frontmostProcessIdentifierNow = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let frontmostProcessIdentifierNow = processIdentifierReceivingKeyboardInput()
 
         var focusedElementIsSecureTextFieldNow = false
         if let frontmostProcessIdentifierNow {

@@ -43,6 +43,12 @@ struct CompanionPanelView: View {
 
                 statusPillRow
                     .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                chatsRow
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -734,6 +740,44 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
+    // MARK: - Chats
+
+    /// Opens the chat panel (the same panel a tap of option + command opens): type to Clicky and
+    /// browse past chats. A button, so it lights up under the pointer and shows the pointing hand.
+    private var chatsRow: some View {
+        Button(action: {
+            companionManager.openChatPanelFromMenuBar()
+        }) {
+            HStack {
+                HStack(spacing: 8) {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 16)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Chats")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textSecondary)
+
+                        Text("tap option + command")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(ChatsRowButtonStyle())
+    }
+
     // MARK: - DM Farza Button
 
     private var dmFarzaButton: some View {
@@ -851,4 +895,24 @@ struct CompanionPanelView: View {
         }
     }
 
+}
+
+
+/// The "Chats" row of the menu bar panel: a soft highlight under the pointer and the pointing-hand
+/// cursor, like every other button in the panel.
+private struct ChatsRowButtonStyle: ButtonStyle {
+    @State private var isHovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 6)
+            .background(
+                RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                    .fill(configuration.isPressed ? DS.Colors.surface3 : (isHovered ? DS.Colors.surface2 : Color.clear))
+            )
+            .padding(.horizontal, -6)
+            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .onHover { isHovered = $0 }
+            .pointerCursor()
+    }
 }

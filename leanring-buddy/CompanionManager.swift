@@ -181,6 +181,21 @@ final class CompanionManager: ObservableObject {
 
     private var statusPillStateCancellable: AnyCancellable?
     private var statusPillAudioPowerCancellable: AnyCancellable?
+
+    // MARK: - Chat panel (tap option + command: type to Clicky, browse and continue past chats)
+
+    /// The chats of this run and their files in ~/Library/Application Support/Clicky/Chats (or a
+    /// temporary folder in a self test). Text only, secrets removed before anything is written.
+    let chatSession = ClickyChatSession(store: ClickyChatSession.makeStoreForCurrentRun())
+
+    /// What the chat panel shows and does. It knows nothing about this manager; the closures set
+    /// in `bindChatPanel` connect it.
+    private(set) lazy var chatPanelViewModel = ClickyChatPanelViewModel(session: chatSession)
+
+    /// The panel's window. Created the first time the panel opens, and then kept.
+    private(set) lazy var chatPanelController = ClickyChatPanelController(viewModel: chatPanelViewModel)
+
+    private var chatPanelTapCancellable: AnyCancellable?
     /// Waits for the spoken answer to end so the pill can stop saying "speaking". The audio
     /// player publishes nothing when it finishes, so this asks it now and then, the same way
     /// the response turn and the transient cursor already wait for speech to end.
@@ -206,7 +221,10 @@ final class CompanionManager: ObservableObject {
     }
 
     private func refreshStatusPill() {
-        guard isStatusPillEnabled else {
+        let isChatPanelOpen = chatPanelController.isOpen
+
+        // Nothing to show anywhere when the pill is switched off and the panel is closed.
+        guard isStatusPillEnabled || isChatPanelOpen else {
             statusPillController.hide()
             return
         }
@@ -220,7 +238,14 @@ final class CompanionManager: ObservableObject {
             turnFailureNoticeText: turnFailureNoticeText
         )
 
-        if let statusPillContent, let screenUnderCursor = Self.screenUnderCursor() {
+        // While the chat panel is open the pill is hidden and the panel says the same words
+        // inline, whether or not the pill is switched on.
+        let statusContentForChatPanel = isChatPanelOpen ? statusPillContent : nil
+        if chatPanelViewModel.statusContent != statusContentForChatPanel {
+            chatPanelViewModel.statusContent = statusContentForChatPanel
+        }
+
+        if isStatusPillEnabled, !isChatPanelOpen, let statusPillContent, let screenUnderCursor = Self.screenUnderCursor() {
             statusPillController.show(statusPillContent, onScreen: screenUnderCursor)
         } else {
             statusPillController.hide()
@@ -392,6 +417,7 @@ final class CompanionManager: ObservableObject {
         bindShortcutTransitions()
         bindDictation()
         bindStatusPill()
+        bindChatPanel()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -401,6 +427,11 @@ final class CompanionManager: ObservableObject {
         refreshNotesAndProfileCopyInBackground()
         warmUpPromptAssemblyInBackground()
         runDrawingSelfTestIfRequested()
+        runPanelSelfTestIfRequested()
+        // Read the chat files in the background (never on the main thread), and delete chats past
+        // their ninety days now and every six hours.
+        chatSession.reloadChatsFromDiskInBackground()
+        chatSession.startRetentionSchedule()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -525,6 +556,9 @@ final class CompanionManager: ObservableObject {
         statusPillAudioPowerCancellable?.cancel()
         statusPillSpeechEndWatchTask?.cancel()
         statusPillController.hide()
+        chatPanelTapCancellable?.cancel()
+        chatPanelController.close()
+        chatSession.stopRetentionSchedule()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
@@ -652,6 +686,104 @@ final class CompanionManager: ObservableObject {
             // The pill goes back to being hidden from captures and to showing Clicky's real state.
             statusPillController.setVisibleInScreenCapturesForSelfTest(false)
             refreshStatusPill()
+        }
+    }
+
+    /// Debug aid: when the app is launched with CLICKY_PANEL_SELF_TEST=1 it opens the chat panel
+    /// on the main display a few seconds after launch, with a few sample chats in two projects
+    /// (Clicker and Safari, one of them kept) and a sample typed exchange followed by a second
+    /// typed message whose reply is still streaming in, so the panel can be checked without typing.
+    /// With CLICKY_PANEL_SELF_TEST_IMAGE=<png path> it also saves a picture of only Clicky's own
+    /// windows (the panel is made visible to that capture for the picture alone), and a second one
+    /// of the chat list next to it (the same name with "-chats" before the extension).
+    ///
+    /// The chats live in a temporary folder (`CLICKY_CHAT_STORE_DIRECTORY` when given, else a new
+    /// folder in the temporary directory; see `ClickyChatSession.makeStoreForCurrentRun`), never
+    /// in the real chats folder. Nothing is sent to the network and no model is asked.
+    /// It does nothing in normal use.
+    private func runPanelSelfTestIfRequested() {
+        guard ProcessInfo.processInfo.environment[ClickyChatStore.panelSelfTestEnvironmentVariable] == "1" else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard let mainDisplayScreen = NSScreen.screens.first else {
+                print("💬 panel self test: no display")
+                return
+            }
+
+            // Sample chats in two automatic projects, oldest first. The last one is the active chat.
+            let clickerProject = ClickyChatProject(key: "git:/Users/sam/Clicker", displayName: "Clicker")
+            let safariProject = ClickyChatProject(key: "app:com.apple.Safari", displayName: "Safari")
+            let selfTestNow = Date()
+            @MainActor func recordSampleChat(
+                _ userText: String, _ replyText: String,
+                inputMode: ClickyTurnInputMode, minutesAgo: Double, project: ClickyChatProject
+            ) {
+                chatSession.startNewChatByUser()
+                let startedAt = selfTestNow.addingTimeInterval(-minutesAgo * 60)
+                chatSession.recordExchange(
+                    userText: userText, inputMode: inputMode,
+                    replyDisplayText: replyText, replyHistoryText: replyText,
+                    messageStartedAt: startedAt, replyFinishedAt: startedAt.addingTimeInterval(4),
+                    projectForNewChat: project
+                )
+            }
+            recordSampleChat("how do i make the cursor overlay ignore clicks", "set ignoresMouseEvents to true on the panel, and return nil from hitTest in its content view.", inputMode: .typed, minutesAgo: 60 * 24 * 9, project: clickerProject)
+            recordSampleChat("what does this build error mean", "the compiler can't find the module. check the target's package dependencies.", inputMode: .spoken, minutesAgo: 60 * 26, project: clickerProject)
+            recordSampleChat("how do i undo closing a window", "press command shift t to reopen the last closed window or tab.", inputMode: .spoken, minutesAgo: 60 * 3, project: safariProject)
+            if let chatToKeep = chatSession.collection.chats.first(where: { $0.project == safariProject }) {
+                chatSession.toggleKept(chatID: chatToKeep.id)
+            }
+            // The sample typed exchange, in the active chat.
+            recordSampleChat("how do i undo in xcode", "press command z to undo the last change. command shift z redoes it.", inputMode: .typed, minutesAgo: 1, project: clickerProject)
+
+            let selfTestImagePathFromEnvironment = ProcessInfo.processInfo.environment["CLICKY_PANEL_SELF_TEST_IMAGE"]
+            chatPanelController.screenProvider = { mainDisplayScreen }
+            chatPanelController.setVisibleInScreenCapturesForSelfTest(selfTestImagePathFromEnvironment != nil)
+            chatPanelController.open()
+            // A second typed message whose reply is still arriving.
+            let sampleTurnIdentifier = UUID()
+            chatPanelViewModel.beginPendingExchange(turnIdentifier: sampleTurnIdentifier, userText: "and how do i redo it?", inputMode: .typed)
+            chatPanelViewModel.updateStreamingReply("press command shift z. in xcode the same keys redo the last undone change, and you can also use the edit menu", turnIdentifier: sampleTurnIdentifier)
+            chatPanelViewModel.statusContent = ClickyStatusPillContent(
+                word: ClickyStatusPillContent.thinkingWord,
+                indicator: .thinkingDots,
+                accent: .asking
+            )
+            print("💬 panel self test: panel opened on the main display notch=\(mainDisplayScreen.safeAreaInsets.top > 0) chats=\(chatSession.collection.chats.count) activeChat=\(chatSession.collection.activeChat != nil)")
+
+            // Let the open animation and the layout settle before looking at it.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+
+            if let selfTestImagePath = selfTestImagePathFromEnvironment {
+                await saveSelfTestPicture(toPath: selfTestImagePath, description: "chat")
+                chatPanelViewModel.showChatList()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                let chatListImagePath = (selfTestImagePath as NSString).deletingPathExtension + "-chats." + (selfTestImagePath as NSString).pathExtension
+                await saveSelfTestPicture(toPath: chatListImagePath, description: "chat list")
+            } else {
+                // No picture was asked for: leave the panel up long enough to be looked at.
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+            }
+
+            // Back to normal: the panel closes and is hidden from captures again.
+            chatPanelViewModel.finishPendingExchange(turnIdentifier: sampleTurnIdentifier)
+            chatPanelController.close()
+            chatPanelController.setVisibleInScreenCapturesForSelfTest(false)
+        }
+    }
+
+    /// Saves a picture of only Clicky's own windows on the main display (so only the panel and the
+    /// overlay, never the user's apps) for the panel self test.
+    private func saveSelfTestPicture(toPath pictureFilePath: String, description: String) async {
+        do {
+            if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
+                try ownWindowsPNGData.write(to: URL(fileURLWithPath: pictureFilePath))
+                print("💬 panel self test: saved the \(description) picture of Clicky's own windows (\(ownWindowsPNGData.count) bytes)")
+            } else {
+                print("💬 panel self test: no display to capture")
+            }
+        } catch {
+            print("💬 panel self test: capture failed: \(error.localizedDescription)")
         }
     }
 
@@ -874,6 +1006,117 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    // MARK: - Chat panel wiring
+
+    /// Remembers when Escape was last handled while the panel is open (see `handleEscapeKeyPressed`).
+    private var chatPanelEscapeDeduplicator = ClickyChatPanelEscapeDeduplicator()
+
+    private func bindChatPanel() {
+        chatPanelTapCancellable = globalPushToTalkShortcutMonitor
+            .chatPanelTapActionPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] chatPanelTapAction in
+                switch chatPanelTapAction {
+                case .togglePanel:
+                    self?.toggleChatPanel()
+                }
+            }
+
+        chatPanelViewModel.sendTypedMessageHandler = { [weak self] typedMessageText in
+            self?.sendTypedMessage(typedMessageText)
+        }
+        chatPanelViewModel.newChatChosenHandler = { [weak self] in
+            self?.handleUserChoseNewChat()
+        }
+        chatPanelViewModel.chatContinuedHandler = { [weak self] chatToContinue in
+            self?.handleUserContinuedChat(chatToContinue)
+        }
+        chatPanelController.escapePressedHandler = { [weak self] in
+            self?.handleEscapeKeyPressed()
+        }
+        chatPanelController.openStateChangedHandler = { [weak self] _ in
+            // The pill hides while the panel is open and the panel shows the same words inline.
+            self?.refreshStatusPill()
+        }
+    }
+
+    /// A clean tap of option + command: open the panel, or close it if it is open. Like the ask
+    /// shortcut, it does nothing while the onboarding video plays.
+    private func toggleChatPanel() {
+        guard !showOnboardingVideo else { return }
+        chatPanelController.toggle()
+    }
+
+    /// The "chats" row of the menu bar panel.
+    func openChatPanelFromMenuBar() {
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        guard !showOnboardingVideo else { return }
+        chatPanelController.open()
+    }
+
+    /// A typed message sent from the panel. It starts the same turn as a spoken one, with the same
+    /// first steps as pressing the ask keys (stop the voice, drop the old pointing, keep the marks
+    /// for the reply to edit), minus the microphone.
+    func sendTypedMessage(_ typedMessageText: String) {
+        let trimmedMessageText = typedMessageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessageText.isEmpty, !showOnboardingVideo else { return }
+
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        // Pointing and drawing need the overlay, so with "Show Clicky" off it is brought back for
+        // this interaction, as for a spoken one.
+        if !isClickyCursorEnabled && !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
+        clearDetectedElementLocation()
+        overlayWindowManager.drawingOverlayController.cancelCommandsNotYetDrawn()
+        overlayWindowManager.drawingOverlayController.beginKeepingMarks()
+        refreshNotesAndProfileCopyInBackground()
+
+        // The typed text counts as the user's own words for every memory gate (lasting facts,
+        // notes, forget requests, secrets), exactly like a transcript.
+        sendTranscriptToClaudeWithScreenshot(
+            transcript: trimmedMessageText,
+            inputMode: .typed,
+            keyReleaseUptimeSeconds: nil
+        )
+    }
+
+    /// Stops a turn that is still being answered or spoken, because the chat it belongs to is
+    /// being left (new chat, continue another chat). Like Escape, but without closing anything.
+    private func stopCurrentTurnBecauseTheChatChanged() {
+        guard activeResponseTurnIdentifier != nil || elevenLabsTTSClient.isPlaying else { return }
+        currentResponseTask?.cancel()
+        currentSpeechPrefetch?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
+        clearDetectedElementLocation()
+        if dictationController.phase == .idle, !buddyDictationManager.isActivelyRecordingAudio {
+            voiceState = .idle
+        }
+        scheduleTransientHideIfNeeded()
+    }
+
+    /// "New chat": the next message starts a fresh chat with a fresh conversation history.
+    private func handleUserChoseNewChat() {
+        stopCurrentTurnBecauseTheChatChanged()
+        conversationHistory.removeAll()
+    }
+
+    /// "Continue": the chat's last exchanges become the conversation history the model sees, with
+    /// today's cap, so a follow-up has the context the chat had.
+    private func handleUserContinuedChat(_ chatToContinue: ClickyChat) {
+        stopCurrentTurnBecauseTheChatChanged()
+        conversationHistory = ClickyConversationHistoryLoader.conversationHistoryEntries(from: chatToContinue)
+    }
+
     private func handleDictationChordAction(_ chordAction: ClickyDictationChordAction) {
         // Like push-to-talk, dictation is not registered while the onboarding video plays.
         if case .startCapturing = chordAction, showOnboardingVideo {
@@ -926,6 +1169,14 @@ final class CompanionManager: ObservableObject {
     /// when Clicky is idle or listening, so Escape keeps working normally everywhere else. The
     /// key itself is never swallowed (the event tap is listen-only).
     private func handleEscapeKeyPressed() {
+        // With the chat panel open one Escape press arrives twice, once from the global key tap
+        // and once as a key event of the panel. The second delivery must do nothing, or a press
+        // that cancelled a running turn would also close the panel.
+        if chatPanelController.isOpen,
+           !chatPanelEscapeDeduplicator.shouldHandleEscape(atUptimeSeconds: ClickyTurnMetrics.currentUptimeSeconds) {
+            return
+        }
+
         // Escape always wipes Clicky's drawing at once, whatever else it does or does not stop.
         overlayWindowManager.drawingOverlayController.clearAllMarks(fadeOutSeconds: 0)
 
@@ -945,6 +1196,11 @@ final class CompanionManager: ObservableObject {
         let isResponseTurnRunning = activeResponseTurnIdentifier != nil
         let isSpeechAudioPlaying = elevenLabsTTSClient.isPlaying
         guard isWaitingForFinalTranscript || isResponseTurnRunning || isSpeechAudioPlaying else {
+            // Nothing is running, so with the chat panel open Escape closes it. When something is
+            // running, the lines below stop it first and the panel stays open.
+            if chatPanelController.isOpen {
+                chatPanelController.close()
+            }
             return
         }
 
@@ -1111,7 +1367,18 @@ final class CompanionManager: ObservableObject {
     ///
     /// `keyReleaseUptimeSeconds` is when the push-to-talk keys were released (nil when unknown),
     /// so the metrics can show how long the user waited from letting go of the keys.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String, keyReleaseUptimeSeconds: TimeInterval?) {
+    ///
+    /// `inputMode` says how the words arrived. A spoken turn is exactly as described above. A typed
+    /// turn (from the chat panel) takes the same screenshot, builds the same prompt, streams the
+    /// same reply and runs the same finisher, but is never spoken: no early speech fetch, no text
+    /// to speech, no "speaking" state. The reply streams into the panel as text, pointing and
+    /// drawing still happen (the marks are paced with no audio), and a failure becomes a short
+    /// text error in the panel instead of a spoken sentence. Both kinds are recorded in the chat.
+    private func sendTranscriptToClaudeWithScreenshot(
+        transcript: String,
+        inputMode: ClickyTurnInputMode = .spoken,
+        keyReleaseUptimeSeconds: TimeInterval?
+    ) {
         // The final transcript has just been handed to the app: this is the end of the dictation
         // finalisation that began at the key release.
         let finalTranscriptReceivedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
@@ -1132,6 +1399,20 @@ final class CompanionManager: ObservableObject {
         drawingOverlayController.cancelCommandsNotYetDrawn()
         let keepMarksGeneration = drawingOverlayController.beginKeepingMarks()
 
+        // Chat bookkeeping. A message after ten quiet minutes (or the first of a new chat) opens a
+        // new chat when its exchange is recorded. That also clears the conversation history the
+        // model sees, so after a pause Clicky starts fresh and an old conversation about an
+        // earlier screen cannot bleed into the new question (Sam's choice, 12 Nov 2026); see
+        // `ClickyChatBoundary.idleBoundaryAlsoClearsConversationHistory`.
+        let isTypedTurn = inputMode == .typed
+        let messageStartedAtDate = Date()
+        let messageStartsNewChat = chatSession.messageWouldStartNewChat(at: messageStartedAtDate)
+        if messageStartsNewChat && ClickyChatBoundary.idleBoundaryAlsoClearsConversationHistory {
+            conversationHistory.removeAll()
+        }
+        // The message shows in the panel at once (when it is open), before the reply.
+        chatPanelViewModel.beginPendingExchange(turnIdentifier: turnIdentifier, userText: transcript, inputMode: inputMode)
+
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
@@ -1142,6 +1423,7 @@ final class CompanionManager: ObservableObject {
 
             // Timing and size numbers for this turn. They hold no transcript, reply or note text.
             var turnMetrics = ClickyTurnMetrics(turnStartedAt: Date(), modelName: selectedModel)
+            turnMetrics.inputMode = inputMode
             turnMetrics.keyReleaseToFinalTranscriptMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
                 startUptimeSeconds: keyReleaseUptimeSeconds,
                 endUptimeSeconds: finalTranscriptReceivedUptimeSeconds
@@ -1154,6 +1436,28 @@ final class CompanionManager: ObservableObject {
             // the arrival of the first reply text on this object instead.
             let replyTextArrivalClock = ClickyReplyTextArrivalClock()
 
+            // Where the user is, for the project a new chat is listed under. It is only read when
+            // this message starts a chat, off the main thread (the Accessibility answer can take a
+            // moment), while the screenshot and the model request are under way. It reads a
+            // document address (and, for the VS Code family, the window title), never contents.
+            var projectForNewChatTask: Task<ClickyChatProject, Never>?
+            if messageStartsNewChat {
+                let frontmostProcessIdentifier = frontmostApplicationAtTurnStart?.processIdentifier
+                let frontmostBundleIdentifier = frontmostApplicationAtTurnStart?.bundleIdentifier
+                let frontmostApplicationName = frontmostApplicationAtTurnStart?.localizedName
+                projectForNewChatTask = Task.detached(priority: .utility) {
+                    let projectContext = ClickyChatProjectContextReader.readContext(
+                        processIdentifier: frontmostProcessIdentifier,
+                        applicationBundleIdentifier: frontmostBundleIdentifier,
+                        applicationName: frontmostApplicationName
+                    )
+                    return ClickyChatProjectContextReader.resolveProject(for: projectContext)
+                }
+            }
+            // Set once the finished exchange has been handed to the chat, so the "turn ended"
+            // cleanup below does not take the message off the panel before the chat holds it.
+            var exchangeWasHandedToChat = false
+
             // Runs on every way out of this task (finished, failed, cancelled, early return),
             // so exactly one metrics line is written per turn. Writing happens on a
             // background queue and can never throw, so it cannot affect the spoken answer.
@@ -1161,6 +1465,13 @@ final class CompanionManager: ObservableObject {
                 // However the turn ends, an early speech fetch that is still running is stopped.
                 // Cancelling one that already finished or was used does nothing.
                 speechPrefetch.cancel()
+                projectForNewChatTask?.cancel()
+                // A turn that ends without a reply (cancelled, or failed before the exchange was
+                // recorded) takes its pending message off the panel. A failed typed turn has
+                // already turned its pending message into an error and is not affected.
+                if !exchangeWasHandedToChat {
+                    chatPanelViewModel.cancelPendingExchange(turnIdentifier: turnIdentifier)
+                }
                 // The reply is over (spoken to the end, failed or cancelled): from now the marks
                 // on the screen have their 12 seconds. Ignored if a newer press or turn has
                 // already asked for the marks to be kept.
@@ -1311,6 +1622,16 @@ final class CompanionManager: ObservableObject {
                         // the early speech fetch once the first reply tag has opened (the words
                         // before it are final). Nothing is played from here.
                         replyTextArrivalClock.markReplyTextArrived()
+                        // A typed turn shows the reply in the panel as it arrives, with every tag
+                        // (even a half-written one) already removed, and is never spoken, so the
+                        // early speech fetch below is not started for it.
+                        if isTypedTurn {
+                            chatPanelViewModel.updateStreamingReply(
+                                ClickyReplyTagParser.parse(accumulatedReplyText).spokenText,
+                                turnIdentifier: turnIdentifier
+                            )
+                            return
+                        }
                         // A draw, card or 3D scene reply has tags between its sentences ([DRAW,
                         // [CARD, [ROW, [SCENE, [PART), so the words before its closing tag are not the whole spoken
                         // answer and audio fetched for them would always be thrown away. The
@@ -1459,20 +1780,39 @@ final class CompanionManager: ObservableObject {
                 // [NOTE:...] and [PROFILE:...] tags stay so the model keeps saving in the same format.
                 // The [DRAW:...] tags of a draw reply are kept for the same reason; for a reply
                 // without them this is exactly the finisher's history text.
+                let assistantHistoryText = ClickyDrawTagParser.historyAssistantText(
+                    rawReplyText: fullResponseText,
+                    finishedSpokenText: spokenText,
+                    finishedHistoryAssistantText: finishedTurn.historyAssistantText,
+                    rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
+                    partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
+                )
                 conversationHistory.append((
                     userTranscript: transcript,
-                    assistantResponse: ClickyDrawTagParser.historyAssistantText(
-                        rawReplyText: fullResponseText,
-                        finishedSpokenText: spokenText,
-                        finishedHistoryAssistantText: finishedTurn.historyAssistantText,
-                        rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
-                        partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
-                    )
+                    assistantResponse: assistantHistoryText
                 ))
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
-                if conversationHistory.count > 10 {
-                    conversationHistory.removeFirst(conversationHistory.count - 10)
+                if conversationHistory.count > ClickyConversationHistoryLoader.maximumConversationHistoryExchangeCount {
+                    conversationHistory.removeFirst(conversationHistory.count - ClickyConversationHistoryLoader.maximumConversationHistoryExchangeCount)
+                }
+
+                // The same exchange goes into the active chat (or opens a new one), as text, with
+                // secrets replaced by a placeholder. For a message that starts a chat the project
+                // read may still be under way; waiting for it here must never hold up the answer,
+                // so it is awaited by a task of its own.
+                exchangeWasHandedToChat = true
+                Task { @MainActor in
+                    let projectForNewChat = await projectForNewChatTask?.value ?? ClickyChatProject.unknown
+                    self.chatSession.recordExchange(
+                        userText: transcript,
+                        inputMode: inputMode,
+                        replyDisplayText: spokenText,
+                        replyHistoryText: assistantHistoryText,
+                        messageStartedAt: messageStartedAtDate,
+                        projectForNewChat: projectForNewChat
+                    )
+                    self.chatPanelViewModel.finishPendingExchange(turnIdentifier: turnIdentifier)
                 }
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
@@ -1489,9 +1829,22 @@ final class CompanionManager: ObservableObject {
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if isTypedTurn {
+                    // A typed reply is read in the panel, never spoken: no text to speech, no
+                    // "speaking" state. Pointing (above) is unchanged, and with no audio to pace
+                    // against the marks follow each other at the steady beat the schedule already
+                    // has for that. The text-to-speech step this turn was marked as being at is
+                    // passed in an instant.
+                    drawingOverlayController.performDrawCommands(
+                        parsedDrawReply.commands,
+                        displayPlacementsInScreenshotOrder: drawingDisplayPlacementsInScreenshotOrder,
+                        cursorScreenshotIndex: cursorScreenshotIndex,
+                        speechAudioDurationSeconds: nil
+                    )
+                    turnStepInProgress = nil
+                } else if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    // Play the response via TTS. Keep the spinner (processing state)
+                    // until the audio actually starts playing, then switch to responding.
                     let textToSpeechStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                     do {
                         // The finisher has decided the final spoken text, so this is the first
@@ -1574,7 +1927,8 @@ final class CompanionManager: ObservableObject {
                     tellUserAboutTurnFailure(
                         failingStep: turnStepInProgress,
                         error: error,
-                        spokenReplyTextThatCouldNotBeSpoken: nil
+                        spokenReplyTextThatCouldNotBeSpoken: nil,
+                        typedTurnIdentifier: isTypedTurn ? turnIdentifier : nil
                     )
                 }
             }
@@ -1652,10 +2006,14 @@ final class CompanionManager: ObservableObject {
     /// reply itself is shown in the pill.
     ///
     /// The real error is printed by the caller; nothing about it is spoken or shown.
+    ///
+    /// For a typed turn (`typedTurnIdentifier` is set) nothing is spoken: the same sentence is
+    /// shown as a short text error in the chat panel instead.
     private func tellUserAboutTurnFailure(
         failingStep: ClickyTurnStep?,
         error: Error,
-        spokenReplyTextThatCouldNotBeSpoken: String?
+        spokenReplyTextThatCouldNotBeSpoken: String?,
+        typedTurnIdentifier: UUID? = nil
     ) {
         let bridgedError = error as NSError
         let turnFailureResponse = ClickyTurnFailureMessage.response(
@@ -1664,6 +2022,20 @@ final class CompanionManager: ObservableObject {
             errorCode: bridgedError.code,
             errorMessage: bridgedError.localizedDescription
         )
+
+        if let typedTurnIdentifier {
+            let errorSentenceForPanel: String
+            switch turnFailureResponse {
+            case .speakSentence(let honestErrorSentence):
+                errorSentenceForPanel = honestErrorSentence
+            case .showReplyAsNoticeWithoutSpeaking:
+                errorSentenceForPanel = ClickyTurnFailureMessage.voiceUnavailableNoticeText(
+                    forSpokenReplyText: spokenReplyTextThatCouldNotBeSpoken ?? ""
+                )
+            }
+            chatPanelViewModel.failPendingExchange(turnIdentifier: typedTurnIdentifier, errorText: errorSentenceForPanel)
+            return
+        }
 
         switch turnFailureResponse {
         case .speakSentence(let honestErrorSentence):

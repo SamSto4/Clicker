@@ -216,6 +216,61 @@ enum DS {
         /// The word in the status pill: the panel's primary text colour, light on the dark pill.
         static let overlayStatusPillText = Color(hex: "#ECEEED")
 
+        // ── Chat Panel ───────────────────────────────────────────────
+        // The panel that drops down from the notch (tap option + command) to type to Clicky and to
+        // browse past chats. Dark like the status pill it sits beside, so the two read as one family.
+
+        /// The panel's surface on a display without a notch: almost black, used slightly see-through
+        /// (see `DS.ChatPanel.backgroundOpacity`), the same colour as the status pill.
+        static let chatPanelBackground = Color(hex: "#0E1010")
+
+        /// The panel's surface under a notch: pure black, the colour of the notch itself, so the
+        /// panel reads as a piece of the notch hanging down.
+        static let chatPanelNotchBackground = Color(hex: "#000000")
+
+        /// A faint edge that keeps the dark panel visible on a dark page. Not used under a notch,
+        /// where an edge would show the seam between the notch and the panel.
+        static let chatPanelBorder = Color(hex: "#343837")
+
+        /// The thin lines between the panel's header, status row, messages and list rows.
+        static let chatPanelDivider = Color(hex: "#232726")
+
+        /// The box the text field and the search field sit in.
+        static let chatPanelInputBackground = Color(hex: "#161918")
+
+        /// The user's message bubble: the same deep blue as the help chat's user bubble.
+        static let chatPanelUserBubble = Color(hex: "#1e40af")
+
+        /// The words in the user's bubble.
+        static let chatPanelUserBubbleText = Color(hex: "#F2F6FF")
+
+        /// Clicky's reply text and the main words of a list row.
+        static let chatPanelPrimaryText = Color(hex: "#ECEEED")
+
+        /// Previews, times and hints.
+        static let chatPanelSecondaryText = Color(hex: "#ADB5B2")
+
+        /// The faintest words: project names, the footnote, the placeholder.
+        static let chatPanelTertiaryText = Color(hex: "#6B736F")
+
+        /// A list row or button under the mouse pointer.
+        static let chatPanelRowHoverBackground = Color(hex: "#1A1D1C")
+
+        /// The list row chosen with the arrow keys: a soft blue tint.
+        static let chatPanelRowSelectedBackground = Color(hex: "#18233F")
+
+        /// The mark on a kept chat (a filled pin).
+        static let chatPanelKeptMark = Color(hex: "#FFB224")
+
+        /// An error line in a chat ("i can't reach the internet right now.").
+        static let chatPanelErrorText = Color(hex: "#FF6369")
+
+        /// The word and live indicator in the panel while Clicky is thinking, in the asking blue.
+        static let chatPanelAskingAccent = Color(hex: "#3380FF")
+
+        /// The same, while dictating: the dictation green.
+        static let chatPanelDictatingAccent = Color(hex: "#2FCB9A")
+
         // ── Floating Button Gradient ─────────────────────────────────
 
         /// The floating session button gradient colors (unchanged from original —
@@ -337,6 +392,87 @@ enum DS {
         static let waveHeightInPoints: CGFloat = 9
         static let waveLengthInPoints: CGFloat = 11
         static let waveTravelSecondsPerWaveLength: Double = 0.55
+    }
+
+    // MARK: - Chat Panel (the panel that drops down from the notch)
+
+    enum ChatPanel {
+        // Window
+        static let widthInPoints: CGFloat = 520
+        /// The panel grows with its content up to this height, then its messages scroll.
+        static let maximumHeightInPoints: CGFloat = 440
+        /// The space between the menu bar and the panel on a display without a notch.
+        static let gapBelowMenuBarInPoints: CGFloat = 6
+        /// Under a notch the panel starts this far inside the notch, so no line of the page shows
+        /// between the two (the status pill uses the same overlap).
+        static let notchOverlapInPoints: CGFloat = 1
+        static let screenEdgeMarginInPoints: CGFloat = 8
+        /// The rounding of the two lower corners of a panel that hangs from a notch.
+        static let notchCornerRadiusInPoints: CGFloat = 22
+        /// The rounding of all four corners on a display without a notch.
+        static let cornerRadiusInPoints: CGFloat = 18
+        static let borderWidthInPoints: CGFloat = 1
+        static let backgroundOpacity: CGFloat = 0.96
+
+        // Opening and closing: a short fade with a small drop from the top edge.
+        static let openSeconds: Double = 0.18
+        static let closeSeconds: Double = 0.12
+        static let dropDistanceInPoints: CGFloat = 10
+        /// How long the window takes to follow a change of the content's height.
+        static let resizeSeconds: Double = 0.16
+
+        // Layout
+        static let horizontalPaddingInPoints: CGFloat = 16
+        static let headerTopPaddingInPoints: CGFloat = 14
+        static let headerBottomPaddingInPoints: CGFloat = 12
+        static let headerSpacingInPoints: CGFloat = 8
+        static let statusRowHeightInPoints: CGFloat = 22
+        static let bodyVerticalPaddingInPoints: CGFloat = 12
+        static let messageSpacingInPoints: CGFloat = 14
+        /// A message from the user is never wider than this, so a long line wraps inside a bubble.
+        static let userBubbleMaximumWidthInPoints: CGFloat = 380
+        static let userBubbleCornerRadiusInPoints: CGFloat = 12
+        static let userBubbleHorizontalPaddingInPoints: CGFloat = 12
+        static let userBubbleVerticalPaddingInPoints: CGFloat = 8
+
+        // Text
+        static let inputFontSizeInPoints: CGFloat = 14
+        static let messageFontSizeInPoints: CGFloat = 13
+        static let rowTitleFontSizeInPoints: CGFloat = 13
+        static let rowDetailFontSizeInPoints: CGFloat = 11
+        static let sectionTitleFontSizeInPoints: CGFloat = 10
+        static let footnoteFontSizeInPoints: CGFloat = 10
+        static let statusWordFontSizeInPoints: CGFloat = 11
+
+        // The text field
+        static let inputCornerRadiusInPoints: CGFloat = 10
+        static let inputHorizontalPaddingInPoints: CGFloat = 12
+        static let inputVerticalPaddingInPoints: CGFloat = 8
+        /// A new line is added up to this many lines (shift + return), then the field scrolls.
+        static let inputMaximumVisibleLineCount = 5
+
+        // Buttons
+        static let iconButtonSizeInPoints: CGFloat = 28
+        static let iconButtonCornerRadiusInPoints: CGFloat = 8
+        static let iconFontSizeInPoints: CGFloat = 12
+        static let textActionFontSizeInPoints: CGFloat = 11
+        static let textActionHorizontalPaddingInPoints: CGFloat = 8
+        static let textActionVerticalPaddingInPoints: CGFloat = 4
+
+        // The chat list
+        static let listRowCornerRadiusInPoints: CGFloat = 8
+        static let listRowHorizontalPaddingInPoints: CGFloat = 10
+        static let listRowVerticalPaddingInPoints: CGFloat = 7
+        static let listSectionTopPaddingInPoints: CGFloat = 10
+
+        // The live word in the panel (thinking, listening, speaking, dictating)
+        static let statusIndicatorWidthInPoints: CGFloat = 20
+        static let statusIndicatorHeightInPoints: CGFloat = 12
+        static let statusDotDiameterInPoints: CGFloat = 4.5
+        static let statusDotSpacingInPoints: CGFloat = 3.5
+        static let statusBarWidthInPoints: CGFloat = 2.5
+        static let statusBarSpacingInPoints: CGFloat = 2
+        static let statusPulseSeconds: Double = 0.9
     }
 
     // MARK: - Animation Durations
