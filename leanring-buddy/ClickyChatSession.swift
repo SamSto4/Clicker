@@ -110,6 +110,30 @@ final class ClickyChatSession: ObservableObject {
         writeInBackground(chatToWrite)
     }
 
+    // MARK: - Memory compaction (round 16)
+
+    /// The chats whose compaction into memories is due (see
+    /// `ClickyChatCollection.chatsEndedAndAwaitingMemoryCompaction`), oldest first.
+    func chatsEndedAndAwaitingMemoryCompaction(at now: Date = Date(), treatingActiveChatAsEnded: Bool) -> [ClickyChat] {
+        collection.chatsEndedAndAwaitingMemoryCompaction(at: now, treatingActiveChatAsEnded: treatingActiveChatAsEnded)
+    }
+
+    /// Records that the compaction covered the first `coveredExchangeCount` exchanges of the chat,
+    /// and writes the chat file so the count survives a restart. A chat deleted meanwhile is ignored.
+    func markMemoryCompacted(chatID: UUID, coveredExchangeCount: Int) {
+        guard let chatToWrite = collection.markMemoryCompacted(chatID: chatID, coveredExchangeCount: coveredExchangeCount) else { return }
+        writeInBackground(chatToWrite)
+    }
+
+    /// Waits until every chat write asked for so far has reached the disk. Only the quit path calls
+    /// it: the app is about to exit, and a count that was marked but not yet written would make the
+    /// next launch compact the same exchanges again. The store queue never waits for the main
+    /// thread (its work reaches the main thread only through `Task { @MainActor }`), so this
+    /// cannot deadlock.
+    func waitForPendingWritesBeforeQuitting() {
+        storeQueue.sync {}
+    }
+
     // MARK: - Keep and delete
 
     func toggleKept(chatID: UUID) {

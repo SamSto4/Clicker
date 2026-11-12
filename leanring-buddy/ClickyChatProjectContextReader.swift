@@ -79,6 +79,25 @@ enum ClickyChatProjectContextReader {
         return copyStringAttribute(kAXTitleAttribute, from: frontmostWindowElement)
     }
 
+    /// The document address and the title of the frontmost app's focused window, read in one pass
+    /// (round 17, file editing). The document tells Clicky which file the user has open (for relative
+    /// paths and the "frontmost document" line), and the title says whether that file has unsaved
+    /// edits when an apply is about to write to it. Only these two attributes are read, never
+    /// contents, with the same 0.25 s Accessibility timeout as every other read here, so the caller
+    /// runs it off the main thread. nil parts for an app without a document or title.
+    nonisolated static func readFrontmostDocumentPathAndWindowTitle(processIdentifier: Int32?) -> (documentPath: String?, windowTitle: String?) {
+        guard let processIdentifier else { return (nil, nil) }
+
+        let applicationElement = AXUIElementCreateApplication(processIdentifier)
+        AXUIElementSetMessagingTimeout(applicationElement, accessibilityMessagingTimeoutSeconds)
+        guard let frontmostWindowElement = copyFrontmostWindowElement(of: applicationElement) else { return (nil, nil) }
+        AXUIElementSetMessagingTimeout(frontmostWindowElement, accessibilityMessagingTimeoutSeconds)
+        let documentPath = ClickyChatProjectResolver.documentPath(
+            fromAccessibilityDocumentValue: copyStringAttribute(kAXDocumentAttribute, from: frontmostWindowElement)
+        )
+        return (documentPath, copyStringAttribute(kAXTitleAttribute, from: frontmostWindowElement))
+    }
+
     /// The project for a context, with the walk up to a git root done on the real disk.
     nonisolated static func resolveProject(for context: ClickyChatProjectContext) -> ClickyChatProject {
         ClickyChatProjectResolver.resolve(context, fileExists: { path in

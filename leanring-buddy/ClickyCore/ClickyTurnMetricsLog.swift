@@ -25,6 +25,16 @@ nonisolated enum ClickyTurnInputMode: String, Codable {
     case typed
 }
 
+/// How a proposed change ended (round 17). A fixed identifier, never a path.
+nonisolated enum ClickyChangeOutcome: String, Equatable {
+    case applied
+    case cancelled
+    case expired
+    /// A file was no longer what it was when the change was proposed (or had unsaved edits), so
+    /// nothing was written.
+    case refusedChanged
+}
+
 /// What is known about one turn: durations, sizes and counts, never any content.
 ///
 /// Privacy rule: this type holds only numbers, flags, enums and a sanitized model name. There is
@@ -68,6 +78,23 @@ nonisolated struct ClickyTurnMetrics: Equatable {
     var wasInterruptedByEscapeKey = false
 
     var tokenUsage = ClickyClaudeTokenUsage()
+
+    // Round 17 (file editing), numbers and fixed identifiers only, never a path or file text. Left
+    // out of a turn that never used the tools.
+    /// Requests of the tool loop that ended in `tool_use` and were answered with tool results.
+    var toolRoundTripCount: Int?
+    /// Tool calls run in this turn.
+    var toolCallCount: Int?
+    /// Bytes of file text the `read_file` calls returned.
+    var bytesRead: Int?
+    /// Changes the turn queued for the user to confirm.
+    var changesProposed: Int?
+    var changeOutcome: ClickyChangeOutcome?
+    /// One entry per request of the loop, in order. They show what the first user message (with the
+    /// screenshots), replayed on every request, costs and whether the cache reads it.
+    var roundTripInputTokens: [Int]?
+    var roundTripCacheReadTokens: [Int]?
+    var roundTripMilliseconds: [Int]?
 
     var spokenReplyCharacterCount: Int?
     var skillCount: Int?
@@ -152,6 +179,15 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         if let cacheCreationInputTokens = tokenUsage.cacheCreationInputTokens { jsonObject["cacheCreationInputTokens"] = cacheCreationInputTokens }
         if let cacheReadInputTokens = tokenUsage.cacheReadInputTokens { jsonObject["cacheReadInputTokens"] = cacheReadInputTokens }
 
+        if let toolRoundTripCount { jsonObject["toolRoundTrips"] = toolRoundTripCount }
+        if let toolCallCount { jsonObject["toolCalls"] = toolCallCount }
+        if let bytesRead { jsonObject["bytesRead"] = bytesRead }
+        if let changesProposed { jsonObject["changesProposed"] = changesProposed }
+        if let changeOutcome { jsonObject["changeOutcome"] = changeOutcome.rawValue }
+        if let roundTripInputTokens { jsonObject["roundTripInputTokens"] = roundTripInputTokens }
+        if let roundTripCacheReadTokens { jsonObject["roundTripCacheReadTokens"] = roundTripCacheReadTokens }
+        if let roundTripMilliseconds { jsonObject["roundTripMs"] = roundTripMilliseconds }
+
         if let spokenReplyCharacterCount { jsonObject["spokenReplyCharacterCount"] = spokenReplyCharacterCount }
         if let skillCount { jsonObject["skillCount"] = skillCount }
         if let noteCount { jsonObject["noteCount"] = noteCount }
@@ -199,6 +235,15 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         summaryLine += " point \(usedPointing.map { $0 ? "yes" : "no" } ?? "-")"
         summaryLine += " | \(Self.sanitizedModelName(modelName)), \(countText(screenCount)) screen(s), \(countText(totalImageBytes)) image bytes"
         summaryLine += ", \(inputMode.rawValue)"
+        if let toolCallCount {
+            summaryLine += " | tools: \(countText(toolRoundTripCount)) round trips, \(toolCallCount) calls, \(countText(bytesRead)) bytes read, \(countText(changesProposed)) changes proposed"
+            if let roundTripMilliseconds {
+                summaryLine += ", per request \(roundTripMilliseconds.map { "\($0)ms" }.joined(separator: "/"))"
+            }
+        }
+        if let changeOutcome {
+            summaryLine += " | change \(changeOutcome.rawValue)"
+        }
         return summaryLine
     }
 }

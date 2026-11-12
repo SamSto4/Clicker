@@ -35,6 +35,47 @@
 // conversation history; when it differs from the screen now, the assembler adds the "earlier in this
 // conversation" note to the dynamic block. Without the objects the prompt is exactly what it was.
 //
+// Round 16 (memories from chats): `prepare` also reads the optional `memories` array of the input,
+// `[{ "text": "...", "date": "2026-11-10" }]`, and seeds it into a temporary memories store (a folder
+// next to the scenario's notes folder) with the dates given, so the prompt gets exactly the memories
+// section the app would build for that question (`includedMemoryTexts` in the output lists the lines
+// that were selected). A new mode, `compact`, shows the compaction without any network call:
+//   compact  <input.json> <output.json|-> <promptsDirectory>
+//            For each record `{ id, exchanges: [{ user, clicky }], alreadyCompactedExchangeCount?,
+//            existingMemoryTexts?, existingProfileFactTexts?, modelOutput? }`: the app's own decision
+//            (nothing new, skipped as too short, or compact), the exact request body the app would send to
+//            the Worker (`requestBody`, and the same as one line of JSON text in `requestBodyJSON`; both
+//            carry the real system prompt from the prompts folder, and the `<known>` list the app builds
+//            from `existingProfileFactTexts` and `existingMemoryTexts`, shown in `knownTexts`), and, when `modelOutput` is given, the
+//            lines the app's validator would keep for that output (`keptMemoryTexts`) with counts of what
+//            it dropped or ignored. The grader can send `requestBody` through the Worker itself and feed
+//            the answer back as `modelOutput`. "-" as the output path prints to standard output.
+//
+// Round 17 (file editing): `prepare` also reads the optional `editableFolders` (folder names) with `files`
+// (`[{ path, content }]`, seeded into a temporary folder like the `tool` mode below) and `frontmostDocument`;
+// with a non-empty `editableFolders` the output record also carries `tools` (the tools array exactly as the
+// app sends it), `filesSectionText`, `frontmostDocumentLine`, `filesRootPath`, `folderPaths` and `maxTokens`,
+// and `systemPromptText` and `dynamicSystemPromptText` hold the "files you may change" section. Two new
+// modes, both without any network call.
+//   tool        <input.json> <output.json> <notesRootDirectory>
+//               For each record `{ id, editableFolders?: ["project"], files?: [{ path, content }],
+//               frontmostDocument?: "project/Foo.swift", toolName, input }` (or `calls: [{ toolName, input }]`
+//               to run several tools one after the other in one turn): the editable folders and files are
+//               seeded into a temporary folder under notesRootDirectory (`<id>-files`; the folder names default
+//               to ["project"], a file path is relative to that temporary root and starts with a folder name,
+//               otherwise it goes into the first folder; the text "{root}" inside a tool input is replaced by
+//               the temporary root's path), then the app's own `ClickyFileToolTurnSession` runs the tool(s).
+//               Output per record: `results` (each `{ toolName, resultText, isError }`; `resultText` and
+//               `isError` of the first are repeated at the top level), `queuedChanges` (action, relative path,
+//               summary, the diff lines the change card shows, hidden line count), `toolCallCount`,
+//               `bytesRead`, and the folder state after (`filesAfter`: every file below the root and its
+//               text), which shows that nothing was written. A grader can feed `resultText` to the model as
+//               the tool_result of a real loop through the Worker.
+//   finish-files <input.json> <output.json>
+//               For each record `{ id, spokenText, queuedChangeCount, usedFileTools, transcript? }`: the text
+//               after the honesty rule (`ClickyFileEditingHonesty`) and, when `transcript` is given, what
+//               the words mean to a pending change (`confirm`, `cancel`, `undo` or null).
+//
 // SAFETY: every note and profile operation goes to a directory under notesRootDirectory. That directory must be
 // a folder whose name starts with "clicky-eval-notes-" and must not be the real Clicky notes folder.
 // The harness creates notesRootDirectory with mkdtemp under the OS temp folder.
@@ -69,6 +110,13 @@ func noteStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: U
 func profileStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> ClickyProfileStore {
     let scenarioNotesDirectoryURL = notesRootDirectoryURL.appendingPathComponent(scenarioIdentifier, isDirectory: true)
     return ClickyProfileStore(profileDirectoryURL: scenarioNotesDirectoryURL)
+}
+
+/// The memories of a scenario sit in a folder next to the scenario's notes folder (never inside it, so
+/// the notes folder stays what the app's notes folder is: daily files and profile.md).
+func memoryStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> ClickyMemoryStore {
+    let scenarioMemoriesDirectoryURL = notesRootDirectoryURL.appendingPathComponent("\(scenarioIdentifier)-memories", isDirectory: true)
+    return ClickyMemoryStore(memoriesDirectoryURL: scenarioMemoriesDirectoryURL)
 }
 
 /// The raw profile file, so a scoring step can check that no secret value reached the disk.
@@ -110,6 +158,12 @@ func readJSONArray(atPath filePath: String) -> [[String: Any]] {
 func writeJSON(_ jsonObject: Any, toPath filePath: String) {
     do {
         let outputData = try JSONSerialization.data(withJSONObject: jsonObject, options: [.prettyPrinted, .sortedKeys])
+        // "-" prints to standard output (used by the `compact` mode).
+        if filePath == "-" {
+            FileHandle.standardOutput.write(outputData)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            return
+        }
         try outputData.write(to: URL(fileURLWithPath: filePath))
     } catch {
         failWithMessage("could not write \(filePath): \(error.localizedDescription)")
@@ -299,6 +353,20 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             }
         }
 
+        // Round 16: seed the scenario's memories (`[{ "text", "date" }]`, oldest first) through the store's
+        // own add, so the lines are normalised and limited exactly as the app's would be. Without the
+        // array there is no memories store, and the prompt is exactly what it was.
+        let seedMemories = scenarioInput["memories"] as? [[String: String]]
+        let memoryStore = memoryStoreForScenario(scenarioIdentifier, notesRootDirectoryURL: notesRootDirectoryURL)
+        for seedMemory in seedMemories ?? [] {
+            guard let memoryText = seedMemory["text"], let dayText = seedMemory["date"] else {
+                failWithMessage("seed memory needs text and date (\(scenarioIdentifier))")
+            }
+            if case .failed(let errorDescription) = memoryStore.addMemories(texts: [memoryText], sourceChatID: nil, createdAt: seedDate(fromDayText: dayText)) {
+                failWithMessage("seeding a memory failed for \(scenarioIdentifier): \(errorDescription)")
+            }
+        }
+
         // Round 6: the marks that are on the screen when this turn starts (empty for an ordinary scenario,
         // which then gets exactly the prompt it got before drawing existed).
         let seededDrawingBoard = drawingBoard(fromSeedDrawTagTexts: (scenarioInput["seedDrawTagTexts"] as? [String]) ?? [])
@@ -316,20 +384,61 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             )
         }
 
+        // Round 17: with a non-empty `editableFolders` the turn is a file-editing turn. The folders and
+        // `files` are seeded into a temporary folder, the turn context gets the folders (and the open
+        // document, `frontmostDocument`, a path relative to the temporary root) exactly as the app gives
+        // them, and the output carries the tools array and the section the app would send. Without it the
+        // record is exactly what it was.
+        var turnContext = ClickyTurnContext(
+            userTranscript: userTranscript,
+            frontmostApplicationBundleIdentifier: applicationBundleIdentifier,
+            frontmostApplicationName: applicationName,
+            screenCount: screenCount,
+            currentDate: Date(),
+            drawingMarksOnScreen: drawingMarksOnScreen,
+            frontmostWindowTitle: screenContextNow?["windowTitle"] as? String,
+            screenOfLastExchange: screenOfLastExchange
+        )
+        var fileEditingOutputFields: [String: Any] = [:]
+        if let editableFolderNames = scenarioInput["editableFolders"] as? [String], !editableFolderNames.isEmpty {
+            let workspace = seedFilesWorkspace(
+                scenarioIdentifier: scenarioIdentifier,
+                editableFolderNames: editableFolderNames,
+                files: (scenarioInput["files"] as? [[String: Any]]) ?? [],
+                notesRootDirectoryURL: notesRootDirectoryURL
+            )
+            let frontmostDocumentPath = (scenarioInput["frontmostDocument"] as? String).map {
+                workspace.rootDirectoryURL.appendingPathComponent($0).path
+            }
+            let pathPolicy = ClickyFilePathPolicy(
+                allowedFolderPaths: workspace.editableFolderURLs.map(\.path),
+                homeDirectoryPath: workspace.homeDirectoryPath,
+                frontmostDocumentPath: frontmostDocumentPath
+            )
+            turnContext.editableFolders = pathPolicy.allowedFolderURLs.map {
+                ClickyEditableFolderDescription(name: ClickyEditableFolders.displayName(forFolderPath: $0.path), path: $0.path)
+            }
+            turnContext.frontmostDocumentInEditableFolder = ClickyFileEditingPromptSection.frontmostDocumentDescription(
+                documentPath: frontmostDocumentPath,
+                policy: pathPolicy
+            )
+            fileEditingOutputFields = [
+                "tools": ClickyFileToolDefinitions.toolsArray(),
+                "filesSectionText": ClickyFileEditingPromptSection.sectionText(for: turnContext.editableFolders) ?? NSNull(),
+                "frontmostDocumentLine": ClickyFileEditingPromptSection.frontmostDocumentLine(for: turnContext.frontmostDocumentInEditableFolder) ?? NSNull(),
+                "filesRootPath": workspace.rootDirectoryURL.path,
+                "folderPaths": workspace.editableFolderURLs.map(\.path),
+                // What the request carries beyond today's: 8000 output tokens and the tools, no tool_choice.
+                "maxTokens": ClickyFileEditingLimits.maximumOutputTokensWithTools,
+            ]
+        }
+
         let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
-            for: ClickyTurnContext(
-                userTranscript: userTranscript,
-                frontmostApplicationBundleIdentifier: applicationBundleIdentifier,
-                frontmostApplicationName: applicationName,
-                screenCount: screenCount,
-                currentDate: Date(),
-                drawingMarksOnScreen: drawingMarksOnScreen,
-                frontmostWindowTitle: screenContextNow?["windowTitle"] as? String,
-                screenOfLastExchange: screenOfLastExchange
-            ),
+            for: turnContext,
             promptsDirectoryURL: promptsDirectoryURL,
             noteStore: noteStore,
-            profileStore: profileStore
+            profileStore: profileStore,
+            memoryStore: seedMemories == nil ? nil : memoryStore
         )
         outputRecords.append([
             "id": scenarioIdentifier,
@@ -347,10 +456,14 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             ),
             "selectedSkillNames": preparedPrompt.selectedSkillNames,
             "includedNoteTexts": preparedPrompt.includedNotes.map(\.text),
+            // Round 16: the memory lines the assembler selected for this question (empty when none
+            // was relevant, and then the prompt has no memories section), and every memory in the store.
+            "includedMemoryTexts": preparedPrompt.includedMemories.map(\.text),
+            "memoryTextsInStore": seedMemories == nil ? [] : memoryStore.loadMemories().map(\.text),
             // Round 6: the seeded marks, and the lines the app's "marks on screen" section lists for them.
             "drawingMarksOnScreen": drawingMarksOnScreen.map { drawingMarkRecord($0) },
             "drawingMarksOnScreenLineTexts": drawingMarksOnScreen.map { ClickyDrawingMarksOnScreenText.lineText(for: $0) },
-        ])
+        ].merging(fileEditingOutputFields) { current, _ in current })
     }
     writeJSON(outputRecords, toPath: outputPath)
 }
@@ -444,6 +557,92 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             "drawingMarksAfterReply": drawingBoardForReply.marks.map { drawingMarkRecord($0) },
             "drawHistoryAssistantText": drawHistoryAssistantText,
         ])
+    }
+    writeJSON(outputRecords, toPath: outputPath)
+}
+
+// MARK: - compact (round 16: offline, zero API calls)
+
+func memoryValidationRecord(_ validationResult: ClickyMemoryValidationResult) -> [String: Any] {
+    [
+        "keptMemoryTexts": validationResult.keptTexts,
+        "ignoredLineCount": validationResult.ignoredLineCount,
+        "droppedAsEmptyCount": validationResult.droppedAsEmptyCount,
+        "droppedAsSecretCount": validationResult.droppedAsSecretCount,
+        "droppedAsDuplicateCount": validationResult.droppedAsDuplicateCount,
+        "droppedBeyondLimitCount": validationResult.droppedBeyondLimitCount,
+        "cutLineCount": validationResult.cutLineCount,
+    ]
+}
+
+/// What the app would do with a chat that ended, without asking any model: its decision, the exact
+/// request body (built by the app's own `ClickyMemoryCompaction.makeRequestBody`, the same call the
+/// runner makes), and the validation of a model output the harness supplies.
+func runCompact(inputPath: String, outputPath: String, promptsDirectoryPath: String) {
+    let promptsDirectoryURL = URL(fileURLWithPath: promptsDirectoryPath, isDirectory: true)
+    let systemPromptText = ClickyMemoryCompaction.loadSystemPromptText(promptsDirectoryURL: promptsDirectoryURL)
+    var outputRecords: [[String: Any]] = []
+
+    for compactInput in readJSONArray(atPath: inputPath) {
+        guard let recordIdentifier = compactInput["id"] as? String else {
+            failWithMessage("compact input needs id")
+        }
+        // The exchanges of the chat as the app stores them (typed or spoken makes no difference to the
+        // request). Timestamps are only there to make the chat well formed.
+        let exchangeInputs = (compactInput["exchanges"] as? [[String: Any]]) ?? []
+        let storedExchanges = exchangeInputs.enumerated().map { exchangeIndex, exchangeInput in
+            ClickyChatExchange(
+                userText: (exchangeInput["user"] as? String) ?? "",
+                inputMode: .typed,
+                replyDisplayText: (exchangeInput["clicky"] as? String) ?? "",
+                replyHistoryText: (exchangeInput["clicky"] as? String) ?? "",
+                timestamp: Date(timeIntervalSince1970: 1_700_000_000 + Double(exchangeIndex) * 30)
+            )
+        }
+        var chatToCompact = ClickyChat(createdAt: Date(timeIntervalSince1970: 1_700_000_000), project: ClickyChatProject.unknown, exchanges: storedExchanges)
+        chatToCompact.memoryCompactedExchangeCount = (compactInput["alreadyCompactedExchangeCount"] as? Int) ?? 0
+
+        var outputRecord: [String: Any] = ["id": recordIdentifier]
+        switch ClickyMemoryCompactionPlanner.decision(for: chatToCompact) {
+        case .nothingNew:
+            outputRecord["decision"] = "nothingNew"
+        case .skippedAsTooShort(let coveringExchangeCount):
+            outputRecord["decision"] = "skippedAsTooShort"
+            outputRecord["coveringExchangeCount"] = coveringExchangeCount
+        case .compact(let exchangesInRequest, let coveringExchangeCount):
+            outputRecord["decision"] = "compact"
+            outputRecord["coveringExchangeCount"] = coveringExchangeCount
+            outputRecord["exchangeCountInRequest"] = exchangesInRequest.count
+            // The `<known>` list the app sends: the record's profile facts and memories, picked by the
+            // app's own `knownTexts` (memories get today's date; their date only breaks ties).
+            let existingMemoriesForKnownList = ((compactInput["existingMemoryTexts"] as? [String]) ?? []).map { memoryText in
+                ClickyMemory(id: UUID(), text: memoryText, createdAt: Date(), sourceChatID: nil)
+            }
+            let knownTexts = ClickyMemoryCompaction.knownTexts(
+                profileFactTexts: (compactInput["existingProfileFactTexts"] as? [String]) ?? [],
+                memories: existingMemoriesForKnownList,
+                forExchanges: exchangesInRequest,
+                now: Date()
+            )
+            outputRecord["knownTexts"] = knownTexts
+            let requestBody = ClickyMemoryCompaction.makeRequestBody(forExchanges: exchangesInRequest, knownTexts: knownTexts, systemPromptText: systemPromptText)
+            outputRecord["requestBody"] = requestBody
+            if let requestBodyData = try? JSONSerialization.data(withJSONObject: requestBody, options: [.sortedKeys]),
+               let requestBodyJSONText = String(data: requestBodyData, encoding: .utf8) {
+                outputRecord["requestBodyJSON"] = requestBodyJSONText
+            }
+        }
+
+        if let modelOutput = compactInput["modelOutput"] as? String {
+            let validationResult = ClickyMemoryOutputValidator.validate(
+                modelOutput: modelOutput,
+                existingMemoryTexts: (compactInput["existingMemoryTexts"] as? [String]) ?? [],
+                existingProfileFactTexts: (compactInput["existingProfileFactTexts"] as? [String]) ?? []
+            )
+            outputRecord["validation"] = memoryValidationRecord(validationResult)
+            outputRecord["keptMemoryTexts"] = validationResult.keptTexts
+        }
+        outputRecords.append(outputRecord)
     }
     writeJSON(outputRecords, toPath: outputPath)
 }
@@ -819,19 +1018,220 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     }
 }
 
+// MARK: - Round 17: file editing (tool and finish-files modes)
+
+/// The temporary folders a record's files live in.
+struct EvalFilesWorkspace {
+    let rootDirectoryURL: URL
+    let editableFolderURLs: [URL]
+    let homeDirectoryPath: String
+}
+
+func seedFilesWorkspace(
+    scenarioIdentifier: String,
+    editableFolderNames: [String]?,
+    files: [[String: Any]],
+    notesRootDirectoryURL: URL
+) -> EvalFilesWorkspace {
+    requireTemporaryNotesRoot(notesRootDirectoryURL)
+    let rootDirectoryURL = notesRootDirectoryURL.appendingPathComponent("\(scenarioIdentifier)-files", isDirectory: true)
+    let folderNames = editableFolderNames ?? ["project"]
+    var editableFolderURLs: [URL] = []
+    for folderName in folderNames {
+        let folderURL = rootDirectoryURL.appendingPathComponent(folderName, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        } catch {
+            failWithMessage("could not create \(folderURL.path): \(error.localizedDescription)")
+        }
+        editableFolderURLs.append(folderURL)
+    }
+    for seededFile in files {
+        guard let relativePath = seededFile["path"] as? String, let content = seededFile["content"] as? String else {
+            failWithMessage("a seeded file needs path and content (\(scenarioIdentifier))")
+        }
+        let firstPathComponent = relativePath.split(separator: "/").first.map(String.init) ?? ""
+        let pathBelowRoot = folderNames.contains(firstPathComponent) ? relativePath : "\(folderNames.first ?? "project")/\(relativePath)"
+        let fileURL = rootDirectoryURL.appendingPathComponent(pathBelowRoot)
+        // A seeded file must stay inside the temporary root: no absolute path and no ".." part.
+        guard !relativePath.hasPrefix("/"), !relativePath.split(separator: "/").contains("..") else {
+            failWithMessage("a seeded file path leaves the temporary root: \(relativePath)")
+        }
+        do {
+            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        } catch {
+            failWithMessage("could not seed \(fileURL.path): \(error.localizedDescription)")
+        }
+    }
+    return EvalFilesWorkspace(
+        rootDirectoryURL: rootDirectoryURL,
+        editableFolderURLs: editableFolderURLs,
+        homeDirectoryPath: rootDirectoryURL.appendingPathComponent("home").path
+    )
+}
+
+func substitutingRootPlaceholder(in value: Any, rootPath: String) -> Any {
+    if let text = value as? String {
+        return text.replacingOccurrences(of: "{root}", with: rootPath)
+    }
+    if let array = value as? [Any] {
+        return array.map { substitutingRootPlaceholder(in: $0, rootPath: rootPath) }
+    }
+    if let dictionary = value as? [String: Any] {
+        return dictionary.mapValues { substitutingRootPlaceholder(in: $0, rootPath: rootPath) }
+    }
+    return value
+}
+
+func diffLineRecord(_ diffLine: ClickyDiffLine) -> [String: Any] {
+    let kindName: String
+    switch diffLine.kind {
+    case .context: kindName = "context"
+    case .added: kindName = "added"
+    case .removed: kindName = "removed"
+    case .hunkSeparator: kindName = "separator"
+    }
+    return [
+        "kind": kindName,
+        "text": diffLine.text,
+        "oldLineNumber": diffLine.oldLineNumber ?? NSNull(),
+        "newLineNumber": diffLine.newLineNumber ?? NSNull(),
+    ]
+}
+
+func fileChangeRecord(_ change: ClickyFileChange) -> [String: Any] {
+    let cardContent = ClickyChangeCardContent.make(for: [change])
+    return [
+        "action": change.action.rawValue,
+        "relativePath": change.relativePath,
+        "summary": change.summary,
+        "historyLine": ClickyChangeHistoryText.proposalLine(for: change),
+        "diffLines": change.diffPreviewLines.map(diffLineRecord),
+        "hiddenDiffLineCount": change.hiddenDiffLineCount,
+        "noteText": cardContent.sections.first?.noteText ?? NSNull(),
+    ]
+}
+
+/// Every file below `rootDirectoryURL` and its text, so a grader can see that a proposal wrote nothing.
+func fileTextsBelow(_ rootDirectoryURL: URL) -> [String: String] {
+    var fileTexts: [String: String] = [:]
+    guard let enumerator = FileManager.default.enumerator(at: rootDirectoryURL, includingPropertiesForKeys: [.isRegularFileKey]) else {
+        return fileTexts
+    }
+    let rootPath = rootDirectoryURL.standardizedFileURL.path
+    for case let fileURL as URL in enumerator {
+        guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+        let relativePath = String(fileURL.standardizedFileURL.path.dropFirst(rootPath.count + 1))
+        fileTexts[relativePath] = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? "(not text)"
+    }
+    return fileTexts
+}
+
+func runTool(inputPath: String, outputPath: String, notesRootPath: String) {
+    let notesRootDirectoryURL = URL(fileURLWithPath: notesRootPath, isDirectory: true)
+    requireTemporaryNotesRoot(notesRootDirectoryURL)
+    var outputRecords: [[String: Any]] = []
+
+    for toolRecord in readJSONArray(atPath: inputPath) {
+        guard let scenarioIdentifier = toolRecord["id"] as? String else {
+            failWithMessage("tool input needs id")
+        }
+        let workspace = seedFilesWorkspace(
+            scenarioIdentifier: scenarioIdentifier,
+            editableFolderNames: toolRecord["editableFolders"] as? [String],
+            files: (toolRecord["files"] as? [[String: Any]]) ?? [],
+            notesRootDirectoryURL: notesRootDirectoryURL
+        )
+        let frontmostDocumentPath = (toolRecord["frontmostDocument"] as? String).map {
+            workspace.rootDirectoryURL.appendingPathComponent($0).path
+        }
+        let pathPolicy = ClickyFilePathPolicy(
+            allowedFolderPaths: workspace.editableFolderURLs.map(\.path),
+            homeDirectoryPath: workspace.homeDirectoryPath,
+            frontmostDocumentPath: frontmostDocumentPath
+        )
+        let toolSession = ClickyFileToolTurnSession(policy: pathPolicy)
+
+        var toolCalls: [[String: Any]] = (toolRecord["calls"] as? [[String: Any]]) ?? []
+        if toolCalls.isEmpty, let toolName = toolRecord["toolName"] as? String {
+            toolCalls = [["toolName": toolName, "input": (toolRecord["input"] as? [String: Any]) ?? [:]]]
+        }
+        var callResults: [[String: Any]] = []
+        for toolCall in toolCalls {
+            guard let toolName = toolCall["toolName"] as? String else {
+                failWithMessage("a tool call needs toolName (\(scenarioIdentifier))")
+            }
+            let rawInput = (toolCall["input"] as? [String: Any]) ?? [:]
+            let input = substitutingRootPlaceholder(in: rawInput, rootPath: workspace.rootDirectoryURL.path) as? [String: Any] ?? rawInput
+            let toolResult = toolSession.execute(toolName: toolName, input: input)
+            callResults.append(["toolName": toolName, "resultText": toolResult.text, "isError": toolResult.isError])
+        }
+
+        var outputRecord: [String: Any] = [
+            "id": scenarioIdentifier,
+            "results": callResults,
+            "queuedChanges": toolSession.queuedChanges.map(fileChangeRecord),
+            "toolCallCount": toolSession.toolCallCount,
+            "bytesRead": toolSession.bytesRead,
+            "rootPath": workspace.rootDirectoryURL.path,
+            "folderPaths": workspace.editableFolderURLs.map(\.path),
+            "filesAfter": fileTextsBelow(workspace.rootDirectoryURL),
+        ]
+        if let firstResult = callResults.first {
+            outputRecord["resultText"] = firstResult["resultText"]
+            outputRecord["isError"] = firstResult["isError"]
+        }
+        outputRecords.append(outputRecord)
+    }
+    writeJSON(outputRecords, toPath: outputPath)
+}
+
+func runFinishFiles(inputPath: String, outputPath: String) {
+    var outputRecords: [[String: Any]] = []
+    for record in readJSONArray(atPath: inputPath) {
+        guard let recordIdentifier = record["id"] as? String,
+              let spokenText = record["spokenText"] as? String,
+              let queuedChangeCount = record["queuedChangeCount"] as? Int else {
+            failWithMessage("finish-files input needs id, spokenText, queuedChangeCount")
+        }
+        let usedFileTools = (record["usedFileTools"] as? Bool) ?? (queuedChangeCount > 0)
+        var outputRecord: [String: Any] = [
+            "id": recordIdentifier,
+            "honestText": ClickyFileEditingHonesty.honestSpokenText(spokenText, queuedChangeCount: queuedChangeCount, usedFileTools: usedFileTools),
+        ]
+        if let transcript = record["transcript"] as? String {
+            switch ClickyChangeConfirmationPhrases.intent(forTranscript: transcript) {
+            case .confirm?: outputRecord["intent"] = "confirm"
+            case .cancel?: outputRecord["intent"] = "cancel"
+            case .undo?: outputRecord["intent"] = "undo"
+            case nil: outputRecord["intent"] = NSNull()
+            }
+        }
+        outputRecords.append(outputRecord)
+    }
+    writeJSON(outputRecords, toPath: outputPath)
+}
+
 // MARK: - entry point
 
 let commandLineArguments = CommandLine.arguments
 guard commandLineArguments.count >= 2 else {
-    failWithMessage("usage: prepare|finish|selftest with arguments (see the header of main.swift)")
+    failWithMessage("usage: prepare|finish|intent|compact|tool|finish-files|selftest with arguments (see the header of main.swift)")
 }
 switch commandLineArguments[1] {
 case "prepare" where commandLineArguments.count == 6:
     runPrepare(inputPath: commandLineArguments[2], outputPath: commandLineArguments[3], promptsDirectoryPath: commandLineArguments[4], notesRootPath: commandLineArguments[5])
 case "finish" where commandLineArguments.count == 5:
     runFinish(inputPath: commandLineArguments[2], outputPath: commandLineArguments[3], notesRootPath: commandLineArguments[4])
+case "compact" where commandLineArguments.count == 5:
+    runCompact(inputPath: commandLineArguments[2], outputPath: commandLineArguments[3], promptsDirectoryPath: commandLineArguments[4])
 case "intent" where commandLineArguments.count == 4:
     runIntent(inputPath: commandLineArguments[2], outputPath: commandLineArguments[3])
+case "tool" where commandLineArguments.count == 5:
+    runTool(inputPath: commandLineArguments[2], outputPath: commandLineArguments[3], notesRootPath: commandLineArguments[4])
+case "finish-files" where commandLineArguments.count == 4:
+    runFinishFiles(inputPath: commandLineArguments[2], outputPath: commandLineArguments[3])
 case "selftest" where commandLineArguments.count == 4:
     runSelfTest(outputPath: commandLineArguments[2], promptsDirectoryPath: commandLineArguments[3])
 default:

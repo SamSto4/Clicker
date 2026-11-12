@@ -18,6 +18,14 @@ nonisolated struct ClickyTurnContext {
     /// (a new chat, or cleared after ten quiet minutes) or when that exchange has no recorded
     /// screen (a continued chat from before screens were recorded). With nil, no note is added.
     var screenOfLastExchange: ClickyScreenDescription? = nil
+    /// The folders the user lets Clicky edit (round 17). Empty means the feature is off: no
+    /// "files you may change" section, and the request carries no tools.
+    var editableFolders: [ClickyEditableFolderDescription] = []
+    /// The document of the frontmost window, when it lies inside one of those folders.
+    var frontmostDocumentInEditableFolder: ClickyFrontmostDocumentDescription? = nil
+    /// The changes proposed earlier that still wait for the user's answer, as
+    /// `ClickyChangeHistoryText.changeDescription` writes them. Empty when none waits.
+    var pendingChangeDescriptions: [String] = []
 
     /// The screen of this turn, worked out the same way for the prompt, for the comparison with
     /// the last exchange and for the record kept with this turn's exchange.
@@ -43,6 +51,9 @@ nonisolated struct ClickyPreparedPrompt {
     /// The profile facts that fit the injection budget this turn, oldest first. Empty when the
     /// user has no profile.
     let includedProfileFactTexts: [String]
+    /// The memories from earlier chats that were relevant to this question (round 16), in the order
+    /// they appear in the prompt. Empty on most turns, which then get no memories section.
+    var includedMemories: [ClickyMemory] = []
 }
 
 /// Builds the system prompt for each turn. Order matters: the static parts come first and the
@@ -69,8 +80,9 @@ nonisolated enum ClickyPromptAssembler {
     }
 
     /// `profileStore` is optional so callers that only care about notes (such as the offline
-    /// evaluation tool) keep working; without it no profile section is added.
-    static func prepareSystemPrompt(for turnContext: ClickyTurnContext, promptsDirectoryURL: URL?, noteStore: ClickyNoteStore, profileStore: ClickyProfileStore? = nil) -> ClickyPreparedPrompt {
+    /// evaluation tool) keep working; without it no profile section is added. The same goes for
+    /// `memoryStore` (round 16): without it no memories section is added.
+    static func prepareSystemPrompt(for turnContext: ClickyTurnContext, promptsDirectoryURL: URL?, noteStore: ClickyNoteStore, profileStore: ClickyProfileStore? = nil, memoryStore: ClickyMemoryStore? = nil) -> ClickyPreparedPrompt {
         var basePromptText = emergencyBasePromptText
         if let promptsDirectoryURL,
            let baseFileContents = try? String(
@@ -102,10 +114,22 @@ nonisolated enum ClickyPromptAssembler {
 
         let includedProfileFactTexts = profileStore?.factTextsWithinInjectionBudget() ?? []
 
+        // Memories from earlier chats: only the ones that share words with this question (or, for
+        // "what do you remember", the newest). Most turns select none and get no section.
+        let includedMemories = memoryStore.map { memoryStore in
+            ClickyMemorySelection.selectMemories(
+                from: memoryStore.loadMemories(),
+                forTranscript: turnContext.userTranscript,
+                wantsFullRecall: wantsFullRecall,
+                now: turnContext.currentDate
+            )
+        } ?? []
+
         let dynamicSystemPromptText = assembleDynamicSystemPromptText(
             selectedSkills: selectedSkills,
             includedNotes: includedNotes,
             includedProfileFactTexts: includedProfileFactTexts,
+            includedMemories: includedMemories,
             context: turnContext
         )
         let systemPromptText = combineStaticAndDynamicSystemPromptText(
@@ -118,16 +142,18 @@ nonisolated enum ClickyPromptAssembler {
             dynamicSystemPromptText: dynamicSystemPromptText,
             selectedSkillNames: selectedSkills.map(\.skillName),
             includedNotes: includedNotes,
-            includedProfileFactTexts: includedProfileFactTexts
+            includedProfileFactTexts: includedProfileFactTexts,
+            includedMemories: includedMemories
         )
     }
 
     /// The whole prompt as one string: the base prompt, then the dynamic part.
-    static func assembleSystemPromptText(basePromptText: String, selectedSkills: [ClickySkill], includedNotes: [ClickyNote], includedProfileFactTexts: [String] = [], context: ClickyTurnContext) -> String {
+    static func assembleSystemPromptText(basePromptText: String, selectedSkills: [ClickySkill], includedNotes: [ClickyNote], includedProfileFactTexts: [String] = [], includedMemories: [ClickyMemory] = [], context: ClickyTurnContext) -> String {
         let dynamicSystemPromptText = assembleDynamicSystemPromptText(
             selectedSkills: selectedSkills,
             includedNotes: includedNotes,
             includedProfileFactTexts: includedProfileFactTexts,
+            includedMemories: includedMemories,
             context: context
         )
         return combineStaticAndDynamicSystemPromptText(
@@ -147,9 +173,9 @@ nonisolated enum ClickyPromptAssembler {
 
     /// Everything after the base prompt: skills for this question, the "right now" block, the note
     /// about a changed screen (if the screen is not the one the earlier messages were about), the
-    /// marks drawn on the screen (if any), the user's profile, and notes. This is the part that
-    /// differs between turns.
-    static func assembleDynamicSystemPromptText(selectedSkills: [ClickySkill], includedNotes: [ClickyNote], includedProfileFactTexts: [String] = [], context: ClickyTurnContext) -> String {
+    /// marks drawn on the screen (if any), the user's profile, the memories from earlier chats (if
+    /// any were selected), and notes. This is the part that differs between turns.
+    static func assembleDynamicSystemPromptText(selectedSkills: [ClickySkill], includedNotes: [ClickyNote], includedProfileFactTexts: [String] = [], includedMemories: [ClickyMemory] = [], context: ClickyTurnContext) -> String {
         var sectionTexts: [String] = []
 
         if !selectedSkills.isEmpty {
@@ -182,6 +208,23 @@ nonisolated enum ClickyPromptAssembler {
             sectionTexts.append(profileSectionText(for: includedProfileFactTexts))
         }
 
+        // After the profile and before the notes, under a heading of its own (distinct from the
+        // notes heading, which the base prompt gives rules for). Absent when nothing was selected.
+        if let memoriesSectionText = ClickyMemoryPromptSection.sectionText(for: includedMemories) {
+            sectionTexts.append(memoriesSectionText)
+        }
+
+        // After the profile and the memories, before the notes: the folders Clicky may change and
+        // the rules for changing them. Absent when no folder is set.
+        if let filesSectionText = ClickyFileEditingPromptSection.sectionText(for: context.editableFolders) {
+            sectionTexts.append(filesSectionText)
+            // A change proposed earlier that still waits: the model is told, so it knows the file
+            // does not hold it yet and that a new proposal replaces it.
+            if let pendingChangesText = ClickyFileEditingPromptSection.pendingChangesText(for: context.pendingChangeDescriptions) {
+                sectionTexts.append(pendingChangesText)
+            }
+        }
+
         if !includedNotes.isEmpty {
             sectionTexts.append(notesSectionText(for: includedNotes))
         }
@@ -209,6 +252,10 @@ nonisolated enum ClickyPromptAssembler {
         // is cleaned and quoted. Left out when the app has no title or it could not be read.
         if let cleanedWindowTitle = ClickyWindowTitleText.cleanedWindowTitle(from: context.frontmostWindowTitle) {
             rightNowLineTexts.append("- the frontmost window is titled \(ClickyWindowTitleText.quoted(cleanedWindowTitle)).")
+        }
+        // Round 17: the open document, when it is inside a folder Clicky may edit.
+        if let frontmostDocumentLine = ClickyFileEditingPromptSection.frontmostDocumentLine(for: context.frontmostDocumentInEditableFolder) {
+            rightNowLineTexts.append(frontmostDocumentLine)
         }
         rightNowLineTexts.append("- the user has \(screenCountDescription).")
         return rightNowLineTexts.joined(separator: "\n")

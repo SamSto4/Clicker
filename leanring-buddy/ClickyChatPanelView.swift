@@ -321,6 +321,7 @@ struct ClickyChatPanelView: View {
                 text: $viewModel.draftMessageText,
                 allowsMultipleLines: true,
                 focusRequestCount: viewModel.inputFocusRequestCount,
+                takesKeyboardWhenAddedToWindow: !viewModel.isChangeCardAwaitingAnswer,
                 onSubmit: { viewModel.sendDraftMessage() },
                 maximumVisibleLineCount: DS.ChatPanel.inputMaximumVisibleLineCount,
                 onNeededHeightChange: { neededHeight in
@@ -493,7 +494,13 @@ struct ClickyChatPanelView: View {
             .onChange(of: viewModel.streamingReplyText) { _, _ in
                 scrollViewProxy.scrollTo("clickyChatPanelBottom", anchor: .bottom)
             }
+            .onChange(of: viewModel.workingNoteText) { _, _ in
+                scrollViewProxy.scrollTo("clickyChatPanelBottom", anchor: .bottom)
+            }
             .onChange(of: viewModel.pendingUserMessageText) { _, _ in
+                scrollViewProxy.scrollTo("clickyChatPanelBottom", anchor: .bottom)
+            }
+            .onChange(of: viewModel.changeCard) { _, _ in
                 scrollViewProxy.scrollTo("clickyChatPanelBottom", anchor: .bottom)
             }
         }
@@ -504,7 +511,7 @@ struct ClickyChatPanelView: View {
         let chatToShow = viewModel.displayedChat
         let showsPendingExchange = viewModel.screen == .activeChat && viewModel.pendingUserMessageText != nil
 
-        if (chatToShow?.exchanges.isEmpty ?? true) && !showsPendingExchange && viewModel.turnErrorText == nil {
+        if (chatToShow?.exchanges.isEmpty ?? true) && !showsPendingExchange && viewModel.turnErrorText == nil && viewModel.changeCard == nil {
             emptyChatHint
         }
 
@@ -519,6 +526,11 @@ struct ClickyChatPanelView: View {
             userBubble(text: pendingUserMessageText, inputMode: viewModel.pendingInputMode)
             if !viewModel.streamingReplyText.isEmpty {
                 replyText(viewModel.streamingReplyText)
+            } else if let workingNoteText = viewModel.workingNoteText {
+                Text(workingNoteText)
+                    .font(.system(size: DS.ChatPanel.rowDetailFontSizeInPoints))
+                    .foregroundColor(DS.Colors.chatPanelTertiaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
 
@@ -527,6 +539,12 @@ struct ClickyChatPanelView: View {
                 .font(.system(size: DS.ChatPanel.messageFontSizeInPoints))
                 .foregroundColor(DS.Colors.chatPanelErrorText)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+
+        // The change Clicky proposed (round 17): under the messages, where the reply that
+        // announced it is.
+        if viewModel.screen == .activeChat, let changeCard = viewModel.changeCard {
+            ClickyChatChangeCardView(viewModel: viewModel, card: changeCard)
         }
     }
 

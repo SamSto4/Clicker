@@ -116,6 +116,7 @@ final class ClickyChatPanelController {
     private var panel: ClickyChatPanelWindow?
     private var clickOutsideMonitor: Any?
     private var contentHeightCancellable: AnyCancellable?
+    private var changeCardCancellable: AnyCancellable?
     private var applicationFrontmostBeforeOpening: NSRunningApplication?
     private var shownOnScreen: NSScreen?
 
@@ -199,11 +200,82 @@ final class ClickyChatPanelController {
                 self?.followContentHeight(desiredHeightInPoints, animated: true)
             }
 
+        // A change waiting for an answer has the keyboard instead (return applies it, escape
+        // cancels it): the window itself is first responder then, so no key lands in the field.
         if takingKeyboard {
-            viewModel.requestInputFocus()
+            if viewModel.isChangeCardAwaitingAnswer {
+                panel.makeFirstResponder(nil)
+            } else {
+                viewModel.requestInputFocus()
+            }
         }
+        observeChangeCardWhileOpen()
         openStateChangedHandler?(true)
     }
+
+    // MARK: - A change waiting for the user's answer (round 17)
+
+    /// Brings the panel up with the keyboard for a change that waits for return or escape: opens
+    /// it, or, when it is already open (typed there, or shown without the keyboard for a reply that
+    /// is not spoken), makes it the key window. The card, not the text field, has the keyboard.
+    func openTakingKeyboardForPendingChange() {
+        if isOpen, let panel {
+            panel.makeKeyAndOrderFront(nil)
+            panel.orderFrontRegardless()
+            panel.makeFirstResponder(nil)
+        } else {
+            open(takingKeyboard: true)
+        }
+    }
+
+    /// While the panel is open, a change that starts waiting takes the keyboard from the text field
+    /// (typed turns are asked in that field, so it has the keyboard when the card appears).
+    private func observeChangeCardWhileOpen() {
+        changeCardCancellable = viewModel.$changeCard
+            .map { $0?.phase == .awaitingAnswer }
+            .removeDuplicates()
+            .filter { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, self.isOpen, let panel = self.panel, panel.isKeyWindow else { return }
+                panel.makeFirstResponder(nil)
+            }
+    }
+
+    // MARK: - The folder picker (round 17)
+
+    /// Opens the system's folder chooser for the settings tab's "add folder…". The chooser needs
+    /// the app to be active, which this non-activating panel normally is not, and it is an ordinary
+    /// panel (a low window level), which would open behind this panel (status bar level). So Clicky
+    /// is activated for the moment, the chooser is lifted above this panel, and when it closes the
+    /// keyboard goes back to the app the user was in.
+    func presentFolderPicker(completion: @escaping (URL?) -> Void) {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseDirectories = true
+        openPanel.canChooseFiles = false
+        openPanel.allowsMultipleSelection = false
+        openPanel.canCreateDirectories = false
+        openPanel.prompt = "add folder"
+        openPanel.message = "pick a folder clicky may read and edit files in"
+        openPanel.level = NSWindow.Level(rawValue: (panel?.level.rawValue ?? NSWindow.Level.statusBar.rawValue) + 1)
+
+        let applicationToReturnTo = applicationFrontmostBeforeOpening ?? NSWorkspace.shared.frontmostApplication
+        let applicationToReturnToIsClicky = applicationToReturnTo?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        isPresentingFolderPicker = true
+        NSApp.activate(ignoringOtherApps: true)
+        openPanel.begin { [weak self] response in
+            self?.isPresentingFolderPicker = false
+            // Clicky became the active app only for the chooser: the app the user was in gets the
+            // keyboard back, and this panel stays where it is.
+            if !applicationToReturnToIsClicky, let applicationToReturnTo, !applicationToReturnTo.isTerminated {
+                applicationToReturnTo.activate()
+            }
+            completion(response == .OK ? openPanel.url : nil)
+        }
+    }
+
+    /// True while the folder chooser is up, so a click in it never counts as a click outside the panel.
+    private var isPresentingFolderPicker = false
 
     func close() {
         guard isOpen else { return }
@@ -213,6 +285,7 @@ final class ClickyChatPanelController {
 
         removeClickOutsideMonitor()
         contentHeightCancellable = nil
+        changeCardCancellable = nil
 
         if let panel {
             NSAnimationContext.runAnimationGroup { animationContext in
@@ -249,6 +322,27 @@ final class ClickyChatPanelController {
     /// capture is the point.
     func setVisibleInScreenCapturesForSelfTest(_ isVisibleInScreenCaptures: Bool) {
         existingOrNewPanel().sharingType = isVisibleInScreenCaptures ? .readOnly : .none
+        isTakingSelfTestPictures = isVisibleInScreenCaptures
+    }
+
+    /// Only while the self test takes its pictures:
+    /// - every height request is printed, so a picture of a window with the wrong height can be
+    ///   told apart from a window caught mid-resize;
+    /// - a click outside the panel does not close it. In round 16 a click in another app (the
+    ///   person at the Mac switching to their terminal) closed the panel halfway through, and
+    ///   the remaining pictures showed no panel at all.
+    /// A normal run never sets it, so it prints nothing and closes on an outside click as always.
+    private var isTakingSelfTestPictures = false
+
+    /// The window's height now, and the height it should end at for the content's current
+    /// height. The self test waits for the two to agree before it takes a picture.
+    var currentPanelHeightForSelfTest: CGFloat? {
+        panel?.frame.height
+    }
+
+    var settledPanelHeightForSelfTest: CGFloat? {
+        guard let shownOnScreen else { return nil }
+        return placement(forContentHeightInPoints: viewModel.desiredPanelHeightInPoints, on: shownOnScreen).frame.height
     }
 
     // MARK: - Window
@@ -283,6 +377,11 @@ final class ClickyChatPanelController {
     private func followContentHeight(_ desiredHeightInPoints: CGFloat, animated: Bool) {
         guard isOpen, let panel, let shownOnScreen else { return }
         let newFrame = placement(forContentHeightInPoints: desiredHeightInPoints, on: shownOnScreen).frame
+        if isTakingSelfTestPictures {
+            let previouslyRequestedHeight = lastRequestedPanelFrame.map { Int($0.height) } ?? -1
+            let unchangedMarker = newFrame == lastRequestedPanelFrame ? " (unchanged)" : ""
+            print("💬 panel size: content asks \(Int(desiredHeightInPoints)), window to \(Int(newFrame.height)), last asked \(previouslyRequestedHeight), now \(Int(panel.frame.height))\(unchangedMarker)")
+        }
         guard newFrame != lastRequestedPanelFrame else { return }
         lastRequestedPanelFrame = newFrame
         if animated && panel.isVisible {
@@ -321,6 +420,23 @@ final class ClickyChatPanelController {
             return true
         }
 
+        // A proposed change is waiting (round 17): the card has the keyboard, not the text field.
+        // Return applies it and no other key does anything, so nothing typed can land in "ask
+        // clicky…". Escape went to the handler above. Once the user clicks into the field on
+        // purpose it is first responder and keys work there as usual.
+        if viewModel.screen == .activeChat,
+           viewModel.isChangeCardAwaitingAnswer,
+           !(panel?.firstResponder is ClickyChatNSTextView) {
+            let hasShortcutModifierHeld = !keyEvent.modifierFlags.intersection([.command, .control]).isEmpty
+            if hasShortcutModifierHeld {
+                return false
+            }
+            if (keyEvent.keyCode == returnKeyCode || keyEvent.keyCode == keypadEnterKeyCode) && !keyEvent.isARepeat {
+                viewModel.requestApplyPendingChangeFromReturnKey(keyPressedAtUptimeSeconds: keyEvent.timestamp)
+            }
+            return true
+        }
+
         guard viewModel.screen == .chatList else { return false }
         let hasModifierHeld = !keyEvent.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
         guard !hasModifierHeld else { return false }
@@ -353,6 +469,7 @@ final class ClickyChatPanelController {
             Task { @MainActor [weak self] in
                 guard let self, self.isOpen, let panel = self.panel else { return }
                 guard !panel.frame.contains(NSEvent.mouseLocation) else { return }
+                guard !self.isTakingSelfTestPictures, !self.isPresentingFolderPicker else { return }
                 self.close()
             }
         }
