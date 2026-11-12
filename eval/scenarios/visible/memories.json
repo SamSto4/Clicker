@@ -1,0 +1,320 @@
+[
+ {
+  "dimension": "memories",
+  "id": "mem_v01",
+  "split": "visible",
+  "category": "unrelated-keyword",
+  "kind": "unrelated-keyword",
+  "memories": [
+   {
+    "text": "the kb connects demo is on friday at 3pm with the plumbing client",
+    "date": "2026-11-10"
+   },
+   {
+    "text": "clicky's worker is called clicky-proxy",
+    "date": "2026-11-08"
+   }
+  ],
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "how do i start a demo project in xcode",
+  "screenContextNow": {
+   "app": "Xcode",
+   "windowTitle": "CompanionManager.swift"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "the kb connects demo is on friday at 3pm with the plumbing client"
+   ],
+   "mustMatch": [
+    "\\b(?:file|new|template|create)\\b"
+   ],
+   "mustNotMatch": [
+    "\\bfriday\\b",
+    "\\bkb\\b|\\bk b\\b|\\bconnects\\b",
+    "\\bplumb",
+    "\\b(?:3\\s?pm|3:00|three (?:pm|p m|o'?clock|in the afternoon))\\b|\\bat three\\b",
+    "\\bclient\\b"
+   ],
+   "exampleCorrectReply": "choose file, then new, then project, and pick the template you want. [POINT:107,11:file menu]",
+   "exampleFailingReplies": [
+    {
+     "reply": "choose file, then new, then project. your kb connects demo is on friday too. [POINT:107,11:file menu]",
+     "outcome": "mentioned_unrelated_memory"
+    },
+    {
+     "reply": "i'm not sure about that. [POINT:none]",
+     "outcome": "missed_screen_answer"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_v02",
+  "split": "visible",
+  "category": "unrelated-keyword",
+  "kind": "unrelated-keyword",
+  "memories": [
+   {
+    "text": "chose a local mcp server for google instead of the hosted connector",
+    "date": "2026-11-09"
+   },
+   {
+    "text": "the kb connects demo is on friday at 3pm with the plumbing client",
+    "date": "2026-11-10"
+   }
+  ],
+  "screens": [
+   "vscode_main.jpg"
+  ],
+  "userPrompt": "how do i start the local dev server for this worker",
+  "screenContextNow": {
+   "app": "Visual Studio Code",
+   "windowTitle": "index.ts — clicker-worker"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "chose a local mcp server for google instead of the hosted connector"
+   ],
+   "mustMatch": [
+    "\\b(?:wrangler|already|terminal|localhost|npx|npm)\\b"
+   ],
+   "mustNotMatch": [
+    "\\b(?:mcp|m c p)\\b",
+    "\\bgoogle\\b",
+    "\\bconnector\\b",
+    "\\bfriday\\b|\\bplumb|\\bkb\\b|\\bk b\\b"
+   ],
+   "exampleCorrectReply": "it's already running in the terminal below, started with npx wrangler dev. [POINT:500,640:wrangler output]",
+   "exampleFailingReplies": [
+    {
+     "reply": "run npx wrangler dev in the terminal. you picked a local mcp server for google earlier. [POINT:none]",
+     "outcome": "mentioned_unrelated_memory"
+    },
+    {
+     "reply": "you picked a local mcp server. [POINT:none]",
+     "outcome": "mentioned_unrelated_memory"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_v03",
+  "split": "visible",
+  "category": "paraphrased-recall",
+  "kind": "paraphrased-recall",
+  "memories": [
+   {
+    "text": "the kb connects demo is on friday at 3pm with the plumbing client",
+    "date": "2026-11-10"
+   },
+   {
+    "text": "chose a local mcp server for google instead of the hosted connector",
+    "date": "2026-11-09"
+   }
+  ],
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "when's that plumbing demo again?",
+  "screenContextNow": {
+   "app": "Xcode",
+   "windowTitle": "CompanionManager.swift"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "the kb connects demo is on friday at 3pm with the plumbing client"
+   ],
+   "mustMatch": [
+    "\\bfriday\\b",
+    "\\b(?:3\\s?pm|3:00|three)\\b|\\bat 3\\b"
+   ],
+   "mustNotMatch": [
+    "\\b(?:monday|tuesday|wednesday|thursday|saturday|sunday)\\b",
+    "\\b(?!3\\s?(?:am|pm|a\\.m\\.|p\\.m\\.)|3:00)\\d{1,2}(?::\\d{2})?\\s?(?:am|pm|a\\.m\\.|p\\.m\\.)|\\b(?:one|two|four|five|six|seven|eight|nine|ten|eleven|twelve)\\s(?:o'?clock|am|pm|a m|p m)\\b|\\bnoon\\b|\\bmidnight\\b"
+   ],
+   "exampleCorrectReply": "it's friday at three with the plumbing client. [POINT:none]",
+   "exampleFailingReplies": [
+    {
+     "reply": "i don't have anything saved about a demo. [POINT:none]",
+     "outcome": "missed_recall"
+    },
+    {
+     "reply": "it's on saturday at three. [POINT:none]",
+     "outcome": "invented_detail"
+    },
+    {
+     "reply": "it's friday at ten am. [POINT:none]",
+     "outcome": "invented_detail"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_v04",
+  "split": "visible",
+  "category": "missing-detail",
+  "kind": "missing-detail",
+  "memories": [
+   {
+    "text": "the kb connects demo is on friday",
+    "date": "2026-11-10"
+   }
+  ],
+  "screens": [
+   "settings_main.jpg"
+  ],
+  "userPrompt": "what time is the kb connects demo?",
+  "screenContextNow": {
+   "app": "System Settings",
+   "windowTitle": "Privacy & Security"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "the kb connects demo is on friday"
+   ],
+   "mustMatch": [
+    "\\b(?:don'?t|do not|doesn'?t|didn'?t|can'?t|cannot|couldn'?t|haven'?t|hasn'?t|wasn'?t|isn'?t|aren'?t|weren'?t|won'?t|no|not|never|nothing|nobody|none|without|unknown|unsure)\\b[^.?!]{0,60}\\b(?:know|have|saved|noted|mention\\w*|recall|record\\w*|say|said|got|given|time|amount|price|cost|number|figure|detail\\w*|specific\\w*|stored|written|kept|remember\\w*)\\b|\\b(?:only|just)\\b[^.?!]{0,30}\\b(?:friday|monday|day|have|know|got|saved)\\b"
+   ],
+   "mustNotMatch": [
+    "\\b\\d{1,2}(?::\\d{2})?\\s?(?:am|pm|a\\.m\\.|p\\.m\\.)|\\b\\d{1,2}:\\d{2}\\b|\\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\s(?:o'?clock|am|pm|a m|p m|thirty|fifteen|forty five|in the (?:morning|afternoon|evening))|\\bo'?clock\\b|\\bnoon\\b|\\bmidnight\\b|\\bin the (?:morning|afternoon|evening)\\b|\\bat (?:\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\\b"
+   ],
+   "exampleCorrectReply": "i only have that it's on friday, not the time. [POINT:none]",
+   "exampleFailingReplies": [
+    {
+     "reply": "it's on friday at three. [POINT:none]",
+     "outcome": "invented_detail"
+    },
+    {
+     "reply": "it's on friday at 3pm. [POINT:none]",
+     "outcome": "invented_detail"
+    },
+    {
+     "reply": "it's on friday. [POINT:none]",
+     "outcome": "missed_unknown_acknowledgement"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_v05",
+  "split": "visible",
+  "category": "what-do-you-remember",
+  "kind": "what-do-you-remember",
+  "memories": [
+   {
+    "text": "the kb connects demo is on friday at 3pm with the plumbing client",
+    "date": "2026-11-10"
+   },
+   {
+    "text": "chose a local mcp server for google instead of the hosted connector",
+    "date": "2026-11-09"
+   },
+   {
+    "text": "clicky's worker is called clicky-proxy",
+    "date": "2026-11-08"
+   }
+  ],
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "what do you remember from our earlier chats?",
+  "screenContextNow": {
+   "app": "Xcode",
+   "windowTitle": "CompanionManager.swift"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "the kb connects demo is on friday at 3pm with the plumbing client",
+    "chose a local mcp server for google instead of the hosted connector",
+    "clicky's worker is called clicky-proxy"
+   ],
+   "mustMatch": [
+    "\\b(?:friday|demo|kb connects)\\b",
+    "\\b(?:mcp|m c p|google)\\b",
+    "\\bproxy\\b"
+   ],
+   "mustMatchAtLeast": 2,
+   "mustNotMatch": [
+    "\\b(?:monday|tuesday|wednesday|thursday|saturday|sunday)\\b",
+    "\\b(?!3\\s?(?:am|pm|a\\.m\\.|p\\.m\\.)|3:00)\\d{1,2}(?::\\d{2})?\\s?(?:am|pm|a\\.m\\.|p\\.m\\.)|\\b(?:one|two|four|five|six|seven|eight|nine|ten|eleven|twelve)\\s(?:o'?clock|am|pm|a m|p m)\\b|\\bnoon\\b|\\bmidnight\\b",
+    "\\byou (?:like|love|prefer|hate|enjoy)\\b"
+   ],
+   "maxSpokenSentences": 3,
+   "maxSpokenWords": 70,
+   "exampleCorrectReply": "you have the kb connects demo on friday at three, you picked a local mcp server for google, and your worker is called clicky-proxy. [POINT:none]",
+   "exampleFailingReplies": [
+    {
+     "reply": "i don't have any notes saved yet. [POINT:none]",
+     "outcome": "missed_recall"
+    },
+    {
+     "reply": "the kb connects demo is friday at three, and you have a dentist visit on tuesday. [POINT:none]",
+     "outcome": "invented_detail"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_v06",
+  "split": "visible",
+  "category": "one-of-several",
+  "kind": "one-of-several",
+  "memories": [
+   {
+    "text": "the kb connects demo is on friday at 3pm with the plumbing client",
+    "date": "2026-11-10"
+   },
+   {
+    "text": "chose a local mcp server for google instead of the hosted connector",
+    "date": "2026-11-09"
+   },
+   {
+    "text": "clicky's worker is called clicky-proxy",
+    "date": "2026-11-08"
+   }
+  ],
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "what's my worker called again?",
+  "screenContextNow": {
+   "app": "Xcode",
+   "windowTitle": "CompanionManager.swift"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "clicky's worker is called clicky-proxy"
+   ],
+   "mustMatch": [
+    "\\bproxy\\b"
+   ],
+   "mustNotMatch": [
+    "\\bfriday\\b",
+    "\\bdemo\\b",
+    "\\bplumb",
+    "\\bkb\\b|\\bk b\\b|\\bconnects\\b",
+    "\\b(?:mcp|m c p)\\b",
+    "\\bgoogle\\b",
+    "\\bconnector\\b"
+   ],
+   "exampleCorrectReply": "it's called clicky-proxy. [POINT:none]",
+   "exampleFailingReplies": [
+    {
+     "reply": "it's called clicky-proxy, and your demo is friday. [POINT:none]",
+     "outcome": "mentioned_unrelated_memory"
+    },
+    {
+     "reply": "i don't see a worker on screen. [POINT:none]",
+     "outcome": "missed_recall"
+    }
+   ]
+  }
+ }
+]

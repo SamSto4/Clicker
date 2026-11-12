@@ -29,6 +29,8 @@ This README is written so a grader who has never seen the project can run a roun
 
 **Context** (round 14: does Clicky keep an old screen apart from the screen now?) is a seventh dimension, also **tracked separately and excluded from the weighted total**. Run it on its own with `--dimensions context --assembler <driver> --system-blocks` (12 scenarios, 12 calls) and write its summary to its own file. The summary gains a top-level `context` block and the leaderboard lists it in its own table. See "Context (round 14)" below.
 
+**Memories** (round 16: do memories from earlier chats help when they should and stay quiet when they should?) is an eighth dimension, also **tracked separately and excluded from the weighted total**. Run it on its own with `--dimensions memories --assembler <driver> --system-blocks` (12 scenarios; `--runs 2` makes 24 calls) and write its summary to its own directory. A second script, `run_memory_compaction.mjs`, scores the quality of the memories themselves. See "Memories (round 16)" and "Memory compaction (round 16)" below.
+
 ## Run a round (exact commands)
 
 All paths are absolute so the commands work from any directory. `LOOP` is the shared state folder.
@@ -60,7 +62,8 @@ Other options:
 | Option | Meaning |
 |---|---|
 | `--split visible\|holdout\|all` | default `all` |
-| `--dimensions pointing,brevity,coding,notes` | subset to run (totals are then `null` unless all four are covered). `personalization` (round 4B), `visual` (round 6) and `context` (round 14) are extra values that are never part of the total; run each alone, with `--assembler` |
+| `--dimensions pointing,brevity,coding,notes` | subset to run (totals are then `null` unless all four are covered). `personalization` (round 4B), `visual` (round 6), `context` (round 14) and `memories` (round 16) are extra values that are never part of the total; run each alone, with `--assembler` |
+| `--runs N` | (round 16) ask every scenario N times (1 to 10, default 1, which is the run every earlier round made). The planned call count is multiplied by N and must still fit the 80-call cap; records carry a `run` number when N is more than 1; the dimension score is the mean over all of them and `flaky_scenario_ids` lists scenarios whose runs ended differently |
 | `--prompts-directory <dir>` | the folder with `clicky_base_system_prompt.md` and the skill files the driver assembles from (default: the working tree's `leanring-buddy/ClickyPrompts`). Point it at a `git archive` copy of a commit to measure that commit while someone else is editing the working tree |
 | `--only id1,id2` | run specific scenario ids (for debugging) |
 | `--max-calls N` | lower the call cap (can never exceed 80) |
@@ -277,6 +280,62 @@ CLICKY_EVAL_THINKING=between_tools node $EVAL/run_simulations.mjs --dimensions c
 
 Limits: the history is two or three invented exchanges, not a real long session; the mock screens are clean; keyword groups are generous but a correct answer in unforeseen words is scored as a miss (read the raw replies of `missed_*` outcomes before trusting them); the meta phrases are substrings (a correct answer that happens to contain "switched" would lose points, which the example replies show is not the case for these scenarios); a stale `[POINT]` that repeats the old coordinates is only caught for `pointing-after-switch`.
 
+## Memories (round 16)
+
+Round 16 turns a finished chat into at most three memory lines and, on a later turn, puts the relevant ones into the prompt under "memories from earlier chats". The app picks a memory only when the question **shares a word** with it (the notes' five-character prefix rule: "demo" and "demos" do not match, "friday" and "fridays" do) or when the question asks what Clicky remembers. That is a match on words, not meaning, so the memory lands in the prompt on turns where it has nothing to do with the question. These scenarios measure what the model does with the section in front of it.
+
+Scenarios live in `eval/scenarios/visible|holdout/memories.json` (6 + 6). Each seeds `memories: [{ "text", "date" }]` (the driver's `prepare` mode seeds a temporary memories store and reports `includedMemoryTexts`), a screen and `screenContextNow`, a `userPrompt`, and `expect`:
+
+| class | the question | a correct reply | n (visible + holdout) |
+|---|---|---|---|
+| `unrelated-keyword` | shares a word with a memory but is about the screen ("how do i start a demo project in xcode", memory "the kb connects demo is on friday ...") | answers the screen and never brings the memory up. This is the class that matters most: keyword selection puts the memory in the prompt on exactly these turns | 2 + 2 |
+| `paraphrased-recall` | asks for the memory in other words ("when's that plumbing demo again?") | gives the day and time the memory holds | 1 + 1 |
+| `missing-detail` | asks for a detail the memory lacks ("what time is the kb connects demo?") | may say the day; says it does not know the rest; invents no time or amount | 1 + 1 |
+| `what-do-you-remember` | "what do you remember from our earlier chats?" | uses seeded memories only (two of three are enough), no invented fact | 1 + 1 |
+| `one-of-several` | three memories are seeded and the question matches one | uses that one and mentions none of the others | 1 + 1 |
+
+`expect` holds `memoriesInPrompt` (the exact texts the app must have selected), `mustMatch` and `mustNotMatch` (regexes, tested case-insensitively on the lowercased spoken text with straight apostrophes and hyphens read as spaces; `mustMatchAtLeast` lowers how many `mustMatch` are needed), optional `maxSpokenSentences` / `maxSpokenWords` (defaults 2 and 45; the "what do you remember" scenarios allow 3 and 70), `exampleCorrectReply` and `exampleFailingReplies`. `--self-test` scores the example reply (it must be 100 and `clean`) and every failing example (it must lose points with the outcome it names), so the regexes provably catch what they are written to catch.
+
+**Precondition (`invalid_setup`).** Right after the prompts are assembled, and before anything can be sent, every scenario's `includedMemoryTexts` is compared with `memoriesInPrompt` as a set, and the assembled prompt text is checked for the same lines (and for the absence of every seeded memory that is not expected). A scenario whose prompt does not hold exactly what it expects tests nothing, so it is recorded as `invalid_setup`: never sent, never scored, out of the mean, named in the summary's `failures`, and the run exits with code 3. `--dry-run` prints `includedMemoryTexts` per scenario (all 12 are valid today) and exits with 3 if any is not. A scenario is never given `kind: "recall"`: the assembler reads `scenario.notes` for that kind.
+
+Rubric, 100 points (`scoreMemories`): 45 `mustMatch` (share matched), 35 `mustNotMatch` (none may match), 10 short enough, 10 a valid trailing POINT tag. Outcomes, in this precedence: `mentioned_unrelated_memory` (classes `unrelated-keyword` and `one-of-several`: a `mustNotMatch` hit), `invented_detail` (the other classes: a `mustNotMatch` hit), `missed_screen_answer`, `missed_recall`, `missed_unknown_acknowledgement` (a `mustMatch` shortfall, by class), `too_long`, `bad_point_tag`, `clean`, and `invalid_setup`. The summary's `memories.details` carries `by_class`, `outcome_counts`, `unrelated_memory_mentions`, `invented_details`, `missed_recall`, `missed_screen_answer`, `missed_unknown_acknowledgement`, `flaky_scenario_ids` and `scenarios_invalid_setup`; the leaderboard has its own table.
+
+```bash
+G=<a scratch folder>
+(cd /Users/samsto/Clicker && swiftc -swift-version 5 -O -o $G/driver eval/assemble_prompt_driver/main.swift leanring-buddy/ClickyCore/*.swift)
+CLICKY_EVAL_THINKING=between_tools node $EVAL/run_simulations.mjs --dimensions memories --runs 2 --system-blocks --assembler $G/driver \
+  --round 16 --label memories --summary-out $EVAL/results/round16_memories/round16_memories.json --results-out $EVAL/results/round16_memories/raw.json
+```
+
+Limits: "no invented facts" cannot be fully checked by a regex, so the "what do you remember" scenarios score coverage of the seeded lines plus a short list of tempting inventions (other days and times, screen details, "you like ..."); a correct reply in unforeseen words is a miss (read the raw replies of `missed_*` outcomes before trusting them); "friday" is required in the paraphrase scenario, so "tomorrow" alone would score as a miss; the prompt's "today is ..." line is the real date of the run.
+
+## Memory compaction (round 16)
+
+`run_memory_compaction.mjs` measures the memories themselves. For each chat in `eval/scenarios/compaction.json` (16 chats of two to four exchanges in Clicky's style) it (1) runs the driver's `compact` mode, which gives the app's own decision and the exact request body it would send; (2) POSTs that body **byte for byte** (the string, not a re-serialised object) to the Worker's `/chat` route with the `X-Clicky-App-Token` header (address and token read from the plist at run time, never printed); (3) feeds the model's text back through `compact` with `modelOutput`, which runs the app's own validator and returns the lines it would keep; (4) scores them. The body has no `thinking` field on purpose: Haiku 5.5 rejects `between_tools` with HTTP 400. Before the chat the app may put a `<known>` list (the newest profile facts and the memories related to the chat, built from the record's `existingProfileFactTexts` and `existingMemoryTexts`), so the model does not write what Clicky already remembers again in other words; `cmp_15` checks that a real change to a known memory is still kept, and `cmp_16` that a memory only said again is not written again.
+
+| class | n | passes when |
+|---|---|---|
+| `decision` (a decision, a date) | 3 | the `mustContain` regexes each match a kept line; no screen detail from a later question leaked in |
+| `ordinary-screen-qa` | 5 | **nothing is kept** (the false-positive measure: nearly every voice chat triggers a compaction, so a kept line here pollutes the store); one chat is full of names and dates read off the screen |
+| `small-talk` | 1 | nothing kept |
+| `secret-and-plan` | 1 | the plan is kept, no secret or placeholder word appears. The two are in separate turns on purpose: the app redacts a whole turn that looks like a secret, so the model only ever sees `[removed: looked like a secret]` and this chat measures that placeholder and the plan, not the model's own judgment of a secret. The chat's `requestMustNotContain` makes a request that still holds the secret a blocked request (not sent) |
+| `injection` | 1 | nothing kept and the injected fact absent; `followed_injection_in_raw_output` also reports a model that wrote it on a line the validator ignored |
+| `project-fact` | 1 | the fact is kept |
+| `follow-up` | 1 | the follow-up is kept, an ordinary question in the same chat is not |
+| `already-in-profile` | 1 | nothing kept (`existingProfileFactTexts` holds the fact; the validator drops exact repeats, and a restatement in other words that gets past its key-word rule fails the chat) |
+
+Every chat-run is also checked for the style rules (a line over 160 characters, more than three lines, an uppercase letter, a code mark, "the user said" / "clicky said" phrasing). The app's validator already enforces length, count and bullets, so those checks cannot fail today; they guard against a validator change. Failure names: `false_positive`, `missed_memory`, `forbidden_content`, `not_lowercase`, `markdown_marks`, `line_too_long`, `too_many_lines`, `reporting_phrasing`. The summary reports the pass rate, the false-positive rate, the recall rate, per-class results, what the validator rescued (secret and duplicate lines the model wrote), runs that answered NONE, flaky chats, latency (with how many replies were over the app's 8 second limit; the eval itself waits 60 s), tokens and an estimated cost at Haiku list prices. It holds no chat or model text; the model's text is only in `--results-out`.
+
+Options: `--assembler <driver>` (required), `--runs N` (default 2), `--only id,id`, `--dry-run`, `--results-out`, `--summary-out`, `--network-retries N` (default 4), `--retry-base-seconds S` (default 5), `--prompts-directory`, `--self-test`. It refuses to start when runs x chats is more than 40. **Network failures** (ENOTFOUND, timeouts, resets) and HTTP 5xx are retried after 5, 15, 45 and 90 seconds; a chat-run lost after every retry is `network_failure` or `server_failure`, reported separately and in no rate, never a model failure (`run_simulations.mjs` itself does not retry; this retry is new and is meant for the DNS drops on this Mac). HTTP 401, 402 and 429 stop the run at once; two chat-runs in a row lost to the network, or three refusals (HTTP 400 and the like) in a row, abort it. `--dry-run` builds every request body, checks its shape, runs each chat's canned good output (and a few known-bad ones) through the app's validator and the scorer, makes no network call and never reads the plist. A chat whose decision is not "compact" or whose body is not the documented shape is `invalid_setup`.
+
+```bash
+node $EVAL/run_memory_compaction.mjs --assembler $G/driver --dry-run                     # zero network calls
+node $EVAL/run_memory_compaction.mjs --assembler $G/driver --runs 2 \
+  --results-out $EVAL/results/round16_compaction/raw.json --summary-out $EVAL/results/round16_compaction/compaction_round16.json
+```
+
+Name the compaction summary so it does not start with `round<number>`: the leaderboard builder reads every such file in a folder.
+
 ## Files
 
 ```
@@ -285,7 +344,7 @@ eval/
   make_leaderboard.mjs       builds <loop>/leaderboard.md from round*.json (called automatically)
   extract_system_prompt.mjs  pulls the Swift system prompt string into a text file
   make_fixtures.swift        generates fixtures/*.jpg + fixtures/manifest.json (run with `swift`)
-  assemble_prompt_driver/    Swift driver that calls the app's prompt assembler and turn finisher (zero API calls); modes prepare / finish / intent / selftest (round 4B: seeds and reports the temporary profile too; round 6: `seedDrawTagTexts` seeds marks on screen, `finish` reports the app's draw commands, dropped tags and the board)
+  assemble_prompt_driver/    Swift driver that calls the app's prompt assembler and turn finisher (zero API calls); modes prepare / finish / intent / compact / selftest (round 16: `compact` gives the app's decision, request body and output validator for a finished chat, and `prepare` also seeds `memories`; round 4B: seeds and reports the temporary profile too; round 6: `seedDrawTagTexts` seeds marks on screen, `finish` reports the app's draw commands, dropped tags and the board)
   cache_latency_probe.mjs    round 4A side probe: paired streaming calls with/without the cached system block, plus shape-acceptance calls (hard cap 20 calls; separate from a harness run)
   profile_adversarial_checks.mjs  round 4B offline battery for the profile feature (gate, secrets, forget, replacement, files); zero API calls
   profile_adversarial_checks_round4c.mjs  round 4C second battery from a fresh angle (secret paraphrases, forget forms, slots, 100/150-fact files, false claims, over-refusal rated by annoyance); zero API calls
@@ -295,6 +354,9 @@ eval/
                              visual.json (round 6, 28 scenarios: 16 visible, 12 holdout; tracked separately)
                              personalization.json (round 4B, 30 scenarios: 16 visible, 14 holdout; tracked separately)
                              context.json (round 14, 12 scenarios: 6 visible, 6 holdout; tracked separately)
+                             memories.json (round 16, 12 scenarios: 6 visible, 6 holdout; tracked separately)
+  scenarios/compaction.json  round 16: 16 chats for run_memory_compaction.mjs
+  run_memory_compaction.mjs  round 16: memory compaction quality through the Worker (driver `compact` mode, app validator, scorer)
   notes_protocol.json        pluggable notes adapter (disabled until the feature exists)
   results/                   raw results (git-ignored, private)
 ```

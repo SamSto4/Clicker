@@ -37,7 +37,9 @@ const DIMENSION_ORDER = ["pointing", "brevity", "coding", "notes"];
 // own, with --dimensions visual and --assembler, and never part of the weighted total.
 // Round 14: context (does Clicky keep an old screen apart from the screen now?) is tracked the same way:
 // on its own, with --dimensions context and --assembler, and never part of the weighted total.
-const EXTRA_DIMENSIONS = ["personalization", "visual", "context"];
+// Round 16: memories (does a memory from an earlier chat help when it should, and stay quiet when it should?)
+// is tracked the same way: on its own, with --dimensions memories and --assembler.
+const EXTRA_DIMENSIONS = ["personalization", "visual", "context", "memories"];
 const ALL_DIMENSIONS = [...DIMENSION_ORDER, ...EXTRA_DIMENSIONS];
 
 const POINTING_BOX_TOLERANCE_PIXELS = 4;
@@ -119,6 +121,9 @@ function parseArguments(argumentList) {
     rescoreVisual: null,
     // Round 14: re-finish and re-score the stored replies of a context run after a scorer fix. Zero API calls.
     rescoreContext: null,
+    // Round 16: ask every scenario this many times (the replies are not deterministic). Default 1, which
+    // is exactly the run every earlier round made. The planned call count is multiplied by it.
+    runs: 1,
   };
   for (let index = 0; index < argumentList.length; index++) {
     const argument = argumentList[index];
@@ -146,10 +151,12 @@ function parseArguments(argumentList) {
       case "--resummarize": options.resummarize = nextValue(); break;
       case "--rescore-visual": options.rescoreVisual = nextValue(); break;
       case "--rescore-context": options.rescoreContext = nextValue(); break;
+      case "--runs": options.runs = Number(nextValue()); break;
       default: throw new Error(`unknown argument: ${argument}`);
     }
   }
   if (!["all", "visible", "holdout"].includes(options.split)) throw new Error("--split must be all, visible or holdout");
+  if (!Number.isInteger(options.runs) || options.runs < 1 || options.runs > 10) throw new Error("--runs must be a whole number from 1 to 10");
   for (const dimension of options.dimensions) {
     if (!ALL_DIMENSIONS.includes(dimension)) throw new Error(`unknown dimension: ${dimension}`);
   }
@@ -164,6 +171,9 @@ function parseArguments(argumentList) {
   }
   if (options.dimensions.includes("context") && !options.assembler && !options.resummarize && !options.selfTest) {
     throw new Error("the context dimension needs --assembler: the spoken text it scores comes from the app's own turn finisher through the driver");
+  }
+  if (options.dimensions.includes("memories") && !options.assembler && !options.resummarize && !options.selfTest) {
+    throw new Error("the memories dimension needs --assembler: the prompt's memories section and the spoken text come from the app's own assembler and turn finisher through the driver");
   }
   return options;
 }
@@ -1468,6 +1478,155 @@ export function scoreContext(scenario, replyTextOrView, manifest) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Scoring: MEMORIES (round 16, tracked separately, excluded from the weighted total)
+//
+// Round 16 turns finished chats into short "memories" and puts the relevant ones into a later turn's
+// prompt (the app selects a memory only when the question shares a word with it, or when the question
+// asks what Clicky remembers). That selection is by word, not by meaning, so it puts a memory into the
+// prompt on turns where it has nothing to do with the question. These scenarios measure what the model
+// does with the memory section in front of it:
+//   unrelated-keyword     the question shares a word with the memory but is about the screen: answer the
+//                         screen, never mention the memory (the most important class)
+//   paraphrased-recall    the user asks for the memory in other words: recall it, with its details
+//   missing-detail        the user asks for a detail the memory does not hold: do not invent it, say so
+//   what-do-you-remember  "what do you remember from our earlier chats": use the seeded memories only
+//   one-of-several        several memories are seeded and the question matches one: use only that one
+//
+// Every scenario is first checked offline against what the app's own assembler put into the prompt
+// (`checkMemoriesPrecondition`): a scenario whose prompt does not hold exactly the memories it expects
+// is `invalid_setup` and is never sent or scored, because its result would mean nothing.
+//
+// Rubric (100 points, documented in README.md "Memories (round 16)"), on the text the app would speak:
+//   45  `mustMatch` regexes (the share of them that match; `mustMatchAtLeast` lowers how many are needed)
+//   35  `mustNotMatch` regexes (none may match: other memories, invented days, times or amounts)
+//   10  spoken reply short (at most 2 sentences and 45 words unless the scenario allows more)
+//   10  a valid trailing POINT tag that is none or lands on the screen
+// Regexes are tested case-insensitively on the lowercased spoken text with straight apostrophes and
+// hyphens or underscores read as spaces ("clicky-proxy" is "clicky proxy"), like the context dimension.
+// ---------------------------------------------------------------------------------------------
+
+export const MEMORIES_CLASSES = ["unrelated-keyword", "paraphrased-recall", "missing-detail", "what-do-you-remember", "one-of-several"];
+// What a `mustNotMatch` hit is called, by class. A memory that should not have come up is a different
+// failure from a detail the memory never held.
+const MEMORIES_LEAK_OUTCOME_BY_CLASS = {
+  "unrelated-keyword": "mentioned_unrelated_memory",
+  "one-of-several": "mentioned_unrelated_memory",
+  "paraphrased-recall": "invented_detail",
+  "missing-detail": "invented_detail",
+  "what-do-you-remember": "invented_detail",
+};
+// What a `mustMatch` shortfall is called, by class.
+const MEMORIES_MISS_OUTCOME_BY_CLASS = {
+  "unrelated-keyword": "missed_screen_answer",
+  "paraphrased-recall": "missed_recall",
+  "missing-detail": "missed_unknown_acknowledgement",
+  "what-do-you-remember": "missed_recall",
+  "one-of-several": "missed_recall",
+};
+export const MEMORIES_OUTCOMES = ["clean", "mentioned_unrelated_memory", "invented_detail", "missed_screen_answer", "missed_recall", "missed_unknown_acknowledgement", "too_long", "bad_point_tag", "invalid_setup"];
+const MEMORIES_DEFAULT_MAX_SPOKEN_SENTENCES = 2;
+const MEMORIES_DEFAULT_MAX_SPOKEN_WORDS = 45;
+// The heading the app's prompt gives the memories section (ClickyMemoryPromptSection.headingText starts like this).
+const MEMORIES_SECTION_HEADING_START = "memories from earlier chats (";
+
+function memoriesPatternMatches(patternSource, normalizedSpokenText) {
+  return new RegExp(patternSource, "i").test(normalizedSpokenText);
+}
+
+export function scoreMemories(scenario, replyTextOrView, manifest) {
+  const parsed = typeof replyTextOrView === "string" ? parsePointTag(replyTextOrView) : replyTextOrView;
+  const expectation = scenario.expect;
+  const scenarioClass = scenario.category;
+  const normalizedSpokenText = normalizeForContextMatching(parsed.spokenText);
+
+  const mustMatchPatterns = expectation.mustMatch ?? [];
+  const mustNotMatchPatterns = expectation.mustNotMatch ?? [];
+  const mustMatchHits = mustMatchPatterns.map((patternSource) => memoriesPatternMatches(patternSource, normalizedSpokenText));
+  const leakedPatternIndexes = mustNotMatchPatterns.map((patternSource, patternIndex) => (memoriesPatternMatches(patternSource, normalizedSpokenText) ? patternIndex : -1)).filter((patternIndex) => patternIndex >= 0);
+  const requiredMatchCount = expectation.mustMatchAtLeast ?? mustMatchPatterns.length;
+  const matchedCount = mustMatchHits.filter(Boolean).length;
+  const matchShare = requiredMatchCount === 0 ? 1 : Math.min(1, matchedCount / requiredMatchCount);
+
+  const spokenSentenceCount = countSentences(parsed.spokenText);
+  const spokenWordCount = countWords(parsed.spokenText);
+  const sentenceLimit = expectation.maxSpokenSentences ?? MEMORIES_DEFAULT_MAX_SPOKEN_SENTENCES;
+  const wordLimit = expectation.maxSpokenWords ?? MEMORIES_DEFAULT_MAX_SPOKEN_WORDS;
+  const isShortEnough = spokenSentenceCount <= sentenceLimit && spokenWordCount <= wordLimit;
+
+  // The reply ends with a POINT tag that is none or lands on the screen (the same rule as the context dimension).
+  const pointedScreenFixture = manifest[scenario.screens[(parsed.screenNumber ?? 1) - 1]];
+  const coordinatesAreOnScreen = parsed.isNone || (Boolean(pointedScreenFixture) && parsed.x <= pointedScreenFixture.width && parsed.y <= pointedScreenFixture.height);
+  const pointingIsRight = parsed.hasTag && (parsed.tagAtEnd ?? true) && coordinatesAreOnScreen;
+
+  const checks = {};
+  const award = (name, points, earned, note = null) => { checks[name] = { points, earned: Math.round(earned * 10) / 10, ...(note ? { note } : {}) }; };
+  award("must_match", 45, 45 * matchShare, `${matchedCount} of ${requiredMatchCount} needed patterns`);
+  award("must_not_match", 35, leakedPatternIndexes.length === 0 ? 35 : 0, `${leakedPatternIndexes.length} forbidden pattern(s) matched`);
+  award("short_enough", 10, isShortEnough ? 10 : 0, `${spokenSentenceCount} sentence(s), ${spokenWordCount} word(s)`);
+  award("point_tag", 10, pointingIsRight ? 10 : 0);
+
+  // Precedence: something that should not have been said is the worst failure, then something that was
+  // missing, then length, then the tag.
+  let outcome = "clean";
+  if (leakedPatternIndexes.length > 0) outcome = MEMORIES_LEAK_OUTCOME_BY_CLASS[scenarioClass] ?? "invented_detail";
+  else if (matchedCount < requiredMatchCount) outcome = MEMORIES_MISS_OUTCOME_BY_CLASS[scenarioClass] ?? "missed_recall";
+  else if (!isShortEnough) outcome = "too_long";
+  else if (!pointingIsRight) outcome = "bad_point_tag";
+
+  const score = Object.values(checks).reduce((sum, check) => sum + check.earned, 0);
+  const failedChecks = Object.entries(checks).filter(([, check]) => check.earned < check.points).map(([name]) => name);
+  return {
+    score, outcome,
+    detail: {
+      class: scenarioClass, checks, failed_checks: failedChecks,
+      must_match_hits: mustMatchHits, required_match_count: requiredMatchCount,
+      leaked_pattern_indexes: leakedPatternIndexes,
+      spoken_sentence_count: spokenSentenceCount, spoken_word_count: spokenWordCount,
+      point_tag_ok: pointingIsRight,
+    },
+  };
+}
+
+// The precondition of every memories scenario, worked out offline from the driver's `prepare` record:
+// the memories the app selected for this question must be exactly the ones the scenario expects
+// (`expect.memoriesInPrompt`), and the prompt text must really hold them (and nothing else the scenario
+// seeded). If not, the scenario does not test what it says it tests: `invalid_setup`.
+export function checkMemoriesPrecondition(scenario, assembledRecord) {
+  const normalizeMemoryText = (text) => String(text ?? "").split(/\s+/).filter(Boolean).join(" ");
+  const seededTexts = (scenario.memories ?? []).map((memory) => normalizeMemoryText(memory.text));
+  const expectedTexts = (scenario.expect?.memoriesInPrompt ?? []).map(normalizeMemoryText);
+  if (!Array.isArray(assembledRecord?.includedMemoryTexts) || !Array.isArray(assembledRecord?.memoryTextsInStore)) {
+    return { valid: false, problems: ["the driver did not report includedMemoryTexts and memoryTextsInStore: rebuild it from eval/assemble_prompt_driver/main.swift"], included: [], expected: expectedTexts };
+  }
+  const includedTexts = assembledRecord.includedMemoryTexts.map(normalizeMemoryText);
+  const storedTexts = assembledRecord.memoryTextsInStore.map(normalizeMemoryText);
+  const promptText = assembledRecord.dynamicSystemPromptText ?? assembledRecord.systemPromptText ?? "";
+  const problems = [];
+
+  if (storedTexts.length !== seededTexts.length || seededTexts.some((text) => !storedTexts.includes(text))) {
+    problems.push(`the store holds ${storedTexts.length} memories and the scenario seeds ${seededTexts.length} (a text was cut or dropped when seeded)`);
+  }
+  for (const text of expectedTexts) {
+    if (!seededTexts.includes(text)) problems.push(`expect.memoriesInPrompt lists a memory the scenario does not seed: "${text}"`);
+    if (!includedTexts.includes(text)) problems.push(`expected in the prompt but not selected by the app: "${text}"`);
+  }
+  for (const text of includedTexts) {
+    if (!expectedTexts.includes(text)) problems.push(`selected by the app but not expected: "${text}"`);
+  }
+  // The assembled prompt text itself: the section is there with the expected lines, or it is absent.
+  const sectionIsInPrompt = promptText.includes(MEMORIES_SECTION_HEADING_START);
+  if (expectedTexts.length > 0 && !sectionIsInPrompt) problems.push("the prompt has no memories section");
+  if (expectedTexts.length === 0 && sectionIsInPrompt) problems.push("the prompt has a memories section but none is expected");
+  for (const text of expectedTexts) {
+    if (sectionIsInPrompt && !promptText.includes(`: ${text}`)) problems.push(`the prompt text does not hold the expected line: "${text}"`);
+  }
+  for (const text of seededTexts) {
+    if (!expectedTexts.includes(text) && promptText.includes(text)) problems.push(`the prompt text holds a memory the scenario does not expect: "${text}"`);
+  }
+  return { valid: problems.length === 0, problems, included: includedTexts, expected: expectedTexts };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Scenario loading
 // ---------------------------------------------------------------------------------------------
 
@@ -1572,6 +1731,9 @@ class PromptAssembler {
         // names the app change will read; the driver ignores them today (it reads only the keys it knows).
         ...(scenario.screenContextOfHistory ? { screenContextOfHistory: scenario.screenContextOfHistory } : {}),
         ...(scenario.screenContextNow ? { screenContextNow: scenario.screenContextNow } : {}),
+        // Round 16: memories from earlier chats, `[{ text, date }]`. The driver seeds a temporary memories
+        // store with them and reports which lines the app's selection put into this question's prompt.
+        ...(scenario.memories ? { memories: scenario.memories } : {}),
       };
     });
     fs.writeFileSync(inputPath, JSON.stringify(prepareInput));
@@ -1701,6 +1863,11 @@ async function runScenario(scenario, context) {
   if (scenario.dimension === "context") {
     if (!finishedTurn) return { ...common, errored: true, error: "context needs the assembler's finished turn" };
     const result = scoreContext(scenario, replyViewFromFinishedTurn(reply.text, finishedTurn), manifest);
+    return { ...common, score: result.score, outcome: result.outcome, detail: result.detail };
+  }
+  if (scenario.dimension === "memories") {
+    if (!finishedTurn) return { ...common, errored: true, error: "memories needs the assembler's finished turn" };
+    const result = scoreMemories(scenario, replyViewFromFinishedTurn(reply.text, finishedTurn), manifest);
     return { ...common, score: result.score, outcome: result.outcome, detail: result.detail };
   }
   if (scenario.dimension === "personalization") {
@@ -1857,6 +2024,50 @@ function buildDimensionDetails(dimension, results, notesProtocol) {
       median_output_tokens: median(scored.map((result) => result.output_tokens).filter((value) => value !== null)),
     };
   }
+  if (dimension === "memories") {
+    const outcomeCounts = {};
+    const checkFailureCounts = {};
+    for (const result of scored) {
+      outcomeCounts[result.outcome] = (outcomeCounts[result.outcome] ?? 0) + 1;
+      for (const check of result.detail?.failed_checks ?? []) checkFailureCounts[check] = (checkFailureCounts[check] ?? 0) + 1;
+    }
+    const byClass = {};
+    for (const [scenarioClass, members] of groupBy(scored, (result) => result.detail.class)) {
+      byClass[scenarioClass] = {
+        n: members.length, score: round1(mean(members.map((member) => member.score))),
+        clean: members.filter((member) => member.outcome === "clean").length,
+        not_clean_ids: [...new Set(members.filter((member) => member.outcome !== "clean").map((member) => member.id))],
+      };
+    }
+    const percentOf = (count, total) => (total === 0 ? null : round1(100 * count / total));
+    // A leak is any `mustNotMatch` hit, whatever outcome won the precedence. The first two classes can only
+    // leak another memory; the rest can only invent a detail, so the two rates read separately.
+    const inClasses = (classNames) => scored.filter((result) => classNames.includes(result.detail?.class));
+    const leaked = (result) => (result.detail?.leaked_pattern_indexes ?? []).length > 0;
+    const classesThatCanMentionAnUnrelatedMemory = inClasses(["unrelated-keyword", "one-of-several"]);
+    const classesThatCanInventADetail = inClasses(["paraphrased-recall", "missing-detail", "what-do-you-remember"]);
+    const classesThatNeedRecall = inClasses(["paraphrased-recall", "what-do-you-remember", "one-of-several"]);
+    const missedRecall = classesThatNeedRecall.filter((result) => result.outcome === "missed_recall");
+    const missedScreenAnswer = inClasses(["unrelated-keyword"]).filter((result) => result.detail.checks.must_match.earned < result.detail.checks.must_match.points);
+    const missedUnknownAcknowledgement = inClasses(["missing-detail"]).filter((result) => result.detail.checks.must_match.earned < result.detail.checks.must_match.points);
+    // A scenario asked more than once (--runs) whose replies did not all end the same way.
+    const outcomesByScenario = groupBy(scored, (result) => result.id);
+    const flakyScenarioIds = [...outcomesByScenario].filter(([, members]) => new Set(members.map((member) => member.outcome)).size > 1).map(([id]) => id);
+    return {
+      ...base, runs_per_scenario: Math.max(1, ...[...outcomesByScenario.values()].map((members) => members.length)),
+      by_class: byClass, outcome_counts: outcomeCounts, check_failure_counts: checkFailureCounts,
+      clean_replies: outcomeCounts.clean ?? 0, clean_rate_percent: percentOf(outcomeCounts.clean ?? 0, scored.length),
+      unrelated_memory_mentions: { replies_where_it_can_show: classesThatCanMentionAnUnrelatedMemory.length, replies: classesThatCanMentionAnUnrelatedMemory.filter(leaked).length, rate_percent: percentOf(classesThatCanMentionAnUnrelatedMemory.filter(leaked).length, classesThatCanMentionAnUnrelatedMemory.length), scenario_ids: [...new Set(classesThatCanMentionAnUnrelatedMemory.filter(leaked).map((result) => result.id))] },
+      invented_details: { replies_where_it_can_show: classesThatCanInventADetail.length, replies: classesThatCanInventADetail.filter(leaked).length, rate_percent: percentOf(classesThatCanInventADetail.filter(leaked).length, classesThatCanInventADetail.length), scenario_ids: [...new Set(classesThatCanInventADetail.filter(leaked).map((result) => result.id))] },
+      missed_recall: { replies_where_it_can_show: classesThatNeedRecall.length, replies: missedRecall.length, rate_percent: percentOf(missedRecall.length, classesThatNeedRecall.length), scenario_ids: [...new Set(missedRecall.map((result) => result.id))] },
+      missed_screen_answer: { replies: missedScreenAnswer.length, of: inClasses(["unrelated-keyword"]).length, scenario_ids: [...new Set(missedScreenAnswer.map((result) => result.id))] },
+      missed_unknown_acknowledgement: { replies: missedUnknownAcknowledgement.length, of: inClasses(["missing-detail"]).length, scenario_ids: [...new Set(missedUnknownAcknowledgement.map((result) => result.id))] },
+      flaky_scenario_ids: flakyScenarioIds,
+      scenarios_invalid_setup: [...new Set(results.filter((result) => result.outcome === "invalid_setup").map((result) => result.id))].length,
+      median_latency_ms: median(latencies), p90_latency_ms: latencies.length ? Math.round(percentile(latencies, 0.9)) : null,
+      median_output_tokens: median(scored.map((result) => result.output_tokens).filter((value) => value !== null)),
+    };
+  }
   // notes (enabled)
   const outcomeCounts = {};
   for (const result of scored) outcomeCounts[result.outcome] = (outcomeCounts[result.outcome] ?? 0) + 1;
@@ -1907,7 +2118,7 @@ function describeFailures(dimension, visibleResults, details) {
       failures.push({ dimension, category, description: `category mean ${round1(categoryScore)}/100 (judge ${round1(mean(members.map((member) => member.detail.judge.total)))}/10, keyword coverage ${round1(100 * mean(members.map((member) => member.detail.keyword_coverage)))}%).` });
     }
   }
-  if (dimension === "personalization" || dimension === "visual" || dimension === "context") {
+  if (dimension === "personalization" || dimension === "visual" || dimension === "context" || dimension === "memories") {
     for (const [category, members] of groupBy(scored, (result) => result.category)) {
       const failed = members.filter((result) => result.score < 100);
       if (failed.length === 0) continue;
@@ -2024,6 +2235,28 @@ function buildSummary({ options, results, notesProtocol, client, systemPromptTex
     for (const split of ["visible", "holdout"]) splitScores[split].context = context.split_scores[split];
   }
 
+  // Round 16: memories (does a memory from an earlier chat help when it should and stay quiet when it should)
+  // is reported on its own as well. A scenario whose prompt did not hold the memories it expects is
+  // `invalid_setup`: it is never sent or scored, and it is named here so it cannot pass or fail silently.
+  let memories = null;
+  if (options.dimensions.includes("memories")) {
+    const memoriesRun = results.filter((result) => result.dimension === "memories");
+    const visibleRun = memoriesRun.filter((result) => result.split === "visible");
+    const holdoutRun = memoriesRun.filter((result) => result.split === "holdout");
+    const invalidSetupIds = [...new Set(memoriesRun.filter((result) => result.outcome === "invalid_setup").map((result) => result.id))];
+    memories = {
+      score: round1(dimensionScore(memoriesRun)),
+      excluded_from_weighted_total: true,
+      details: buildDimensionDetails("memories", memoriesRun, notesProtocol),
+      split_scores: { visible: round1(dimensionScore(visibleRun)), holdout: round1(dimensionScore(holdoutRun)) },
+      failures: [
+        ...(invalidSetupIds.length > 0 ? [{ dimension: "memories", category: "invalid_setup", description: `${invalidSetupIds.length} scenario(s) were not run because the prompt did not hold exactly the memories they expect (ids: ${invalidSetupIds.join(", ")}); they are in neither the score nor the pass count.` }] : []),
+        ...describeFailures("memories", visibleRun, buildDimensionDetails("memories", visibleRun, notesProtocol)),
+      ],
+    };
+    for (const split of ["visible", "holdout"]) splitScores[split].memories = memories.split_scores[split];
+  }
+
   const erroredCount = results.filter((result) => result.errored).length;
   return {
     round: options.round,
@@ -2032,6 +2265,7 @@ function buildSummary({ options, results, notesProtocol, client, systemPromptTex
     ...(personalization ? { personalization } : {}),
     ...(visual ? { visual } : {}),
     ...(context ? { context } : {}),
+    ...(memories ? { memories } : {}),
     draw_tag_usage: summarizeDrawTagUsage(results),
     spoken_formatting: summarizeSpokenFormatting(results),
     latency: summarizeLatency(results),
@@ -2402,6 +2636,85 @@ function runSelfTest() {
   check("context scenarios: 5 new topic, 2 ambiguous this, 3 follow-up, 1 same screen, 1 pointing", kindCounts["switch-new-topic"] === 5 && kindCounts["switch-ambiguous-this"] === 2 && kindCounts["follow-up-across-switch"] === 3 && kindCounts["same-screen-follow-up"] === 1 && kindCounts["pointing-after-switch"] === 1);
   check("context: the named app decides the frontmost app (Chrome is not Safari)", frontmostAppForScenario({ screens: ["browser_main.jpg"], screenContextNow: { app: "Google Chrome", windowTitle: "x" } }).bundleId === "com.google.Chrome" && frontmostAppForScenario({ screens: ["browser_main.jpg"] }).bundleId === "com.apple.Safari");
 
+  // ---- Round 16: --runs and the memories dimension (all offline) ----
+  check("runs: default 1, --runs 3 is 3", parseArguments([]).runs === 1 && parseArguments(["--runs", "3"]).runs === 3);
+  const runsRefused = (value) => { try { parseArguments(["--runs", value]); return false; } catch { return true; } };
+  check("runs: 0, 11, 1.5 and text are refused", ["0", "11", "1.5", "two"].every(runsRefused));
+  check("memories: the dimension is known and never part of the weighted total", ALL_DIMENSIONS.includes("memories") && !(("memories") in DIMENSION_WEIGHTS));
+
+  const memoriesScenarios = loadScenarios({ split: "all", dimensions: ["memories"], only: null });
+  const memoriesShapeProblems = [];
+  const memoriesClassCounts = {};
+  const memoriesIdsSeen = new Set();
+  for (const scenario of memoriesScenarios) {
+    memoriesClassCounts[scenario.category] = (memoriesClassCounts[scenario.category] ?? 0) + 1;
+    if (memoriesIdsSeen.has(scenario.id)) memoriesShapeProblems.push(`${scenario.id}: duplicate id`);
+    memoriesIdsSeen.add(scenario.id);
+    if (!MEMORIES_CLASSES.includes(scenario.category)) memoriesShapeProblems.push(`${scenario.id}: unknown class ${scenario.category}`);
+    // "recall" is the notes dimension's kind: the assembler would read scenario.notes for it.
+    if (scenario.kind === "recall") memoriesShapeProblems.push(`${scenario.id}: kind must not be "recall"`);
+    if (!Array.isArray(scenario.memories) || scenario.memories.length === 0) memoriesShapeProblems.push(`${scenario.id}: needs seeded memories`);
+    for (const memory of scenario.memories ?? []) {
+      // Both fields must be strings or the driver silently seeds nothing.
+      if (typeof memory.text !== "string" || typeof memory.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(memory.date)) memoriesShapeProblems.push(`${scenario.id}: a memory needs text and a yyyy-mm-dd date, both strings`);
+      if (typeof memory.text === "string" && (memory.text.length > 160 || /\n|\s\s/.test(memory.text) || memory.text !== memory.text.toLowerCase())) memoriesShapeProblems.push(`${scenario.id}: a memory text must be one lowercase line of at most 160 characters`);
+    }
+    const seededMemoryTexts = (scenario.memories ?? []).map((memory) => memory.text);
+    const expectedMemoryTexts = scenario.expect?.memoriesInPrompt ?? [];
+    if (expectedMemoryTexts.length === 0) memoriesShapeProblems.push(`${scenario.id}: every scenario here expects at least one memory in the prompt`);
+    if (expectedMemoryTexts.some((text) => !seededMemoryTexts.includes(text))) memoriesShapeProblems.push(`${scenario.id}: memoriesInPrompt lists a memory that is not seeded`);
+    if (scenario.category === "one-of-several" && !(seededMemoryTexts.length >= 3 && expectedMemoryTexts.length === 1)) memoriesShapeProblems.push(`${scenario.id}: one-of-several seeds three or more memories and expects exactly one`);
+    for (const field of ["mustMatch", "mustNotMatch"]) {
+      if (!Array.isArray(scenario.expect?.[field]) || scenario.expect[field].length === 0) memoriesShapeProblems.push(`${scenario.id}: needs ${field}`);
+      for (const patternSource of scenario.expect?.[field] ?? []) {
+        try { new RegExp(patternSource, "i"); } catch { memoriesShapeProblems.push(`${scenario.id}: ${field} pattern does not compile`); }
+      }
+    }
+    if ((scenario.expect?.mustMatchAtLeast ?? 0) > (scenario.expect?.mustMatch ?? []).length) memoriesShapeProblems.push(`${scenario.id}: mustMatchAtLeast is more than the patterns given`);
+    if (!scenario.screenContextNow?.app || !scenario.screenContextNow?.windowTitle) memoriesShapeProblems.push(`${scenario.id}: screenContextNow needs app and windowTitle`);
+    // The example reply is a correct answer: it must score 100 and be clean. Every failing example must lose points with its named outcome.
+    const memoriesExample = scoreMemories(scenario, scenario.expect?.exampleCorrectReply ?? "", manifest);
+    if (memoriesExample.score !== 100 || memoriesExample.outcome !== "clean") memoriesShapeProblems.push(`${scenario.id}: its example correct reply scores ${memoriesExample.score} (${memoriesExample.outcome})`);
+    if ((scenario.expect?.exampleFailingReplies ?? []).length === 0) memoriesShapeProblems.push(`${scenario.id}: needs example failing replies`);
+    for (const failingExample of scenario.expect?.exampleFailingReplies ?? []) {
+      const failingResult = scoreMemories(scenario, failingExample.reply, manifest);
+      if (failingResult.outcome !== failingExample.outcome || failingResult.score >= 100) memoriesShapeProblems.push(`${scenario.id}: failing example "${failingExample.reply.slice(0, 40)}..." is ${failingResult.outcome} ${failingResult.score}, expected ${failingExample.outcome}`);
+    }
+  }
+  for (const problem of memoriesShapeProblems) console.log(`      ${problem}`);
+  check("memories scenarios: shape, seeds, expectations, example replies and failing examples are valid", memoriesShapeProblems.length === 0);
+  const memoriesSplitCounts = ["visible", "holdout"].map((split) => memoriesScenarios.filter((scenario) => scenario.split === split).length);
+  check("memories scenarios: 6 visible + 6 holdout", memoriesSplitCounts[0] === 6 && memoriesSplitCounts[1] === 6);
+  check("memories scenarios: every class appears in both splits, the keyword class four times", MEMORIES_CLASSES.every((className) => ["visible", "holdout"].every((split) => memoriesScenarios.some((scenario) => scenario.category === className && scenario.split === split))) && memoriesClassCounts["unrelated-keyword"] === 4);
+
+  // scoreMemories on made-up replies for one scenario of each behaviour
+  const memoriesKeywordScenario = memoriesScenarios.find((scenario) => scenario.id === "mem_v01");
+  check("memories: a long reply keeps its answer but loses the 10 length points and is too_long", (() => { const longResult = scoreMemories(memoriesKeywordScenario, "choose file, then new. then pick project. then choose a template. [POINT:none]", manifest); return longResult.outcome === "too_long" && longResult.score === 90; })());
+  check("memories: a missing POINT tag loses 10 points and is bad_point_tag", (() => { const untaggedResult = scoreMemories(memoriesKeywordScenario, "choose file, then new, then project.", manifest); return untaggedResult.outcome === "bad_point_tag" && untaggedResult.score === 90; })());
+  check("memories: a leak outranks a missed answer", scoreMemories(memoriesKeywordScenario, "it's friday. [POINT:none]", manifest).outcome === "mentioned_unrelated_memory");
+  const memoriesRememberScenario = memoriesScenarios.find((scenario) => scenario.id === "mem_v05");
+  check("memories: what-do-you-remember needs two of three memories (one is a miss, two are enough)", scoreMemories(memoriesRememberScenario, "the demo is friday at three. [POINT:none]", manifest).outcome === "missed_recall" && scoreMemories(memoriesRememberScenario, "the demo is friday at three and your worker is clicky-proxy. [POINT:none]", manifest).score === 100);
+  check("memories: three spoken sentences are allowed where the scenario allows them (what-do-you-remember)", scoreMemories(memoriesRememberScenario, "the demo is friday at three. you chose a local mcp server. your worker is clicky-proxy. [POINT:none]", manifest).score === 100);
+  const memoriesWorkerScenario = memoriesScenarios.find((scenario) => scenario.id === "mem_v06");
+  check("memories: hyphens read as spaces, so clicky-proxy and clicky proxy both count", scoreMemories(memoriesWorkerScenario, "it's called clicky proxy. [POINT:none]", manifest).score === 100 && scoreMemories(memoriesWorkerScenario, "it's called CLICKY-PROXY. [POINT:none]", manifest).outcome === "clean");
+  const memoriesMissingDetailScenario = memoriesScenarios.find((scenario) => scenario.id === "mem_v04");
+  check("memories: a spelled-out time is an invented detail, and so is any am or pm", ["it's friday at three thirty.", "it's friday at 10:30 am.", "friday at noon.", "friday at three o'clock.", "friday afternoon, in the afternoon."].every((invented) => scoreMemories(memoriesMissingDetailScenario, `${invented} [POINT:none]`, manifest).outcome === "invented_detail"));
+  check("memories: saying it does not know the time is clean", ["i don't know the time, only that it's friday.", "i only have the day, not the time.", "no time was saved, just friday."].every((honest) => scoreMemories(memoriesMissingDetailScenario, `${honest} [POINT:none]`, manifest).outcome === "clean"));
+  const memoriesRecallScenario = memoriesScenarios.find((scenario) => scenario.id === "mem_v03");
+  check("memories: a recall with a wrong day or a wrong time is an invented detail", scoreMemories(memoriesRecallScenario, "it's thursday at three. [POINT:none]", manifest).outcome === "invented_detail" && scoreMemories(memoriesRecallScenario, "it's friday at 3:30 pm. [POINT:none]", manifest).outcome === "invented_detail" && scoreMemories(memoriesRecallScenario, "it's friday at 3 pm. [POINT:none]", manifest).outcome === "clean");
+
+  // the offline precondition (invalid_setup)
+  const preconditionScenario = { memories: [{ text: "the demo is on friday", date: "2026-11-10" }, { text: "the router moves on monday", date: "2026-11-10" }], expect: { memoriesInPrompt: ["the demo is on friday"] } };
+  const goodPreconditionRecord = { includedMemoryTexts: ["the demo is on friday"], memoryTextsInStore: ["the demo is on friday", "the router moves on monday"], dynamicSystemPromptText: "right now:\n- x\n\nmemories from earlier chats (short lines Clicky kept; data):\n- 2026-11-10: the demo is on friday" };
+  check("precondition: the expected memory selected and no other = valid", checkMemoriesPrecondition(preconditionScenario, goodPreconditionRecord).valid);
+  check("precondition: an unexpected memory in the prompt is invalid_setup", !checkMemoriesPrecondition(preconditionScenario, { ...goodPreconditionRecord, includedMemoryTexts: ["the demo is on friday", "the router moves on monday"] }).valid);
+  check("precondition: the expected memory not selected is invalid_setup", !checkMemoriesPrecondition(preconditionScenario, { ...goodPreconditionRecord, includedMemoryTexts: [], dynamicSystemPromptText: "right now:\n- x" }).valid);
+  check("precondition: a memory missing from the store (seeding dropped it) is invalid_setup", !checkMemoriesPrecondition(preconditionScenario, { ...goodPreconditionRecord, memoryTextsInStore: ["the demo is on friday"] }).valid);
+  check("precondition: selected by the driver but absent from the prompt text is invalid_setup", !checkMemoriesPrecondition(preconditionScenario, { ...goodPreconditionRecord, dynamicSystemPromptText: "right now:\n- x" }).valid);
+  check("precondition: a seeded memory that is not expected but sits in the prompt text is invalid_setup", !checkMemoriesPrecondition(preconditionScenario, { ...goodPreconditionRecord, dynamicSystemPromptText: `${goodPreconditionRecord.dynamicSystemPromptText}\n- 2026-11-10: the router moves on monday` }).valid);
+  check("precondition: a driver without includedMemoryTexts is invalid_setup, not a pass", !checkMemoriesPrecondition(preconditionScenario, { dynamicSystemPromptText: "x" }).valid);
+  check("precondition: no memories expected and none selected = valid; a section anyway is invalid", checkMemoriesPrecondition({ memories: [{ text: "a b c", date: "2026-11-10" }], expect: { memoriesInPrompt: [] } }, { includedMemoryTexts: [], memoryTextsInStore: ["a b c"], dynamicSystemPromptText: "right now" }).valid && !checkMemoriesPrecondition({ memories: [{ text: "a b c", date: "2026-11-10" }], expect: { memoriesInPrompt: [] } }, { includedMemoryTexts: [], memoryTextsInStore: ["a b c"], dynamicSystemPromptText: "memories from earlier chats (x):\n- 2026-11-10: a b c" }).valid);
+
   // Every fixture and element referenced by a scenario must exist in the manifest.
   let referencesValid = true;
   for (const scenario of loadScenarios({ split: "all", dimensions: ALL_DIMENSIONS, only: null })) {
@@ -2525,10 +2838,11 @@ async function main() {
   const manifest = loadManifest();
   const notesProtocol = loadNotesProtocol(options.notesProtocolFile);
   const scenarios = loadScenarios(options);
-  const plannedCalls = plannedCallCount(scenarios, notesProtocol);
+  // --runs asks every scenario that many times; the default of 1 is the run every earlier round made.
+  const plannedCalls = plannedCallCount(scenarios, notesProtocol) * options.runs;
 
   logLine(`scenarios: ${scenarios.length} (${scenarios.filter((s) => s.split === "visible").length} visible, ${scenarios.filter((s) => s.split === "holdout").length} holdout)`);
-  logLine(`planned API calls: ${plannedCalls} (budget ${options.maxCalls}); notes protocol enabled: ${notesProtocol.enabled}`);
+  logLine(`planned API calls: ${plannedCalls} (budget ${options.maxCalls}); runs per scenario: ${options.runs}; notes protocol enabled: ${notesProtocol.enabled}`);
   if (plannedCalls > options.maxCalls) throw new Error(`planned ${plannedCalls} calls exceeds the budget of ${options.maxCalls}; narrow with --split/--dimensions/--only`);
 
   // Assembled mode: the driver builds each scenario's prompt and seeds its notes (zero API calls).
@@ -2561,6 +2875,19 @@ async function main() {
     }
   }
 
+  // Round 16: the precondition of every memories scenario, checked offline right after the prompts are
+  // assembled and before anything can be sent (so it covers --dry-run and a real run alike). A scenario
+  // whose prompt does not hold exactly the memories it expects would test nothing: it is `invalid_setup`.
+  const invalidMemoriesSetups = new Map();
+  if (assembledPrompts) {
+    for (const scenario of scenarios.filter((candidate) => candidate.dimension === "memories")) {
+      const precondition = checkMemoriesPrecondition(scenario, assembledPrompts.get(scenario.id));
+      logLine(`memories ${scenario.id} (${scenario.category}): memories in the prompt ${JSON.stringify(precondition.included)}${precondition.valid ? "" : `  INVALID_SETUP: ${precondition.problems.join("; ")}`}`);
+      if (!precondition.valid) invalidMemoriesSetups.set(scenario.id, precondition);
+    }
+    if (invalidMemoriesSetups.size > 0) logLine(`INVALID_SETUP: ${invalidMemoriesSetups.size} memories scenario(s) will not be run or scored: ${[...invalidMemoriesSetups.keys()].join(", ")}`);
+  }
+
   if (options.dryRun) {
     let largestPayloadBytes = 0;
     for (const scenario of scenarios) {
@@ -2569,7 +2896,12 @@ async function main() {
       const body = buildRequestBody({ systemPrompt: scenarioPromptText, systemBlocks: scenarioSystemBlocks, history: scenario.history, screens: scenario.screens, userPrompt: scenario.userPrompt, manifest });
       largestPayloadBytes = Math.max(largestPayloadBytes, JSON.stringify(body).length);
     }
-    logLine(`dry run OK: all requests build; system sent as ${options.systemBlocks ? "blocks" : "string"}; largest payload ${(largestPayloadBytes / 1048576).toFixed(2)} MB. No API calls were made.`);
+    if (invalidMemoriesSetups.size > 0) {
+      logLine(`dry run FAILED: ${invalidMemoriesSetups.size} memories scenario(s) are invalid_setup. No API calls were made.`);
+      process.exitCode = 3;
+    } else {
+      logLine(`dry run OK: all requests build; system sent as ${options.systemBlocks ? "blocks" : "string"}; largest payload ${(largestPayloadBytes / 1048576).toFixed(2)} MB. No API calls were made.`);
+    }
     if (assembler) assembler.cleanUp();
     return;
   }
@@ -2580,23 +2912,39 @@ async function main() {
   let status = "completed";
   let abortReason = null;
 
+  scenarioLoop:
   for (const scenario of scenarios) {
     if (scenario.dimension === "notes" && !notesProtocol.enabled) continue; // baseline: capability missing, zero calls
-    try {
-      const result = await runScenario(scenario, {
-        client, systemPrompt: systemPromptText, manifest, notesProtocol, assembledPrompts, sendSystemBlocks: options.systemBlocks,
-        finishReply: (finishingScenario, rawReplyText) => assembler.finishReply(finishingScenario, rawReplyText),
+    // Round 16: a memories scenario whose prompt does not hold what it expects is recorded once, never sent
+    // and never scored (errored, so it is out of the mean), and named in the summary.
+    const invalidSetup = invalidMemoriesSetups.get(scenario.id);
+    if (invalidSetup) {
+      results.push({
+        id: scenario.id, split: scenario.split, dimension: scenario.dimension, category: scenario.category,
+        errored: true, outcome: "invalid_setup", error: `invalid_setup: ${invalidSetup.problems.join("; ")}`,
       });
-      results.push(result);
-      logLine(`[${scenario.dimension}] ${scenario.id} (${scenario.split}) ${result.errored ? `ERROR ${result.error}` : `score ${round1(result.score)} ${result.outcome}`}  [calls ${client.callsUsed}/${client.maxCalls}]`);
-    } catch (error) {
-      if (error instanceof HarnessAbort) {
-        status = "aborted";
-        abortReason = redactSecrets(error.message);
-        logLine(`ABORTED: ${abortReason}`);
-        break;
+      logLine(`[${scenario.dimension}] ${scenario.id} (${scenario.split}) INVALID_SETUP, not sent: ${invalidSetup.problems.join("; ")}`);
+      continue;
+    }
+    for (let runNumber = 1; runNumber <= options.runs; runNumber++) {
+      try {
+        const result = await runScenario(scenario, {
+          client, systemPrompt: systemPromptText, manifest, notesProtocol, assembledPrompts, sendSystemBlocks: options.systemBlocks,
+          finishReply: (finishingScenario, rawReplyText) => assembler.finishReply(finishingScenario, rawReplyText),
+        });
+        // Only a run asked for more than once is numbered, so an ordinary run's records are what they always were.
+        if (options.runs > 1) result.run = runNumber;
+        results.push(result);
+        logLine(`[${scenario.dimension}] ${scenario.id} (${scenario.split})${options.runs > 1 ? ` run ${runNumber}/${options.runs}` : ""} ${result.errored ? `ERROR ${result.error}` : `score ${round1(result.score)} ${result.outcome}`}  [calls ${client.callsUsed}/${client.maxCalls}]`);
+      } catch (error) {
+        if (error instanceof HarnessAbort) {
+          status = "aborted";
+          abortReason = redactSecrets(error.message);
+          logLine(`ABORTED: ${abortReason}`);
+          break scenarioLoop;
+        }
+        throw error;
       }
-      throw error;
     }
   }
 
@@ -2614,10 +2962,12 @@ async function main() {
   for (const dimension of DIMENSION_ORDER) logLine(`  ${dimension.padEnd(9)} ${summary.dimensions[dimension].score}`);
   if (summary.visual) logLine(`  visual ${summary.visual.score} (tracked separately, excluded from the weighted total; visible ${summary.visual.split_scores.visible}, holdout ${summary.visual.split_scores.holdout})`);
   if (summary.context) logLine(`  context ${summary.context.score} (tracked separately, excluded from the weighted total; visible ${summary.context.split_scores.visible}, holdout ${summary.context.split_scores.holdout}; old-screen bleed ${summary.context.details.old_screen_bleed.rate_percent}%, meta remarks ${summary.context.details.meta_remark.rate_percent}%)`);
+  if (summary.memories) logLine(`  memories ${summary.memories.score} (tracked separately, excluded from the weighted total; visible ${summary.memories.split_scores.visible}, holdout ${summary.memories.split_scores.holdout}; unrelated-memory mentions ${summary.memories.details.unrelated_memory_mentions.rate_percent}%, invented details ${summary.memories.details.invented_details.rate_percent}%, missed recall ${summary.memories.details.missed_recall.rate_percent}%; invalid setups ${summary.memories.details.scenarios_invalid_setup})`);
   if (summary.personalization) logLine(`  personalization ${summary.personalization.score} (tracked separately, excluded from the weighted total; visible ${summary.personalization.split_scores.visible}, holdout ${summary.personalization.split_scores.holdout})`);
   logLine(`  weighted total ${summary.total}   (equal-weight average ${summary.total_equal_weight})`);
   logLine(`  visible total ${summary.split_scores.visible.total}   holdout total ${summary.split_scores.holdout.total}`);
 
+  if (invalidMemoriesSetups.size > 0) process.exitCode = 3; // the run finished, but part of the memories suite was never tested
   if (status === "completed" && options.summaryOut) {
     fs.mkdirSync(path.dirname(options.summaryOut), { recursive: true });
     fs.writeFileSync(options.summaryOut, JSON.stringify(summary, null, 2));

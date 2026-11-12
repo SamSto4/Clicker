@@ -65,11 +65,14 @@ nonisolated struct ClickyMemoryPanelContents: Equatable, Sendable {
     var notes: [ClickyNoteEntry]
     /// How many notes there are in all, so the tab can say when it lists only the newest.
     var totalNoteCount: Int
+    /// The memories Clicky kept from earlier chats (round 16), newest first. All of them are listed:
+    /// there are never more than 300, and each is one short line.
+    var memories: [ClickyMemory] = []
 
     static let empty = ClickyMemoryPanelContents(profileFacts: [], notes: [], totalNoteCount: 0)
 
     var isEmpty: Bool {
-        profileFacts.isEmpty && totalNoteCount == 0
+        profileFacts.isEmpty && totalNoteCount == 0 && memories.isEmpty
     }
 
     /// The contents with one row taken out, so the row disappears the moment it is deleted and the
@@ -77,6 +80,7 @@ nonisolated struct ClickyMemoryPanelContents: Equatable, Sendable {
     func removingRow(withIdentifier rowIdentifier: String) -> ClickyMemoryPanelContents {
         var contentsWithoutRow = self
         contentsWithoutRow.profileFacts.removeAll { $0.identifier == rowIdentifier }
+        contentsWithoutRow.memories.removeAll { $0.rowIdentifier == rowIdentifier }
         let noteCountBefore = contentsWithoutRow.notes.count
         contentsWithoutRow.notes.removeAll { $0.identifier == rowIdentifier }
         if contentsWithoutRow.notes.count < noteCountBefore {
@@ -151,22 +155,41 @@ nonisolated enum ClickyMemoryPanelLoader {
         )
     }
 
-    /// The in-memory copy of the folder, or nil when the cache has none. Never touches the disk.
-    static func contentsFromCacheWithoutReadingDisk(notesDirectoryURL: URL) -> ClickyMemoryPanelContents? {
+    /// The in-memory copy of the folder, or nil when the cache has none. Never touches the notes
+    /// folder. The memories (round 16) are not in that folder or in that cache: they are one small
+    /// file in Application Support (outside iCloud), read here when `memoriesDirectoryURL` is given.
+    static func contentsFromCacheWithoutReadingDisk(notesDirectoryURL: URL, memoriesDirectoryURL: URL? = nil) -> ClickyMemoryPanelContents? {
         guard let cachedMarkdownFileContentsByFileName = ClickyMemoryFileSnapshotCache.shared
             .cachedMarkdownFileContentsByFileName(inDirectory: notesDirectoryURL) else {
             return nil
         }
-        return contents(fromMarkdownFileContentsByFileName: cachedMarkdownFileContentsByFileName)
+        var contentsFromCache = contents(fromMarkdownFileContentsByFileName: cachedMarkdownFileContentsByFileName)
+        contentsFromCache.memories = memoriesNewestFirst(inDirectory: memoriesDirectoryURL)
+        return contentsFromCache
     }
 
     /// Re-reads the folder (this refreshes the cache for a cached folder) and returns what it holds.
-    static func contentsAfterRefreshingFromDisk(notesDirectoryURL: URL) -> ClickyMemoryPanelContents {
+    static func contentsAfterRefreshingFromDisk(notesDirectoryURL: URL, memoriesDirectoryURL: URL? = nil) -> ClickyMemoryPanelContents {
         ClickyMemoryFileSnapshotCache.shared.refresh(directory: notesDirectoryURL)
         let markdownFileContentsByFileName = ClickyMemoryFileSnapshotCache.shared
             .cachedMarkdownFileContentsByFileName(inDirectory: notesDirectoryURL)
             ?? ClickyMemoryFileSnapshotCache.readMarkdownFilesFromDisk(inDirectory: notesDirectoryURL)
-        return contents(fromMarkdownFileContentsByFileName: markdownFileContentsByFileName)
+        var contentsFromDisk = contents(fromMarkdownFileContentsByFileName: markdownFileContentsByFileName)
+        contentsFromDisk.memories = memoriesNewestFirst(inDirectory: memoriesDirectoryURL)
+        return contentsFromDisk
+    }
+
+    /// The memories of a folder, newest first. No folder given, or none yet, is no memories.
+    private static func memoriesNewestFirst(inDirectory memoriesDirectoryURL: URL?) -> [ClickyMemory] {
+        guard let memoriesDirectoryURL else {
+            return []
+        }
+        return ClickyMemoryStore(memoriesDirectoryURL: memoriesDirectoryURL).loadMemoriesNewestFirst()
+    }
+
+    /// Removes exactly the one memory with this id (the memory tab's delete).
+    static func removeMemory(_ memory: ClickyMemory, memoriesDirectoryURL: URL) -> ClickyMemoryRemovalResult {
+        ClickyMemoryStore(memoriesDirectoryURL: memoriesDirectoryURL).removeMemory(withID: memory.id)
     }
 
     static func removeProfileFact(_ profileFactEntry: ClickyProfileFactEntry, notesDirectoryURL: URL) -> ClickyMemoryRemovalResult {
@@ -187,11 +210,21 @@ nonisolated enum ClickyMemoryPanelLoader {
 
 // MARK: - Where the panel's data lives
 
-/// The two folders the memory and usage tabs read: the notes folder (profile.md and the daily
-/// notes) and the folder of the two metrics logs.
+/// The folders the memory and usage tabs read: the notes folder (profile.md and the daily
+/// notes), the folder of the metrics logs and, since round 16, the folder of the memories.
 nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
     let notesDirectoryURL: URL
     let metricsDirectoryURL: URL
+    /// The memories folder. Nil means "no memories folder": the tab lists no memories and the
+    /// folder is never touched. The callers that predate memories pass nothing and get nil, so none
+    /// of them can reach the user's real memories by accident.
+    let memoriesDirectoryURL: URL?
+
+    init(notesDirectoryURL: URL, metricsDirectoryURL: URL, memoriesDirectoryURL: URL? = nil) {
+        self.notesDirectoryURL = notesDirectoryURL
+        self.metricsDirectoryURL = metricsDirectoryURL
+        self.memoriesDirectoryURL = memoriesDirectoryURL
+    }
 
     static let notesDirectoryOverrideEnvironmentVariable = "CLICKY_NOTES_DIRECTORY"
     static let metricsDirectoryOverrideEnvironmentVariable = "CLICKY_METRICS_DIRECTORY"
@@ -200,7 +233,8 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
     static var real: ClickyPanelDataLocations {
         ClickyPanelDataLocations(
             notesDirectoryURL: ClickyNoteStore.defaultNotesDirectoryURL,
-            metricsDirectoryURL: ClickyTurnMetricsLog.defaultLogFileURL.deletingLastPathComponent()
+            metricsDirectoryURL: ClickyTurnMetricsLog.defaultLogFileURL.deletingLastPathComponent(),
+            memoriesDirectoryURL: ClickyMemoryStore.defaultMemoriesDirectoryURL
         )
     }
 
@@ -233,15 +267,26 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
             metricsDirectoryURL: directoryURL(
                 overrideVariable: metricsDirectoryOverrideEnvironmentVariable,
                 folderNamePrefix: "clicky-panel-self-test-logs-"
+            ),
+            // The memories folder has its own rule, shared with the store itself.
+            memoriesDirectoryURL: ClickyMemoryStore.directoryURLForRun(
+                environment: environment,
+                temporaryDirectoryURL: temporaryDirectoryURL,
+                uniqueFolderNameForSelfTest: "clicky-panel-self-test-memories-" + uniqueFolderNameSuffix
             )
         )
     }
 
-    /// True when either folder is one of the user's real ones.
+    /// True when any of the folders is one of the user's real ones.
     var touchesARealFolder: Bool {
         let realLocations = Self.real
-        return notesDirectoryURL.standardizedFileURL.path == realLocations.notesDirectoryURL.standardizedFileURL.path
+        let notesOrMetricsAreReal = notesDirectoryURL.standardizedFileURL.path == realLocations.notesDirectoryURL.standardizedFileURL.path
             || metricsDirectoryURL.standardizedFileURL.path == realLocations.metricsDirectoryURL.standardizedFileURL.path
+        guard let memoriesDirectoryURL, let realMemoriesDirectoryURL = realLocations.memoriesDirectoryURL else {
+            return notesOrMetricsAreReal
+        }
+        return notesOrMetricsAreReal
+            || memoriesDirectoryURL.standardizedFileURL.path == realMemoriesDirectoryURL.standardizedFileURL.path
     }
 }
 
@@ -279,6 +324,36 @@ nonisolated enum ClickyPanelSelfTestSamples {
             wroteMetrics = true
         }
         return (wroteNotes, wroteMetrics)
+    }
+
+    /// Writes sample memories (round 16) into the memories folder when it is empty and neither it
+    /// nor any other folder of `locations` is a real one. Separate from `writeSamples`, whose
+    /// two-value result stays as it was. Returns whether it wrote.
+    @discardableResult
+    static func writeSampleMemories(into locations: ClickyPanelDataLocations, now: Date = Date()) -> Bool {
+        guard !locations.touchesARealFolder,
+              let memoriesDirectoryURL = locations.memoriesDirectoryURL,
+              directoryHasNoFiles(memoriesDirectoryURL) else {
+            return false
+        }
+        let memoryStore = ClickyMemoryStore(memoriesDirectoryURL: memoriesDirectoryURL)
+        let secondsPerHour: TimeInterval = 3_600
+        // Oldest first, so the newest is saved last and listed first.
+        let sampleMemories: [(text: String, hoursAgo: Double)] = [
+            ("renew the car insurance by the end of march", 24 * 21),
+            ("clicky's worker is called clicky-proxy", 24 * 6),
+            ("chose a local mcp server for google, not the hosted one", 24 * 2 + 5),
+            ("the kb connects demo is on friday", 26),
+            ("follow up with priya about the invoice template", 3),
+        ]
+        for sampleMemory in sampleMemories {
+            memoryStore.addMemories(
+                texts: [sampleMemory.text],
+                sourceChatID: nil,
+                createdAt: now.addingTimeInterval(-sampleMemory.hoursAgo * secondsPerHour)
+            )
+        }
+        return true
     }
 
     private static func directoryHasNoFiles(_ directoryURL: URL) -> Bool {
@@ -380,5 +455,36 @@ nonisolated enum ClickyPanelSelfTestSamples {
         appendDictation(hoursAgo: 24 * 2, cleanupOutcome: .used, cleanupInputTokens: 410, cleanupOutputTokens: 52)
         appendDictation(hoursAgo: 5, cleanupOutcome: .used, cleanupInputTokens: 395, cleanupOutputTokens: 44)
         appendDictation(hoursAgo: 2, cleanupOutcome: .skipped, cleanupInputTokens: nil, cleanupOutputTokens: nil)
+
+        // Round 16: the memory compaction log, for the usage tab's "memories" row. Three chats compacted
+        // (two this month before today, one today), one attempt that failed and one skipped.
+        let memoryCompactionLogFileURL = metricsDirectoryURL.appendingPathComponent(ClickyUsageLogReader.memoryCompactionLogFileName)
+        func appendMemoryCompaction(
+            hoursAgo: Double,
+            outcome: ClickyMemoryCompactionMetricsOutcome,
+            exchangeCount: Int,
+            memoriesKept: Int,
+            inputTokens: Int?,
+            outputTokens: Int?
+        ) {
+            let memoryCompactionMetrics = ClickyMemoryCompactionMetrics(
+                timestamp: now.addingTimeInterval(-hoursAgo * secondsPerHour),
+                trigger: .idleTimer,
+                outcome: outcome,
+                exchangeCount: exchangeCount,
+                memoriesKept: memoriesKept,
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                durationMilliseconds: outcome == .skipped ? nil : 1_100
+            )
+            if let memoryCompactionLine = memoryCompactionMetrics.makeJSONLine() {
+                ClickyTurnMetricsLog.appendLine(memoryCompactionLine, to: memoryCompactionLogFileURL)
+            }
+        }
+        appendMemoryCompaction(hoursAgo: 24 * 9, outcome: .completed, exchangeCount: 4, memoriesKept: 2, inputTokens: 1_180, outputTokens: 64)
+        appendMemoryCompaction(hoursAgo: 24 * 3, outcome: .completed, exchangeCount: 7, memoriesKept: 1, inputTokens: 2_050, outputTokens: 31)
+        appendMemoryCompaction(hoursAgo: 24 * 2, outcome: .skipped, exchangeCount: 1, memoriesKept: 0, inputTokens: nil, outputTokens: nil)
+        appendMemoryCompaction(hoursAgo: 30, outcome: .failed, exchangeCount: 3, memoriesKept: 0, inputTokens: nil, outputTokens: nil)
+        appendMemoryCompaction(hoursAgo: 4, outcome: .completed, exchangeCount: 3, memoriesKept: 2, inputTokens: 1_460, outputTokens: 47)
     }
 }
