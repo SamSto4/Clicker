@@ -207,6 +207,20 @@ enum BuddyDictationPermissionProblem {
 private enum BuddyDictationStartSource {
     case microphoneButton
     case keyboardShortcut
+    /// Dictation into another app's text field (fn + option). It shares the microphone and the
+    /// speech recogniser with the other sources, but its transcript goes to the dictation
+    /// controller and never to the chat pipeline.
+    case textInsertionDictation
+}
+
+/// How a dictation into another app's text field ended. Delivered exactly once per session, unless
+/// the session is cancelled, in which case nothing is delivered.
+enum BuddyTextInsertionDictationResult {
+    /// The final transcript, trimmed. Empty when nothing was heard. It can also hold the words
+    /// recognised so far when the recogniser stopped early, so the user's words are kept.
+    case finalTranscript(String)
+    /// Recognition failed before any words were recognised.
+    case failed
 }
 
 private struct BuddyDictationDraftCallbacks {
@@ -224,6 +238,8 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     @Published private(set) var isRecordingFromMicrophoneButton = false
     @Published private(set) var isRecordingFromKeyboardShortcut = false
     @Published private(set) var isKeyboardShortcutSessionActiveOrFinalizing = false
+    /// True while the microphone is capturing for dictation into another app's text field.
+    @Published private(set) var isRecordingForTextInsertion = false
     @Published private(set) var isFinalizingTranscript = false
     @Published private(set) var isPreparingToRecord = false
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
@@ -237,11 +253,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     @Published private(set) var currentPermissionProblem: BuddyDictationPermissionProblem?
 
     var isDictationInProgress: Bool {
-        isPreparingToRecord || isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut || isFinalizingTranscript
+        isPreparingToRecord || isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut || isRecordingForTextInsertion || isFinalizingTranscript
     }
 
     var isActivelyRecordingAudio: Bool {
-        isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut
+        isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut || isRecordingForTextInsertion
     }
 
     var isMicrophoneButtonActivelyRecordingAudio: Bool {
@@ -273,6 +289,16 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private var hasFinishedCurrentDictationSession = false
     private var finalizeFallbackWorkItem: DispatchWorkItem?
     private var pendingStartRequestIdentifier = UUID()
+    /// Called once when a text-insertion dictation session ends with a transcript or a failure.
+    /// Cleared with the rest of the session state, so a cancelled session never calls it.
+    private var textInsertionResultHandler: (@MainActor (BuddyTextInsertionDictationResult) -> Void)?
+    /// Which call to `startTextInsertionDictation` the handler above belongs to, so a start that
+    /// was superseded can never clear the handler of the newer one.
+    private var textInsertionResultHandlerOwnerIdentifier: UUID?
+    /// Increases every time a session's state is reset. A recogniser reports a cancelled task
+    /// through its error callback a moment after the cancel, and a dictation that has just
+    /// started must not mistake that late error for its own (see `startRecognitionSession`).
+    private var sessionStateResetCount = 0
     private var contextualKeyterms: [String] = []
     private var lastRecordedAudioPowerSampleDate = Date.distantPast
     private var activePermissionRequestTask: Task<Bool, Never>?
@@ -327,6 +353,35 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     func stopPushToTalkFromKeyboardShortcut() {
         stopPushToTalk(expectedStartSource: .keyboardShortcut)
+    }
+
+    /// Starts capturing the microphone for dictation into another app's text field. Returns when
+    /// capture has started or failed to start; check `isRecordingForTextInsertion` to tell which.
+    /// `onResult` is called once when the session ends (see `BuddyTextInsertionDictationResult`).
+    /// Nothing here touches the chat pipeline: no draft text, no submit.
+    func startTextInsertionDictation(
+        onResult: @escaping @MainActor (BuddyTextInsertionDictationResult) -> Void
+    ) async {
+        let thisStartIdentifier = UUID()
+        textInsertionResultHandler = onResult
+        textInsertionResultHandlerOwnerIdentifier = thisStartIdentifier
+        await startPushToTalk(
+            startSource: .textInsertionDictation,
+            currentDraftText: "",
+            updateDraftText: { _ in },
+            submitDraftText: { _ in },
+            shouldAutomaticallySubmitFinalDraftOnStop: false
+        )
+        if !isRecordingForTextInsertion && textInsertionResultHandlerOwnerIdentifier == thisStartIdentifier {
+            textInsertionResultHandler = nil
+            textInsertionResultHandlerOwnerIdentifier = nil
+        }
+    }
+
+    /// Stops the microphone and asks the recogniser for its final transcript, which then arrives
+    /// through the `onResult` given to `startTextInsertionDictation`.
+    func stopTextInsertionDictationAndRequestFinalTranscript() {
+        stopPushToTalk(expectedStartSource: .textInsertionDictation)
     }
 
     func cancelCurrentDictation(preserveDraftText: Bool = true) {
@@ -432,6 +487,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isFinalizingTranscript = false
         isRecordingFromMicrophoneButton = startSource == .microphoneButton
         isRecordingFromKeyboardShortcut = startSource == .keyboardShortcut
+        isRecordingForTextInsertion = startSource == .textInsertionDictation
         isKeyboardShortcutSessionActiveOrFinalizing = startSource == .keyboardShortcut
         currentAudioPowerLevel = 0
         recordedAudioPowerHistory = Array(
@@ -486,6 +542,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         isRecordingFromMicrophoneButton = false
         isRecordingFromKeyboardShortcut = false
+        isRecordingForTextInsertion = false
         isFinalizingTranscript = true
 
         let finalTranscriptFallbackDelaySeconds = activeTranscriptionSession?.finalTranscriptFallbackDelaySeconds
@@ -517,6 +574,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
 
+        let sessionStateResetCountAtStart = sessionStateResetCount
         let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
             keyterms: buildTranscriptionKeyterms(),
             onTranscriptUpdate: { [weak self] transcriptText in
@@ -538,6 +596,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             },
             onError: { [weak self] error in
                 Task { @MainActor in
+                    // Only for a dictation into another app's text field: an error that belongs to
+                    // an older, already cancelled session is dropped. Asking behaves as before.
+                    if self?.activeStartSource == .textInsertionDictation,
+                       self?.sessionStateResetCount != sessionStateResetCountAtStart {
+                        return
+                    }
                     self?.handleRecognitionError(error)
                 }
             }
@@ -561,6 +625,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     private func handleRecognitionError(_ error: Error) {
         if hasFinishedCurrentDictationSession {
+            return
+        }
+
+        if activeStartSource == .textInsertionDictation {
+            finishTextInsertionDictationAfterRecognitionError(error)
             return
         }
 
@@ -597,7 +666,18 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         audioEngine.inputNode.removeTap(onBus: 0)
         activeTranscriptionSession?.cancel()
 
+        // A dictation into another app's text field never reaches the chat pipeline below: its
+        // transcript goes to its own handler. The handler is taken before the reset clears it.
+        let textInsertionResultHandlerOfThisSession = activeStartSource == .textInsertionDictation
+            ? textInsertionResultHandler
+            : nil
+
         resetSessionState()
+
+        if let textInsertionResultHandlerOfThisSession {
+            textInsertionResultHandlerOfThisSession(.finalTranscript(finalTranscriptText))
+            return
+        }
 
         guard shouldSubmitFinalDraft else { return }
         guard !finalTranscriptText.isEmpty else { return }
@@ -627,6 +707,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func resetSessionState() {
+        sessionStateResetCount += 1
         pendingStartRequestIdentifier = UUID()
         activeTranscriptionSession = nil
         draftCallbacks = nil
@@ -638,8 +719,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isPreparingToRecord = false
         isRecordingFromMicrophoneButton = false
         isRecordingFromKeyboardShortcut = false
+        isRecordingForTextInsertion = false
         isKeyboardShortcutSessionActiveOrFinalizing = false
         isFinalizingTranscript = false
+        textInsertionResultHandler = nil
+        textInsertionResultHandlerOwnerIdentifier = nil
         currentAudioPowerLevel = 0
         recordedAudioPowerHistory = Array(
             repeating: Self.recordedAudioPowerHistoryBaselineLevel,
@@ -647,6 +731,34 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         )
         microphoneButtonRecordingStartedAt = nil
         lastRecordedAudioPowerSampleDate = .distantPast
+    }
+
+    /// The recogniser stopped on its own (an error, or its own time limit) during a dictation.
+    /// Whatever it recognised up to then is handed over, so a long hands-free dictation does not
+    /// lose everything said before the failure. Only the error's domain and code are printed.
+    private func finishTextInsertionDictationAfterRecognitionError(_ error: Error) {
+        let wordsRecognisedSoFar = latestRecognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wasWaitingForFinalTranscript = isFinalizingTranscript
+        let textInsertionResultHandlerOfThisSession = textInsertionResultHandler
+
+        finalizeFallbackWorkItem?.cancel()
+        finalizeFallbackWorkItem = nil
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        activeTranscriptionSession?.cancel()
+        resetSessionState()
+
+        let errorDetails = error as NSError
+        print("❌ Buddy dictation error (text insertion, \(transcriptionProvider.displayName)): \(errorDetails.domain) \(errorDetails.code)")
+
+        if !wordsRecognisedSoFar.isEmpty {
+            textInsertionResultHandlerOfThisSession?(.finalTranscript(wordsRecognisedSoFar))
+        } else if wasWaitingForFinalTranscript {
+            // The recogniser heard nothing and said so when asked to finish: an empty dictation.
+            textInsertionResultHandlerOfThisSession?(.finalTranscript(""))
+        } else {
+            textInsertionResultHandlerOfThisSession?(.failed)
+        }
     }
 
     private func buildTranscriptionKeyterms() -> [String] {

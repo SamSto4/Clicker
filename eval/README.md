@@ -25,6 +25,8 @@ This README is written so a grader who has never seen the project can run a roun
 
 **Personalization** (round 4B: the user profile, `profile.md`) is a fifth dimension that is **tracked separately and excluded from the weighted total**. It is not run by default: run it on its own with `--dimensions personalization` (needs `--assembler`, 30 scenarios, 30 calls) and write its summary to a separate file (`round5_personalization.json`). The summary gains a top-level `personalization` block; `total`, `total_equal_weight` and the split totals stay `null` for such a run, and the leaderboard lists it in its own table. See "Personalization (round 4B)" below for the rubric.
 
+**Visual** (round 6: drawing on the screen with `[DRAW:...]` and the explanation card with `[CARD:...]` / `[ROW:...]`) is a sixth dimension, also **tracked separately and excluded from the weighted total**. Run it on its own with `--dimensions visual --assembler <driver> --system-blocks` (28 scenarios, 28 calls) and write its summary to its own file (`round6_visual.json`). The summary gains a top-level `visual` block and the leaderboard lists it in its own table. See "Visual (round 6)" below for the rubric, and "Draw, card and row tags on the four weighted dimensions" for how such tags are scored everywhere else.
+
 ## Run a round (exact commands)
 
 All paths are absolute so the commands work from any directory. `LOOP` is the shared state folder.
@@ -63,6 +65,7 @@ Other options:
 | `--system-blocks` | (round 4A, needs `--assembler`) send `system` the way the app does since round 4A: a `[static block with cache_control ephemeral, dynamic block]` array built by the driver with the app's `ClickySystemPromptBlocks.makeSystemBlocks` (one block when the dynamic part is blank). Default stays the single combined string so earlier rounds are reproducible. Raw results then record `cache_creation_input_tokens`, `cache_read_input_tokens` and `system_sent_as`; the summary gains `request_shape` and `token_usage` |
 | `--notes-protocol-file path` | notes adapter JSON (default `eval/notes_protocol.json`) |
 | `--results-out path` | where to write the raw results (default `eval/results/<timestamp>_<label>.json`) |
+| `--rescore-visual raw.json --assembler <driver> --summary-out path` | (round 6) re-parse the stored replies of a visual run through the driver and re-apply the rubric after a scorer fix, **zero API calls**; rewrites the raw file and the summary and marks the summary `rescored_offline` |
 | `--resummarize raw.json --summary-out path` | rebuild a round summary from a stored raw results file, **zero API calls** (re-aggregates stored scores; does not re-score) |
 
 ### Passing a new `--system-prompt-file`
@@ -74,8 +77,24 @@ The file is the **entire system prompt text exactly as the app would send it** i
 
 Skills or notes that the creator injects into the **system prompt** are covered by this. Anything delivered through other request fields (for example `tools`) must go through the notes adapter's `request_extras` (see below). If the creator changed the request shape in a way the harness cannot express, say so in the report instead of guessing.
 
+### Since round 6: use the assembler
+
+The base prompt now teaches drawing and the explanation card, and the app strips `[DRAW:...]`, `[CARD:...]` and `[ROW:...]` tags from what it speaks. Run every round with `--assembler <driver> --system-blocks` so the eval scores what the app would speak:
+
+```bash
+DRIVER=<a scratch folder>/driver
+(cd /Users/samsto/Clicker && swiftc -O -o $DRIVER eval/assemble_prompt_driver/main.swift leanring-buddy/ClickyCore/*.swift)
+$DRIVER selftest <a scratch folder>/driver_selftest.json /Users/samsto/Clicker/leanring-buddy/ClickyPrompts   # must print N/N passed
+node $EVAL/run_simulations.mjs --self-test                                                                    # must print "self-test passed"
+node $EVAL/run_simulations.mjs --assembler $DRIVER --system-blocks --round N --label NAME --summary-out $LOOP/roundN_NAME.json
+node $EVAL/run_simulations.mjs --assembler $DRIVER --system-blocks --dimensions visual --round N --label NAME-visual --summary-out $LOOP/roundN_visual.json
+```
+
+The four-dimension run is 70 calls (58 scenarios + 12 judge calls), the visual run 28. They are two separate runs, each under the 80-call cap. The driver's prompt size guards were raised in round 6 (base prompt at most 1,300 words, assembled Xcode prompt at most about 2,700 tokens) because the base prompt grew from 849 to 1,247 words; they still fail on further growth.
+
 ### Reading the results
 
+- Since round 6 the summary also carries `draw_tag_usage` (how many ordinary scenarios got a draw, card or row tag: should be 0; ids only), `spoken_formatting` (spoken texts with markdown or backticks), `latency` (median and p90 over all scenario calls) and, in the raw results, `spoken_text` (what the app would speak) and `draw` (tag counts) per scenario.
 - **Round summary** `roundN_NAME.json` (safe to share): `dimensions.<name>.score` (0-100) with `details` (per-category scores, check-failure counts, median latency/tokens, outcome counts), `total` (weighted), `total_equal_weight`, `split_scores.visible|holdout` (per-dimension and total), `visible_holdout_gap`, `calls_used`, `scenarios_errored`, and `failures` (category-level descriptions built from **visible** scenarios only). A visible-vs-holdout gap above 10 points is flagged as a possible overfit.
 - **Raw results** `eval/results/<timestamp>_<label>.json` (private; git-ignored): every reply, token count, latency, outcome, judge verdict. Read this to debug why something scored low. Never paste raw replies or scenario text into messages for the planner/creator.
 - `status` is `completed` or `aborted`. An aborted run does **not** write a round summary or update the leaderboard; only the raw file exists. Report the abort reason.
@@ -105,6 +124,15 @@ Per scenario: `0.45 x compliance + 0.30 x latency score + 0.25 x output-token sc
 - **Latency score:** wall clock of the non-streaming Worker call; 100 at <= 2.5 s, 0 at >= 8 s, linear between.
 - **Output-token score:** `usage.output_tokens`; 100 at <= 60 tokens, 0 at >= 220, linear between.
 - Replies that hit `max_tokens` (1024) are flagged: they would be cut off mid-sentence when spoken.
+
+### Draw, card and row tags on the four weighted dimensions (round 6)
+
+None of the 58 weighted scenarios asks Clicky to draw. The rules, in `visualReplyAllowance` / `applyUnrequestedDrawingPenalty` in `run_simulations.mjs`:
+
+1. **Stripped like the app does.** With `--assembler`, the spoken text of every reply (coding included) comes from the app's `ClickyTurnFinisher` through the driver, so DRAW, CARD and ROW tags never reach the sentence, word, lowercase, markdown or symbol checks. The trailing `[POINT:...]` check ignores them too (the app accepts the tags in any order). Without `--assembler` a counting-only regex with the app's tag shape strips them. For coding, keyword coverage and the judge see the reply with those tags removed, so words written in a label or on a card earn nothing.
+2. **Ordinary question + any such tag = regression.** A scenario is ordinary unless it is an explicit elaboration request (`expect.allowLong`) or carries `visualAllowed: true`. Any DRAW, CARD or ROW tag on an ordinary scenario (accepted by the app or dropped) **halves that scenario's score**, adds `+unrequested_drawing` to its outcome and is listed in `draw_tag_usage`.
+3. **Explicit elaboration requests may use a card.** The prompt itself asks for an explanation card when the user says "explain ... in detail", so CARD, ROW and callout tags cost nothing there (any other mark is still unrequested). The spoken part of a card reply is short by design, so when the app accepted a card with two or more rows, the "elaborates when asked" checks accept two spoken sentences and count the words written on the card towards the word minimum. Without a card the checks are unchanged.
+4. **Speed is not adjusted.** A draw reply to an ordinary question is longer and slower and loses the latency and token points it would lose anyway.
 
 ### Coding
 Per scenario: `100 x (0.6 x judge/10 + 0.4 x keyword coverage)`.
@@ -157,6 +185,39 @@ Offline adversarial battery (zero API calls): `node eval/profile_adversarial_che
 
 The injection fixture is generated by `swift eval/make_personalization_fixture.swift`, which merges its entry into `fixtures/manifest.json` (re-run it after `make_fixtures.swift`, which rewrites the manifest wholesale).
 
+## Visual (round 6)
+
+Scenarios live in `eval/scenarios/visible|holdout/visual.json` (16 + 12). They use the existing fixtures, whose element boxes are the ground truth. Parsing and limits are the app's: the driver's `finish` mode runs `ClickyDrawTagParser.parse` (with the row count of the card on screen, as `CompanionManager` does), applies the commands to a `ClickyDrawingBoard`, and reports the accepted commands, the **dropped tag count** (`ignoredDrawTagCount`: malformed, out of range, past the 8-tag limit, a row with no card), and the board before and after. Edit scenarios carry `seedDrawTagTexts` (earlier reply texts): the driver parses and applies them the same way and hands the marks to `ClickyPromptAssembler` as `drawingMarksOnScreen`, so the prompt contains the app's own "marks on screen" section with ids `m1`, `m2`, ...; the same exchange is in the scenario's `history`.
+
+Geometry tolerances (screenshot pixels, constants in `VISUAL_TOLERANCES`; quality 1 = on the element, 0.6 = on it but badly sized or only near, 0 = elsewhere; a mark on the wrong screen is 0):
+
+| shape | on the element when |
+|---|---|
+| circle | centre inside the element box (4 px slack); radius at least 0.35 x the box's short side and at most its long side + 40 px, else 0.6 |
+| box, highlight | at least 60% of the smaller of (mark, element) lies inside the other; a mark more than 4 x the area of the element padded by 12 px gets 0.6 |
+| underline | level (at most 8 px slope), overlaps the element horizontally by at least half of the shorter of (line, element), and sits between the element's vertical middle and 14 px below its bottom edge; through the upper half or up to 34 px below gets 0.6 |
+| arrow | head within 24 px of the element (0.6 within 40 px, or when shorter than 20 px); an arrow whose tail is on the element and head elsewhere is 0 |
+| callout | its target point inside the element (6 px slack) |
+| label, sticky | its top-left corner within 48 px of the element |
+
+Rubric, 100 points per `kind`:
+
+| kind | rubric |
+|---|---|
+| `mark` (circle / box / underline / highlight / arrow a named element) and `second_screen` (the element is on screen 2; a mark without `:screen2` is on the wrong screen) | 15 at least one mark accepted and no tag dropped by the app's parser; 45 x geometry quality of the best mark of the requested shape (else of the best other shape); 15 the requested shape was used; 10 no stray marks (at most the shape plus one label next to it, no card); 5 spoken part one to four sentences and at most 60 words; 5 spoken part clean; 5 ends with `[POINT:none]`. The shape and stray points are only earned when a mark is on the element: the right shape on the wrong thing is worth nothing |
+| `callouts` ("label the parts") | 15 tags valid; 50 x min(1, distinct correct parts / `minimumCorrect`), a part counting once however many callouts hit it, and a label within reach of two neighbouring parts going to the nearest; 15 x share of those whose text names the part (`textAnyOf`); 10 no stray label (one pointing at no known control: 5 for one, 0 for more); 5 spoken short and clean; 5 `[POINT:none]` |
+| `card` (explain / teach / break down / compare) | 15 exactly one card and no dropped tag (7 if a card but tags were dropped); 20 two to five rows accepted (10 for one); 15 a row kind from `rowKindAnyOf`; 5 the card or a row is placed before the last words, so it appears while Clicky talks; 15 x `cardKeywordGroups` coverage in the card and spoken text; 10 two to five spoken sentences (5 for six); 5 at most 90 words and 20 words per sentence; 5 spoken clean; 5 no marks other than callouts; 5 `[POINT:none]` |
+| `absent` (the named element is not on the screen) | 50 no draw, card or row tag at all; 30 honest spoken acknowledgement; 10 no `[POINT:x,y]`; 10 at most two sentences, clean |
+| `edit` with `editKind` `erase` / `undo` / `clear` (marks seeded on screen) | 60 the board after the reply lost exactly the expected marks and kept the others (20 when the right mark went but so did others); 15 nothing new drawn and no dropped tag; 15 spoken at most two sentences and 20 words, clean, no ids aloud (8 if longer); 10 `[POINT:none]` |
+| `edit` with `editKind` `add_row` (a card is on screen) | 45 exactly one row added to the same card with its old rows intact, plus 15 x `rowKeywordGroups` coverage of the new row (30 + 15 x coverage for several rows; 15 when the card was replaced by a new one); 15 nothing else changed; 15 spoken; 10 `[POINT:none]` |
+| `control` (ordinary questions, some containing "highlight" / "underline", one with marks on screen) | 70 no draw, card or row tag and the board unchanged; 15 at most two sentences (7 for three); 15 usual pointing (`targets` hit when given, else any valid POINT tag) |
+
+"Spoken clean" means: lowercase, no markdown, no symbols or digits 0-10 that sound odd aloud, and no bracket, tag name, coordinate pair or mark id (`m2`) in the spoken text.
+
+The summary's `visual.details` carries `by_kind` (with the ids below 80), `by_category`, `outcome_counts`, `check_failure_counts`, `replies_with_tags_dropped_by_the_app_parser`, `tags_dropped_by_the_app_parser_total`, `replies_speaking_a_tag_coordinate_or_id`, median and p90 latency and median output tokens. `visual.failures` is category-level, from visible scenarios only.
+
+Limits: the fixtures only have boxes for controls, tabs, rows and one terminal line, so marks on code inside an editor are not tested; a card's content is checked by keywords, not by a judge; whether the handwriting, pen animation and card placement look right on a real display is not tested at all.
+
 ## Files
 
 ```
@@ -165,13 +226,14 @@ eval/
   make_leaderboard.mjs       builds <loop>/leaderboard.md from round*.json (called automatically)
   extract_system_prompt.mjs  pulls the Swift system prompt string into a text file
   make_fixtures.swift        generates fixtures/*.jpg + fixtures/manifest.json (run with `swift`)
-  assemble_prompt_driver/    Swift driver that calls the app's prompt assembler and turn finisher (zero API calls); modes prepare / finish / intent / selftest (round 4B: seeds and reports the temporary profile too)
+  assemble_prompt_driver/    Swift driver that calls the app's prompt assembler and turn finisher (zero API calls); modes prepare / finish / intent / selftest (round 4B: seeds and reports the temporary profile too; round 6: `seedDrawTagTexts` seeds marks on screen, `finish` reports the app's draw commands, dropped tags and the board)
   cache_latency_probe.mjs    round 4A side probe: paired streaming calls with/without the cached system block, plus shape-acceptance calls (hard cap 20 calls; separate from a harness run)
   profile_adversarial_checks.mjs  round 4B offline battery for the profile feature (gate, secrets, forget, replacement, files); zero API calls
   profile_adversarial_checks_round4c.mjs  round 4C second battery from a fresh angle (secret paraphrases, forget forms, slots, 100/150-fact files, false claims, over-refusal rated by annoyance); zero API calls
   make_personalization_fixture.swift  generates fixtures/browser_injection.jpg (page text that tries to plant a profile fact) and merges it into the manifest
   fixtures/                  15 mock screenshots (1280 px wide JPEG at quality 0.8, like the app) + ground-truth boxes
   scenarios/visible|holdout/ pointing.json brevity.json coding.json notes.json   (58 scenarios: 30 visible, 28 holdout)
+                             visual.json (round 6, 28 scenarios: 16 visible, 12 holdout; tracked separately)
                              personalization.json (round 4B, 30 scenarios: 16 visible, 14 holdout; tracked separately)
   notes_protocol.json        pluggable notes adapter (disabled until the feature exists)
   results/                   raw results (git-ignored, private)

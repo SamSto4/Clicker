@@ -174,7 +174,12 @@ nonisolated enum ClickyTurnFinisher {
         )
 
         let savedProfileFactTexts = saveSummary.savedProfileFacts.map(\.text)
-        let historyPieces = [spokenText]
+        // History keeps the reply as the model wrote it (markdown marks included) whenever the
+        // words above were left alone. When they were rewritten (a refused save, a removed false
+        // claim), history holds the rewritten words, as before.
+        let replyWordsWereLeftAlone = spokenText == parsedReply.spokenText
+        let historyReplyText = replyWordsWereLeftAlone ? parsedReply.spokenTextAsWritten : spokenText
+        let historyPieces = [historyReplyText]
             + saveSummary.savedNoteTexts.map { "[NOTE:\($0)]" }
             + savedProfileFactTexts.map { "[PROFILE:\($0)]" }
         let historyAssistantText = historyPieces

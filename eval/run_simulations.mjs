@@ -33,7 +33,9 @@ export const DIMENSION_WEIGHTS = { brevity: 0.30, pointing: 0.30, coding: 0.20, 
 const DIMENSION_ORDER = ["pointing", "brevity", "coding", "notes"];
 // Round 4B: personalization (the user profile) is tracked separately and never enters the weighted
 // total. It is not run by default; ask for it with --dimensions personalization (needs --assembler).
-const EXTRA_DIMENSIONS = ["personalization"];
+// Round 6: visual (drawing on the screen and the explanation card) is tracked the same way: on its
+// own, with --dimensions visual and --assembler, and never part of the weighted total.
+const EXTRA_DIMENSIONS = ["personalization", "visual"];
 const ALL_DIMENSIONS = [...DIMENSION_ORDER, ...EXTRA_DIMENSIONS];
 
 const POINTING_BOX_TOLERANCE_PIXELS = 4;
@@ -111,6 +113,8 @@ function parseArguments(argumentList) {
     dryRun: false,
     selfTest: false,
     resummarize: null,
+    // Round 6: re-finish and re-score the stored replies of a visual run after a scorer fix. Zero API calls.
+    rescoreVisual: null,
   };
   for (let index = 0; index < argumentList.length; index++) {
     const argument = argumentList[index];
@@ -136,6 +140,7 @@ function parseArguments(argumentList) {
       case "--dry-run": options.dryRun = true; break;
       case "--self-test": options.selfTest = true; break;
       case "--resummarize": options.resummarize = nextValue(); break;
+      case "--rescore-visual": options.rescoreVisual = nextValue(); break;
       default: throw new Error(`unknown argument: ${argument}`);
     }
   }
@@ -148,6 +153,9 @@ function parseArguments(argumentList) {
   }
   if (options.dimensions.includes("personalization") && !options.assembler && !options.resummarize && !options.selfTest) {
     throw new Error("the personalization dimension needs --assembler: it scores what the app's real turn finisher saved or removed");
+  }
+  if (options.dimensions.includes("visual") && !options.assembler && !options.resummarize && !options.selfTest) {
+    throw new Error("the visual dimension needs --assembler: draw, card and row tags are read by the app's own ClickyDrawTagParser through the driver");
   }
   return options;
 }
@@ -288,6 +296,10 @@ function buildRequestBody({ systemPrompt, systemBlocks, history, screens, userPr
     model: MODEL_NAME,
     max_tokens: APP_MAX_TOKENS,
     output_config: { effort: "low" },
+    // Round 10: the app sends thinking "between_tools" (no hidden thinking before a spoken
+    // reply). Set CLICKY_EVAL_THINKING=between_tools to score that request shape; unset, the
+    // harness sends the older shape so earlier rounds stay reproducible.
+    ...(process.env.CLICKY_EVAL_THINKING ? { thinking: { type: process.env.CLICKY_EVAL_THINKING } } : {}),
     system: systemBlocks ?? systemPrompt,
     messages,
     ...(requestExtras ?? {}),
@@ -315,7 +327,11 @@ function extractReply(responseJson) {
 
 const POINT_TAG_PATTERN = /\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$/;
 
-export function parsePointTag(replyText) {
+export function parsePointTag(rawReplyText) {
+  // Round 6: [DRAW:...], [CARD:...] and [ROW:...] tags are never spoken by the app, so they are removed
+  // before the trailing POINT tag is looked for (this path is only used without --assembler; with it the
+  // app's own parser produces the spoken text).
+  const replyText = stripDrawFamilyTags(rawReplyText);
   const match = POINT_TAG_PATTERN.exec(replyText);
   if (!match) {
     return { spokenText: replyText.trim(), hasTag: false, isNone: false, x: null, y: null, label: null, screenNumber: null };
@@ -374,7 +390,15 @@ export function replyViewFromFinishedTurn(rawReplyText, finishedTurn) {
     y: pointTarget ? pointTarget.y : null,
     label: pointTarget ? pointTarget.label : null,
     screenNumber: pointTarget ? pointTarget.screenNumber : null,
-    tagAtEnd: /\[\s*POINT\s*:[^\[\]]*\]\s*$/i.test(rawReplyText),
+    // Round 6: a draw, card or row tag written after the POINT tag does not make the POINT tag "not last";
+    // the app accepts the tags in any order and speaks none of them.
+    tagAtEnd: /\[\s*POINT\s*:[^\[\]]*\]\s*$/i.test(stripDrawFamilyTags(rawReplyText)),
+    // The explanation card the app accepted, for the elaboration checks (see visualReplyAllowance).
+    explanationCard: {
+      rowCount: (finishedTurn.drawCommands ?? []).filter((command) => command.commandKind === "addCardRow").length,
+      opened: (finishedTurn.drawCommands ?? []).some((command) => command.commandKind === "addMark" && command.shape.shapeKind === "card"),
+      writtenWordCount: countWords(explanationCardWrittenText(finishedTurn)),
+    },
   };
 }
 
@@ -470,8 +494,14 @@ export function analyzeSpokenReply(replyTextOrView, expectation) {
   const checks = {};
   const allowLong = Boolean(expectation.allowLong);
   if (allowLong) {
-    checks.sentences = { points: 25, earned: sentenceCount >= expectation.minSentences ? 25 : 0, label: "elaborates when asked (enough sentences)" };
-    checks.words = { points: 25, earned: wordCount >= expectation.minWords ? 25 : 0, label: "elaborates when asked (enough words)" };
+    // Round 6: an explanation card the app accepted (with two or more rows) carries part of the
+    // elaboration on screen, and the prompt asks for two to five short spoken sentences with it. So with
+    // such a card, two spoken sentences are enough and the words on the card count towards the minimum.
+    const acceptedCard = parsed.explanationCard?.opened && parsed.explanationCard.rowCount >= 2 ? parsed.explanationCard : null;
+    const sentencesNeeded = acceptedCard ? Math.min(2, expectation.minSentences) : expectation.minSentences;
+    const wordsCounted = wordCount + (acceptedCard ? acceptedCard.writtenWordCount : 0);
+    checks.sentences = { points: 25, earned: sentenceCount >= sentencesNeeded ? 25 : 0, label: "elaborates when asked (enough sentences)" };
+    checks.words = { points: 25, earned: wordsCounted >= expectation.minWords ? 25 : 0, label: "elaborates when asked (enough words)" };
   } else {
     const sentenceLimit = expectation.maxSentences ?? 2;
     const wordLimit = expectation.maxWords ?? 45;
@@ -877,6 +907,434 @@ export function scorePersonalization(scenario, finishedTurn, assembled) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Round 6: DRAW / CARD / ROW tags on every dimension, and the VISUAL dimension
+// (drawing on the screen and the explanation card; tracked separately, never part of the total).
+//
+// The grammar is never re-implemented here. With --assembler, every reply goes through the driver's
+// `finish` mode, which runs the app's ClickyTurnFinisher (spoken text with every tag removed) and
+// ClickyDrawTagParser + ClickyDrawingBoard (accepted commands, dropped tag count, board before and
+// after). The one regex below only COUNTS raw tags, for runs without the assembler and for telling
+// "the model wrote a tag" apart from "the app accepted it".
+// ---------------------------------------------------------------------------------------------
+
+// Same tag shape as ClickyDrawTagParser.completeDrawTagPattern (counting and stripping only).
+const DRAW_FAMILY_TAG_PATTERN = /\[\s*(DRAW|CARD|ROW)\s*:([^\[\]]*)\]/gi;
+
+export function stripDrawFamilyTags(replyText) {
+  if (!new RegExp(DRAW_FAMILY_TAG_PATTERN.source, "i").test(replyText)) return replyText;
+  return replyText.replace(DRAW_FAMILY_TAG_PATTERN, " ").replace(/[ \t]{2,}/g, " ").replace(/ +([.,!?])/g, "$1").trim();
+}
+
+function shapeOfCommand(drawCommand) {
+  return drawCommand.commandKind === "addMark" ? drawCommand.shape : null;
+}
+
+// What a reply drew, as counts. `finishedTurn` is the driver record (null without --assembler).
+export function summarizeDrawUse(rawReplyText, finishedTurn) {
+  const rawTagNames = [...rawReplyText.matchAll(DRAW_FAMILY_TAG_PATTERN)].map((match) => match[1].toUpperCase());
+  const use = {
+    raw_tag_count: rawTagNames.length,
+    raw_card_tag_count: rawTagNames.filter((name) => name === "CARD").length,
+    raw_row_tag_count: rawTagNames.filter((name) => name === "ROW").length,
+    raw_draw_tag_count: rawTagNames.filter((name) => name === "DRAW").length,
+    accepted_command_count: null, ignored_tag_count: null, shape_kinds: null,
+    card_opened: rawTagNames.includes("CARD"), card_row_count: null,
+    position_mark_count_other_than_callouts: null,
+    parsed_by_app: false,
+  };
+  if (finishedTurn && Array.isArray(finishedTurn.drawCommands)) {
+    const shapes = finishedTurn.drawCommands.map(shapeOfCommand).filter(Boolean);
+    use.parsed_by_app = true;
+    use.accepted_command_count = finishedTurn.drawCommands.length;
+    use.ignored_tag_count = finishedTurn.ignoredDrawTagCount;
+    use.shape_kinds = shapes.map((shape) => shape.shapeKind);
+    use.card_opened = shapes.some((shape) => shape.shapeKind === "card");
+    use.card_row_count = finishedTurn.drawCommands.filter((command) => command.commandKind === "addCardRow").length;
+    use.position_mark_count_other_than_callouts = shapes.filter((shape) => !["card", "callout"].includes(shape.shapeKind)).length;
+    use.edit_command_count = finishedTurn.drawCommands.filter((command) => ["eraseMark", "undoNewestMark", "clearAllMarks"].includes(command.commandKind)).length;
+  }
+  return use;
+}
+
+// HOW A REPLY WITH DRAW TAGS IS SCORED ON THE FOUR EXISTING DIMENSIONS (documented in the README):
+//  1. The tags are removed from the spoken text by the app's own parser before every spoken-style and
+//     length check, and they do not break the trailing [POINT:...] check.
+//  2. None of the 58 four-dimension scenarios asks Clicky to draw. A scenario is "ordinary" unless it
+//     is an explicit elaboration request (expect.allowLong) or carries `visualAllowed: true`. Any DRAW,
+//     CARD or ROW tag on an ordinary scenario, accepted by the app or not, is a regression: the scenario
+//     score is HALVED and the outcome gains "+unrequested_drawing".
+//  3. On an explicit elaboration request the prompt itself asks for an explanation card, so CARD, ROW and
+//     callout tags are allowed there and cost nothing (other marks still count as unrequested). The
+//     spoken part of a card reply is short by design (two to five sentences), so when the app accepted a
+//     card with at least two rows, the "elaborates when asked" checks accept two or more spoken sentences
+//     and count the words written on the card towards the word minimum.
+//  4. Speed is not adjusted: a draw reply to an ordinary question is slower and longer, and loses the
+//     latency and token points it would lose anyway.
+export function visualReplyAllowance(scenario) {
+  if (scenario.visualAllowed === true) return "any";
+  if (scenario.expect?.allowLong) return "card_only";
+  return "none";
+}
+
+export function unrequestedDrawing(scenario, drawUse) {
+  if (drawUse.raw_tag_count === 0) return false;
+  const allowance = visualReplyAllowance(scenario);
+  if (allowance === "any") return false;
+  if (allowance === "none") return true;
+  // card_only: marks other than the card, its rows and callouts were not asked for.
+  if (drawUse.parsed_by_app) return drawUse.position_mark_count_other_than_callouts > 0 || (drawUse.edit_command_count ?? 0) > 0;
+  return false;
+}
+
+const UNREQUESTED_DRAWING_SCORE_FACTOR = 0.5;
+
+export function applyUnrequestedDrawingPenalty(scenario, scoredRecord, drawUse) {
+  if (!unrequestedDrawing(scenario, drawUse) || scoredRecord.errored) return scoredRecord;
+  return {
+    ...scoredRecord,
+    score: scoredRecord.score * UNREQUESTED_DRAWING_SCORE_FACTOR,
+    outcome: `${scoredRecord.outcome}+unrequested_drawing`,
+    detail: { ...(scoredRecord.detail ?? {}), unrequested_drawing: true, score_before_unrequested_drawing_penalty: scoredRecord.score },
+  };
+}
+
+// The words written on the explanation card (title and rows), as the app accepted them.
+function explanationCardWrittenText(finishedTurn) {
+  const pieces = [];
+  for (const drawCommand of finishedTurn?.drawCommands ?? []) {
+    if (drawCommand.commandKind === "addMark" && drawCommand.shape.shapeKind === "card") pieces.push(drawCommand.shape.title);
+    if (drawCommand.commandKind === "addCardRow") pieces.push(...drawCommand.row.partTexts);
+  }
+  return pieces.join(" ");
+}
+
+// ---- geometry -----------------------------------------------------------------------------------
+
+function paddedRectangle(rectangle, padding) {
+  return { x: rectangle.x - padding, y: rectangle.y - padding, w: rectangle.w + 2 * padding, h: rectangle.h + 2 * padding };
+}
+
+function rectangleIntersectionArea(first, second) {
+  const overlapWidth = Math.min(first.x + first.w, second.x + second.w) - Math.max(first.x, second.x);
+  const overlapHeight = Math.min(first.y + first.h, second.y + second.h) - Math.max(first.y, second.y);
+  return overlapWidth > 0 && overlapHeight > 0 ? overlapWidth * overlapHeight : 0;
+}
+
+function pointIsInside(point, rectangle) {
+  return distanceFromPointToRectangle(point.x, point.y, rectangle) === 0;
+}
+
+// Tolerances per shape, in screenshot pixels. Returns quality 1 (on the element), 0.6 (on it but badly
+// sized or only near it) or 0 (somewhere else), with a short reason for the failure report.
+export const VISUAL_TOLERANCES = {
+  circleCentrePaddingPixels: 4,
+  circleMinimumRadiusFractionOfShortSide: 0.35,
+  circleMaximumRadiusBeyondLongSidePixels: 40,
+  boxMinimumSharedFractionOfSmallerArea: 0.6,
+  boxElementPaddingPixels: 12,
+  boxMaximumAreaTimesPaddedElement: 4,
+  underlineHighestStartFractionOfElementHeight: 0.5,
+  underlineLowestPixelsBelowElement: 14,
+  underlineMaximumSlopePixels: 8,
+  underlineMinimumHorizontalOverlapFraction: 0.5,
+  arrowHeadFullCreditPaddingPixels: 24,
+  arrowHeadPartialCreditPaddingPixels: 40,
+  arrowMinimumLengthPixels: 20,
+  calloutTargetPaddingPixels: 6,
+  labelAnchorPaddingPixels: 48,
+};
+
+export function markGeometryQuality(shape, elementRectangle) {
+  const tolerances = VISUAL_TOLERANCES;
+  switch (shape.shapeKind) {
+    case "circle": {
+      if (!pointIsInside(shape.center, paddedRectangle(elementRectangle, tolerances.circleCentrePaddingPixels))) return { quality: 0, reason: "circle centre outside the element" };
+      const shortSide = Math.min(elementRectangle.w, elementRectangle.h);
+      const longSide = Math.max(elementRectangle.w, elementRectangle.h);
+      if (shape.radius < tolerances.circleMinimumRadiusFractionOfShortSide * shortSide) return { quality: 0.6, reason: "circle too small to surround the element" };
+      if (shape.radius > longSide + tolerances.circleMaximumRadiusBeyondLongSidePixels) return { quality: 0.6, reason: "circle far larger than the element" };
+      return { quality: 1, reason: null };
+    }
+    case "box":
+    case "highlight": {
+      const markRectangle = { x: shape.topLeftCorner.x, y: shape.topLeftCorner.y, w: shape.width, h: shape.height };
+      const markArea = markRectangle.w * markRectangle.h;
+      const elementArea = elementRectangle.w * elementRectangle.h;
+      if (markArea <= 0) return { quality: 0, reason: "mark has no area" };
+      const sharedFraction = rectangleIntersectionArea(markRectangle, elementRectangle) / Math.min(markArea, elementArea);
+      if (sharedFraction < tolerances.boxMinimumSharedFractionOfSmallerArea) return { quality: 0, reason: `${shape.shapeKind} does not cover the element` };
+      const paddedElement = paddedRectangle(elementRectangle, tolerances.boxElementPaddingPixels);
+      if (markArea > tolerances.boxMaximumAreaTimesPaddedElement * paddedElement.w * paddedElement.h) return { quality: 0.6, reason: `${shape.shapeKind} far larger than the element` };
+      return { quality: 1, reason: null };
+    }
+    case "underline": {
+      const highestY = elementRectangle.y + tolerances.underlineHighestStartFractionOfElementHeight * elementRectangle.h;
+      const lowestY = elementRectangle.y + elementRectangle.h + tolerances.underlineLowestPixelsBelowElement;
+      const lineLeft = Math.min(shape.start.x, shape.end.x);
+      const lineRight = Math.max(shape.start.x, shape.end.x);
+      const lineLength = lineRight - lineLeft;
+      if (lineLength < 10) return { quality: 0, reason: "underline has no length" };
+      if (Math.abs(shape.start.y - shape.end.y) > tolerances.underlineMaximumSlopePixels) return { quality: 0, reason: "underline is not level" };
+      const horizontalOverlap = Math.min(lineRight, elementRectangle.x + elementRectangle.w) - Math.max(lineLeft, elementRectangle.x);
+      if (horizontalOverlap < tolerances.underlineMinimumHorizontalOverlapFraction * Math.min(lineLength, elementRectangle.w)) return { quality: 0, reason: "underline is beside the element" };
+      const lineY = (shape.start.y + shape.end.y) / 2;
+      if (lineY < elementRectangle.y - 4 || lineY > lowestY + 20) return { quality: 0, reason: "underline is on another line" };
+      if (lineY < highestY) return { quality: 0.6, reason: "underline strikes through the element instead of sitting under it" };
+      if (lineY > lowestY) return { quality: 0.6, reason: "underline sits too far below the element" };
+      return { quality: 1, reason: null };
+    }
+    case "arrow": {
+      const arrowLength = Math.hypot(shape.head.x - shape.tail.x, shape.head.y - shape.tail.y);
+      const headDistance = distanceFromPointToRectangle(shape.head.x, shape.head.y, elementRectangle);
+      if (headDistance > tolerances.arrowHeadPartialCreditPaddingPixels) {
+        const tailDistance = distanceFromPointToRectangle(shape.tail.x, shape.tail.y, elementRectangle);
+        return { quality: 0, reason: tailDistance <= tolerances.arrowHeadFullCreditPaddingPixels ? "arrow points away from the element (tail on it, head elsewhere)" : "arrow head far from the element" };
+      }
+      if (arrowLength < tolerances.arrowMinimumLengthPixels) return { quality: 0.6, reason: "arrow too short to read as an arrow" };
+      if (headDistance > tolerances.arrowHeadFullCreditPaddingPixels) return { quality: 0.6, reason: "arrow head only near the element" };
+      return { quality: 1, reason: null };
+    }
+    case "callout":
+      return pointIsInside(shape.target, paddedRectangle(elementRectangle, tolerances.calloutTargetPaddingPixels)) ? { quality: 1, reason: null } : { quality: 0, reason: "callout points outside the element" };
+    case "label":
+    case "sticky":
+      return pointIsInside(shape.topLeftCorner, paddedRectangle(elementRectangle, tolerances.labelAnchorPaddingPixels)) ? { quality: 1, reason: null } : { quality: 0, reason: "label is not next to the element" };
+    default:
+      return { quality: 0, reason: "not a positioned mark" };
+  }
+}
+
+function elementRectangleForTarget(scenario, target, manifest) {
+  return manifest[scenario.screens[target.screen - 1]].elements[target.element];
+}
+
+// ---- spoken part of a visual reply --------------------------------------------------------------
+
+const SPOKEN_TAG_OR_COORDINATE_LEAK_PATTERN = /[\[\]]|\b\d{2,4}\s*,\s*\d{2,4}\b|\bm\d{1,3}\b|\b(?:draw|card|row|point)\s*:/i;
+
+function visualSpokenAnalysis(spokenText) {
+  const sentenceCount = countSentences(spokenText);
+  const wordCount = countWords(spokenText);
+  const clean = !/[A-Z]/.test(spokenText) && !MARKDOWN_PATTERN.test(spokenText) && !WEIRD_SYMBOL_PATTERN.test(spokenText)
+    && !SMALL_DIGIT_PATTERN.test(spokenText) && !SPOKEN_TAG_OR_COORDINATE_LEAK_PATTERN.test(spokenText);
+  return { sentenceCount, wordCount, clean, leaksTagOrCoordinate: SPOKEN_TAG_OR_COORDINATE_LEAK_PATTERN.test(spokenText) };
+}
+
+function replyEndsWithPointNone(rawReplyText, finishedTurn) {
+  return finishedTurn.pointTarget === null && /\[\s*POINT\s*:\s*none\s*\]/i.test(rawReplyText);
+}
+
+// ---- the rubric: 100 points per kind -------------------------------------------------------------
+
+export function scoreVisual(scenario, finishedTurn, rawReplyText, manifest) {
+  const expectation = scenario.expect ?? {};
+  const spoken = finishedTurn.spokenText ?? "";
+  const spokenAnalysis = visualSpokenAnalysis(spoken);
+  const drawCommands = finishedTurn.drawCommands ?? [];
+  const ignoredTagCount = finishedTurn.ignoredDrawTagCount ?? 0;
+  const addedShapes = drawCommands.filter((command) => command.commandKind === "addMark").map((command) => ({ ...command.shape, screenNumber: command.screenNumber ?? 1 }));
+  const positionedShapes = addedShapes.filter((shape) => shape.shapeKind !== "card");
+  const cardShapes = addedShapes.filter((shape) => shape.shapeKind === "card");
+  const cardRows = drawCommands.filter((command) => command.commandKind === "addCardRow").map((command) => command.row);
+  const editCommands = drawCommands.filter((command) => ["eraseMark", "undoNewestMark", "clearAllMarks"].includes(command.commandKind));
+  const rawTagCount = [...rawReplyText.matchAll(DRAW_FAMILY_TAG_PATTERN)].length;
+  const endsWithPointNone = replyEndsWithPointNone(rawReplyText, finishedTurn);
+
+  const checks = {};
+  const award = (name, points, earned, note = null) => { checks[name] = { points, earned: Math.round(earned * 10) / 10, ...(note ? { note } : {}) }; };
+  let outcome = "ok";
+  const detailExtras = {};
+
+  if (scenario.kind === "mark" || scenario.kind === "second_screen") {
+    // Circle, box, underline, highlight or arrow a named element (on screen 2 for second_screen).
+    const requestedShapeKind = expectation.shape;
+    const targets = expectation.targets;
+    const judged = positionedShapes.map((shape) => {
+      let best = { quality: 0, reason: "on the wrong screen" };
+      for (const target of targets) {
+        if (target.screen !== shape.screenNumber) continue;
+        const geometry = markGeometryQuality(shape, elementRectangleForTarget(scenario, target, manifest));
+        if (geometry.quality > best.quality || best.reason === "on the wrong screen") best = geometry;
+      }
+      return { shapeKind: shape.shapeKind, ...best };
+    });
+    const requestedKindMarks = judged.filter((mark) => mark.shapeKind === requestedShapeKind);
+    const bestRequested = requestedKindMarks.reduce((best, mark) => (mark.quality > (best?.quality ?? -1) ? mark : best), null);
+    const bestAnyShape = judged.filter((mark) => !["label", "sticky", "callout"].includes(mark.shapeKind)).reduce((best, mark) => (mark.quality > (best?.quality ?? -1) ? mark : best), null);
+    const geometryMark = bestRequested ?? bestAnyShape;
+    award("tags_valid", 15, positionedShapes.length > 0 && ignoredTagCount === 0 ? 15 : 0, ignoredTagCount > 0 ? `${ignoredTagCount} tag(s) dropped by the app's parser` : null);
+    // The right shape on the wrong thing is worth nothing to someone watching the screen, so the shape
+    // and stray-mark points are only earned once a mark is on (or at least partly on) the element.
+    const somethingIsOnTheElement = Boolean(geometryMark) && geometryMark.quality > 0;
+    award("requested_shape", 15, somethingIsOnTheElement && requestedKindMarks.length > 0 ? 15 : 0);
+    award("on_the_element", 45, geometryMark ? 45 * geometryMark.quality : 0, geometryMark?.reason ?? (positionedShapes.length === 0 ? "nothing was drawn" : null));
+    // One shape plus at most one label next to it; no second shape somewhere else.
+    const strayMarks = judged.filter((mark) => mark.quality === 0 && mark !== geometryMark);
+    award("no_stray_marks", 10, somethingIsOnTheElement && positionedShapes.length <= 2 && strayMarks.length === 0 && cardShapes.length === 0 ? 10 : 0);
+    award("spoken_length", 5, spokenAnalysis.sentenceCount >= 1 && spokenAnalysis.sentenceCount <= 4 && spokenAnalysis.wordCount <= 60 ? 5 : 0);
+    award("spoken_clean", 5, spokenAnalysis.clean ? 5 : 0);
+    award("ends_with_point_none", 5, endsWithPointNone ? 5 : 0);
+    if (positionedShapes.length === 0) outcome = rawTagCount > 0 ? "tags_all_dropped" : "drew_nothing";
+    else if (!geometryMark || geometryMark.quality === 0) outcome = judged.some((mark) => mark.reason === "on the wrong screen") && judged.every((mark) => mark.quality === 0) ? "wrong_screen_or_off_target" : "mark_off_target";
+    else if (geometryMark.quality < 1) outcome = "mark_badly_sized_or_placed";
+    else if (requestedKindMarks.length === 0) outcome = "wrong_shape_on_target";
+    detailExtras.judged_marks = judged;
+  } else if (scenario.kind === "callouts") {
+    // "Label the parts": callouts (or labels) whose points fall inside distinct correct elements.
+    const parts = expectation.parts;
+    const minimumCorrect = expectation.minimumCorrect;
+    const labellingShapes = positionedShapes.filter((shape) => ["callout", "label", "sticky"].includes(shape.shapeKind));
+    const fixtureElements = (shape) => manifest[scenario.screens[shape.screenNumber - 1]]?.elements ?? {};
+    const partHits = new Map();
+    let strayCount = 0;
+    for (const shape of labellingShapes) {
+      // A label next to one control is often within reach of its neighbour too, so the label belongs to
+      // the NEAREST expected part it is on, not to the first one in the list.
+      const anchor = shape.shapeKind === "callout" ? shape.target : shape.topLeftCorner;
+      let partIndex = -1;
+      let nearestDistance = Infinity;
+      parts.forEach((part, candidateIndex) => {
+        if (part.screen !== shape.screenNumber) return;
+        for (const elementName of part.elements) {
+          const rectangle = fixtureElements(shape)[elementName];
+          if (markGeometryQuality(shape, rectangle).quality !== 1) continue;
+          const distance = distanceFromPointToRectangle(anchor.x, anchor.y, rectangle);
+          if (distance < nearestDistance) { nearestDistance = distance; partIndex = candidateIndex; }
+        }
+      });
+      if (partIndex >= 0) {
+        if (!partHits.has(partIndex)) partHits.set(partIndex, shape);
+      } else if (!Object.values(fixtureElements(shape)).some((rectangle) => markGeometryQuality(shape, rectangle).quality === 1)) {
+        strayCount += 1; // points at no known control at all
+      }
+    }
+    const distinctCorrect = partHits.size;
+    let rightlyNamed = 0;
+    for (const [partIndex, shape] of partHits) {
+      const loweredText = (shape.text ?? "").toLowerCase();
+      if (parts[partIndex].textAnyOf.some((accepted) => loweredText.includes(accepted))) rightlyNamed += 1;
+    }
+    award("tags_valid", 15, labellingShapes.length > 0 && ignoredTagCount === 0 ? 15 : 0, ignoredTagCount > 0 ? `${ignoredTagCount} tag(s) dropped by the app's parser` : null);
+    award("enough_parts_labelled_on_target", 50, 50 * Math.min(1, distinctCorrect / minimumCorrect), `${distinctCorrect} distinct correct of at least ${minimumCorrect}`);
+    award("labels_name_the_right_thing", 15, distinctCorrect === 0 ? 0 : 15 * rightlyNamed / distinctCorrect);
+    award("no_stray_labels", 10, labellingShapes.length === 0 ? 0 : strayCount === 0 ? 10 : strayCount === 1 ? 5 : 0);
+    award("spoken_length_and_clean", 5, spokenAnalysis.sentenceCount >= 1 && spokenAnalysis.sentenceCount <= 4 && spokenAnalysis.wordCount <= 60 && spokenAnalysis.clean ? 5 : 0);
+    award("ends_with_point_none", 5, endsWithPointNone ? 5 : 0);
+    if (labellingShapes.length === 0) outcome = rawTagCount > 0 ? "tags_all_dropped" : "drew_nothing";
+    else if (distinctCorrect < minimumCorrect) outcome = "too_few_parts_on_target";
+    else if (rightlyNamed < distinctCorrect) outcome = "label_names_wrong_thing";
+    detailExtras.distinct_correct_parts = distinctCorrect;
+    detailExtras.labels_written = labellingShapes.length;
+    detailExtras.stray_labels = strayCount;
+  } else if (scenario.kind === "card") {
+    // An explanation request that should produce one card with two to five rows.
+    const rowKinds = cardRows.map((row) => row.rowKind);
+    const cardAndRowCommands = drawCommands.filter((command) => command.commandKind === "addCardRow" || (command.commandKind === "addMark" && command.shape.shapeKind === "card"));
+    const rowsAreSpreadThroughTheSpeech = cardRows.length < 2 || cardAndRowCommands.some((command) => command.spokenFractionBeforeTag < 0.9);
+    const writtenAndSpokenText = `${explanationCardWrittenText(finishedTurn)} ${spoken}`;
+    const keywordCoverage = expectation.cardKeywordGroups ? scoreKeywordGroups(expectation.cardKeywordGroups, writtenAndSpokenText).coverage : 1;
+    const rawCardTagCount = [...rawReplyText.matchAll(DRAW_FAMILY_TAG_PATTERN)].filter((match) => match[1].toUpperCase() === "CARD").length;
+    const wordsPerSentence = spokenAnalysis.sentenceCount > 0 ? spokenAnalysis.wordCount / spokenAnalysis.sentenceCount : 0;
+    award("one_valid_card", 15, cardShapes.length === 1 && rawCardTagCount === 1 && ignoredTagCount === 0 ? 15 : cardShapes.length === 1 ? 7 : 0, ignoredTagCount > 0 ? `${ignoredTagCount} tag(s) dropped by the app's parser` : null);
+    award("two_to_five_rows", 20, cardRows.length >= 2 && cardRows.length <= 5 ? 20 : cardRows.length === 1 ? 10 : 0, `${cardRows.length} row(s) accepted`);
+    award("row_kinds_sensible", 15, rowKinds.some((rowKind) => expectation.rowKindAnyOf.includes(rowKind)) ? 15 : 0, rowKinds.join(","));
+    award("rows_appear_while_speaking", 5, cardRows.length >= 1 && rowsAreSpreadThroughTheSpeech ? 5 : 0);
+    award("content_covers_the_topic", 15, cardShapes.length === 1 ? 15 * keywordCoverage : 0);
+    award("spoken_two_to_five_sentences", 10, spokenAnalysis.sentenceCount >= 2 && spokenAnalysis.sentenceCount <= 5 ? 10 : spokenAnalysis.sentenceCount === 6 ? 5 : 0, `${spokenAnalysis.sentenceCount} sentence(s)`);
+    award("spoken_sentences_short", 5, spokenAnalysis.wordCount <= 90 && wordsPerSentence <= 20 ? 5 : 0, `${spokenAnalysis.wordCount} words`);
+    award("spoken_clean", 5, spokenAnalysis.clean ? 5 : 0);
+    award("no_other_marks", 5, positionedShapes.filter((shape) => shape.shapeKind !== "callout").length === 0 && editCommands.length === 0 ? 5 : 0);
+    award("ends_with_point_none", 5, endsWithPointNone ? 5 : 0);
+    if (cardShapes.length === 0) outcome = rawTagCount > 0 ? "card_tags_dropped_or_missing" : "no_card";
+    else if (ignoredTagCount > 0) outcome = "card_with_dropped_tags";
+    else if (cardRows.length < 2 || cardRows.length > 5) outcome = "card_wrong_row_count";
+    else if (spokenAnalysis.sentenceCount > 5) outcome = "card_but_rambling";
+    detailExtras.row_kinds = rowKinds;
+  } else if (scenario.kind === "absent") {
+    // The named element is not on the screen: draw nothing and say so.
+    const acknowledged = acknowledgesAbsence(spoken, "absent");
+    award("drew_nothing", 50, rawTagCount === 0 ? 50 : 0);
+    award("honest_acknowledgement", 30, acknowledged ? 30 : 0);
+    award("no_pointing_at_coordinates", 10, finishedTurn.pointTarget === null ? 10 : 0);
+    award("short_and_clean", 10, spokenAnalysis.sentenceCount <= 2 && spokenAnalysis.clean ? 10 : 0);
+    if (rawTagCount > 0) outcome = "drew_on_an_absent_element";
+    else if (finishedTurn.pointTarget !== null) outcome = "pointed_at_an_absent_element";
+    else if (!acknowledged) outcome = "no_honest_acknowledgement";
+  } else if (scenario.kind === "edit") {
+    // Marks are already on the screen (seeded through the driver); the user asks to change them.
+    const identifiersBefore = (finishedTurn.drawingMarksBeforeReply ?? []).map((mark) => mark.markIdentifier);
+    const marksAfter = finishedTurn.drawingMarksAfterReply ?? [];
+    const identifiersAfter = marksAfter.map((mark) => mark.markIdentifier);
+    const removedIdentifiers = identifiersBefore.filter((identifier) => !identifiersAfter.includes(identifier));
+    const newIdentifiers = identifiersAfter.filter((identifier) => !identifiersBefore.includes(identifier));
+    let editPoints = 0;
+    let editNote = null;
+    if (expectation.editKind === "add_row") {
+      const cardBefore = (finishedTurn.drawingMarksBeforeReply ?? []).find((mark) => mark.shape.shapeKind === "card");
+      const cardAfter = marksAfter.find((mark) => mark.shape.shapeKind === "card");
+      const sameCard = cardBefore && cardAfter && cardBefore.markIdentifier === cardAfter.markIdentifier;
+      const addedRows = sameCard ? cardAfter.shape.rows.slice(cardBefore.shape.rows.length) : [];
+      const keptOldRows = sameCard && cardBefore.shape.rows.every((row, rowIndex) => cardAfter.shape.rows[rowIndex]?.canonicalTagBody === row.canonicalTagBody);
+      const addedRowText = addedRows.flatMap((row) => row.partTexts).join(" ");
+      const keywordCoverage = expectation.rowKeywordGroups ? scoreKeywordGroups(expectation.rowKeywordGroups, addedRowText).coverage : 1;
+      if (sameCard && keptOldRows && addedRows.length === 1) editPoints = 45 + 15 * keywordCoverage;
+      else if (sameCard && keptOldRows && addedRows.length > 1) { editPoints = 30 + 15 * keywordCoverage; editNote = `${addedRows.length} rows added, one was asked for`; }
+      else if (cardAfter && !sameCard) { editPoints = 15; editNote = "the card was replaced by a new one instead of getting a row"; outcome = "card_replaced_instead_of_row_added"; }
+      else { editNote = "no row reached the card"; outcome = "row_not_added"; }
+      award("the_right_change", 60, editPoints, editNote);
+      award("nothing_else_changed", 15, removedIdentifiers.length === 0 && newIdentifiers.length === 0 && ignoredTagCount === 0 ? 15 : 0);
+    } else {
+      const expectedRemoved = expectation.expectedRemovedMarkIdentifiers;
+      const expectedKept = expectation.expectedKeptMarkIdentifiers ?? [];
+      const removedAllExpected = expectedRemoved.every((identifier) => removedIdentifiers.includes(identifier));
+      const keptAllExpected = expectedKept.every((identifier) => identifiersAfter.includes(identifier));
+      if (removedAllExpected && keptAllExpected) editPoints = 60;
+      else if (removedAllExpected) { editPoints = 20; editNote = "the right mark went, and so did marks that should have stayed"; outcome = "removed_too_much"; }
+      else if (removedIdentifiers.length > 0) { editNote = "a different mark was removed"; outcome = "removed_the_wrong_mark"; }
+      else { editNote = "nothing was removed"; outcome = rawTagCount > 0 ? "edit_tag_changed_nothing" : "no_edit_tag"; }
+      award("the_right_change", 60, editPoints, editNote);
+      award("nothing_else_changed", 15, newIdentifiers.length === 0 && ignoredTagCount === 0 ? 15 : 0);
+    }
+    award("spoken_short_clean_no_ids", 15, spokenAnalysis.sentenceCount <= 2 && spokenAnalysis.wordCount <= 20 && spokenAnalysis.clean ? 15 : spokenAnalysis.sentenceCount <= 2 && spokenAnalysis.clean ? 8 : 0);
+    award("ends_with_point_none", 10, endsWithPointNone ? 10 : 0);
+    detailExtras.removed_mark_identifiers = removedIdentifiers;
+    detailExtras.new_mark_identifiers = newIdentifiers;
+  } else if (scenario.kind === "control") {
+    // An ordinary question (some contain the words "highlight" or "underline", some have marks on
+    // screen): it must be answered as usual, with no DRAW, CARD or ROW tag at all.
+    const boardUnchanged = JSON.stringify(finishedTurn.drawingMarksBeforeReply ?? []) === JSON.stringify(finishedTurn.drawingMarksAfterReply ?? []);
+    award("no_draw_card_or_row_tag", 70, rawTagCount === 0 && boardUnchanged ? 70 : 0);
+    award("at_most_two_sentences", 15, spokenAnalysis.sentenceCount <= 2 ? 15 : spokenAnalysis.sentenceCount === 3 ? 7 : 0);
+    let pointingPoints;
+    if (expectation.targets) {
+      pointingPoints = scorePointing({ screens: scenario.screens, expect: { type: "point", targets: expectation.targets } }, replyViewFromFinishedTurn(rawReplyText, finishedTurn), manifest).score === 100 ? 15 : 0;
+    } else {
+      pointingPoints = finishedTurn.pointTarget !== null || /\[\s*POINT\s*:\s*none\s*\]/i.test(rawReplyText) ? 15 : 0;
+    }
+    award("usual_pointing", 15, pointingPoints);
+    if (rawTagCount > 0 || !boardUnchanged) outcome = "drew_for_an_ordinary_question";
+    else if (pointingPoints === 0) outcome = "ordinary_answer_but_pointing_wrong";
+  } else {
+    throw new Error(`unknown visual kind: ${scenario.kind}`);
+  }
+
+  const score = Object.values(checks).reduce((sum, check) => sum + check.earned, 0);
+  const failedChecks = Object.entries(checks).filter(([, check]) => check.earned < check.points).map(([name]) => name);
+  if (outcome === "ok" && failedChecks.length > 0) outcome = "minor_losses";
+  return {
+    score, outcome,
+    detail: {
+      kind: scenario.kind, checks, failed_checks: failedChecks,
+      spoken_sentence_count: spokenAnalysis.sentenceCount, spoken_word_count: spokenAnalysis.wordCount,
+      spoken_leaks_tag_or_coordinate: spokenAnalysis.leaksTagOrCoordinate,
+      raw_draw_family_tag_count: rawTagCount, accepted_command_count: drawCommands.length, ignored_draw_tag_count: ignoredTagCount,
+      shape_kinds: addedShapes.map((shape) => shape.shapeKind), card_row_count: cardRows.length,
+      ...detailExtras,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Scenario loading
 // ---------------------------------------------------------------------------------------------
 
@@ -899,6 +1357,7 @@ function plannedCallCount(scenarios, notesProtocol) {
   return scenarios.reduce((total, scenario) => {
     if (scenario.dimension === "coding") return total + 2;
     if (scenario.dimension === "notes") return total + (notesProtocol.enabled ? 1 : 0);
+    // personalization and visual: one call each (no judge).
     return total + 1;
   }, 0);
 }
@@ -958,6 +1417,9 @@ class PromptAssembler {
         // through the store (dedupe and replacement apply) or verbatim (hand-edited or over-long files).
         ...(scenario.seedProfileFacts ? { seedProfileFacts: scenario.seedProfileFacts } : {}),
         ...(scenario.seedProfileFileContents !== undefined ? { seedProfileFileContents: scenario.seedProfileFileContents } : {}),
+        // Round 6: marks already on the screen (earlier reply texts; the driver parses and applies their tags
+        // with the app's code, and the assembler adds its own "marks on screen" section).
+        ...(scenario.seedDrawTagTexts ? { seedDrawTagTexts: scenario.seedDrawTagTexts } : {}),
       };
     });
     fs.writeFileSync(inputPath, JSON.stringify(prepareInput));
@@ -976,6 +1438,7 @@ class PromptAssembler {
     fs.writeFileSync(inputPath, JSON.stringify([{
       id: scenario.id, transcript: scenario.userPrompt, rawReplyText,
       ...(previousAssistantHistoryText !== null ? { previousAssistantHistoryText } : {}),
+      ...(scenario.seedDrawTagTexts ? { seedDrawTagTexts: scenario.seedDrawTagTexts } : {}),
     }]));
     this.#runDriver(["finish", inputPath, outputPath, this.notesRootDirectory]);
     return JSON.parse(fs.readFileSync(outputPath, "utf8"))[0];
@@ -1021,9 +1484,16 @@ async function runScenario(scenario, context) {
   }
   const reply = extractReply(chatResult.json);
   // The app's own parse of the reply (tags, spoken text, note saves), via the driver. Zero API calls.
-  const finishedTurn = assembledPrompts && scenario.dimension !== "coding" ? context.finishReply(scenario, reply.text) : null;
+  // Round 6: coding replies are finished too, so draw tags are read by the app's parser on every dimension.
+  const finishedTurn = assembledPrompts ? context.finishReply(scenario, reply.text) : null;
+  const drawUse = summarizeDrawUse(reply.text, finishedTurn);
+  const penalised = (scoredRecord) => applyUnrequestedDrawingPenalty(scenario, scoredRecord, drawUse);
   const common = {
-    ...baseRecord, errored: false, reply: reply.text, output_tokens: reply.outputTokens, input_tokens: reply.inputTokens,
+    ...baseRecord, errored: false, reply: reply.text,
+    // What the app would speak (every tag removed by the app's parser); null without --assembler.
+    spoken_text: finishedTurn ? finishedTurn.spokenText : null,
+    draw: drawUse,
+    output_tokens: reply.outputTokens, input_tokens: reply.inputTokens,
     cache_creation_input_tokens: reply.cacheCreationInputTokens, cache_read_input_tokens: reply.cacheReadInputTokens,
     system_sent_as: systemBlocksForScenario ? "blocks" : "string",
     stop_reason: reply.stopReason, latency_ms: Math.round(chatResult.latencyMilliseconds),
@@ -1031,28 +1501,31 @@ async function runScenario(scenario, context) {
 
   if (scenario.dimension === "pointing") {
     const result = scorePointing(scenario, finishedTurn ? replyViewFromFinishedTurn(reply.text, finishedTurn) : reply.text, manifest);
-    return { ...common, score: result.score, outcome: result.outcome, detail: { ...result, parsed: undefined } };
+    return penalised({ ...common, score: result.score, outcome: result.outcome, detail: { ...result, parsed: undefined } });
   }
   if (scenario.dimension === "brevity") {
     const result = scoreBrevity(scenario, reply.text, chatResult.latencyMilliseconds, reply.outputTokens,
       finishedTurn ? replyViewFromFinishedTurn(reply.text, finishedTurn) : null);
-    return {
+    return penalised({
       ...common, score: result.score, outcome: result.analysis.failedChecks.length === 0 ? "clean" : "violations",
       detail: {
         compliance: result.analysis.compliance, failed_checks: result.analysis.failedChecks, sentence_count: result.analysis.sentenceCount,
         word_count: result.analysis.wordCount, latency_score: Math.round(result.latencyScore), token_score: Math.round(result.tokenScore),
         answer_correct: result.answerCorrect, exempt_from_speed: Boolean(scenario.expect.allowLong),
       },
-    };
+    });
   }
   if (scenario.dimension === "coding") {
-    const keywordResult = scoreKeywordGroups(scenario.keywordGroups, reply.text);
+    // Round 6: text inside a label, sticky note or card is not spoken, so it must not earn keyword credit
+    // and the judge must not read it as part of the answer. Without draw tags this is the raw reply, as before.
+    const codingReplyText = stripDrawFamilyTags(reply.text);
+    const keywordResult = scoreKeywordGroups(scenario.keywordGroups, codingReplyText);
     let judgeResult = null;
     let judgeLatencyMilliseconds = null;
     try {
       const judgeResponse = await client.chat({
         model: MODEL_NAME, max_tokens: JUDGE_MAX_TOKENS, output_config: { effort: "low" },
-        system: JUDGE_SYSTEM_PROMPT, messages: [{ role: "user", content: buildJudgeUserPrompt(scenario, reply.text) }],
+        system: JUDGE_SYSTEM_PROMPT, messages: [{ role: "user", content: buildJudgeUserPrompt(scenario, codingReplyText) }],
       }, "judge");
       judgeLatencyMilliseconds = Math.round(judgeResponse.latencyMilliseconds);
       judgeResult = parseJudgeJson(extractReply(judgeResponse.json).text);
@@ -1063,10 +1536,15 @@ async function runScenario(scenario, context) {
     if (!judgeResult) {
       return { ...common, errored: true, error: "judge call failed or returned unparseable JSON", detail: { keyword_coverage: keywordResult.coverage } };
     }
-    return {
+    return penalised({
       ...common, score: combineCodingScore(judgeResult.total, keywordResult.coverage), outcome: "judged",
       detail: { judge: judgeResult, judge_latency_ms: judgeLatencyMilliseconds, keyword_coverage: keywordResult.coverage, keyword_group_hits: keywordResult.groupHits },
-    };
+    });
+  }
+  if (scenario.dimension === "visual") {
+    if (!finishedTurn) return { ...common, errored: true, error: "visual needs the assembler's finished turn" };
+    const result = scoreVisual(scenario, finishedTurn, reply.text, manifest);
+    return { ...common, score: result.score, outcome: result.outcome, detail: result.detail };
   }
   if (scenario.dimension === "personalization") {
     if (!finishedTurn) return { ...common, errored: true, error: "personalization needs the assembler's finished turn" };
@@ -1075,7 +1553,7 @@ async function runScenario(scenario, context) {
   }
   // notes
   const result = scoreNotes(scenario, { ...reply, finished: finishedTurn }, notesProtocol);
-  return { ...common, score: result.score, outcome: result.outcome, detail: { detection: result.detection } };
+  return penalised({ ...common, score: result.score, outcome: result.outcome, detail: { detection: result.detection } });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1163,6 +1641,29 @@ function buildDimensionDetails(dimension, results, notesProtocol) {
       median_latency_ms: median(latencies), median_output_tokens: median(scored.map((result) => result.output_tokens).filter((value) => value !== null)),
     };
   }
+  if (dimension === "visual") {
+    const outcomeCounts = {};
+    const checkFailureCounts = {};
+    for (const result of scored) {
+      outcomeCounts[result.outcome] = (outcomeCounts[result.outcome] ?? 0) + 1;
+      for (const check of result.detail?.failed_checks ?? []) checkFailureCounts[check] = (checkFailureCounts[check] ?? 0) + 1;
+    }
+    const byKind = {};
+    for (const [kind, members] of groupBy(scored, (result) => result.detail.kind)) {
+      byKind[kind] = {
+        n: members.length, score: round1(mean(members.map((member) => member.score))),
+        below_80: members.filter((member) => member.score < 80).map((member) => member.id),
+      };
+    }
+    return {
+      ...base, by_kind: byKind, outcome_counts: outcomeCounts, check_failure_counts: checkFailureCounts,
+      replies_with_tags_dropped_by_the_app_parser: scored.filter((result) => (result.detail?.ignored_draw_tag_count ?? 0) > 0).length,
+      tags_dropped_by_the_app_parser_total: scored.reduce((total, result) => total + (result.detail?.ignored_draw_tag_count ?? 0), 0),
+      replies_speaking_a_tag_coordinate_or_id: scored.filter((result) => result.detail?.spoken_leaks_tag_or_coordinate).length,
+      median_latency_ms: median(latencies), p90_latency_ms: Math.round(percentile(latencies, 0.9)),
+      median_output_tokens: median(scored.map((result) => result.output_tokens).filter((value) => value !== null)),
+    };
+  }
   // notes (enabled)
   const outcomeCounts = {};
   for (const result of scored) outcomeCounts[result.outcome] = (outcomeCounts[result.outcome] ?? 0) + 1;
@@ -1213,7 +1714,7 @@ function describeFailures(dimension, visibleResults, details) {
       failures.push({ dimension, category, description: `category mean ${round1(categoryScore)}/100 (judge ${round1(mean(members.map((member) => member.detail.judge.total)))}/10, keyword coverage ${round1(100 * mean(members.map((member) => member.detail.keyword_coverage)))}%).` });
     }
   }
-  if (dimension === "personalization") {
+  if (dimension === "personalization" || dimension === "visual") {
     for (const [category, members] of groupBy(scored, (result) => result.category)) {
       const failed = members.filter((result) => result.score < 100);
       if (failed.length === 0) continue;
@@ -1298,12 +1799,32 @@ function buildSummary({ options, results, notesProtocol, client, systemPromptTex
     for (const split of ["visible", "holdout"]) splitScores[split].personalization = personalization.split_scores[split];
   }
 
+  // Round 6: visual (drawing and the explanation card) is reported on its own, like personalization.
+  let visual = null;
+  if (options.dimensions.includes("visual")) {
+    const visualRun = results.filter((result) => result.dimension === "visual");
+    const visibleRun = visualRun.filter((result) => result.split === "visible");
+    const holdoutRun = visualRun.filter((result) => result.split === "holdout");
+    visual = {
+      score: round1(dimensionScore(visualRun)),
+      excluded_from_weighted_total: true,
+      details: buildDimensionDetails("visual", visualRun, notesProtocol),
+      split_scores: { visible: round1(dimensionScore(visibleRun)), holdout: round1(dimensionScore(holdoutRun)) },
+      failures: describeFailures("visual", visibleRun, buildDimensionDetails("visual", visibleRun, notesProtocol)),
+    };
+    for (const split of ["visible", "holdout"]) splitScores[split].visual = visual.split_scores[split];
+  }
+
   const erroredCount = results.filter((result) => result.errored).length;
   return {
     round: options.round,
     label: options.label,
     status,
     ...(personalization ? { personalization } : {}),
+    ...(visual ? { visual } : {}),
+    draw_tag_usage: summarizeDrawTagUsage(results),
+    spoken_formatting: summarizeSpokenFormatting(results),
+    latency: summarizeLatency(results),
     timestamp: new Date().toISOString(),
     model: MODEL_NAME,
     system_prompt: { file: options.systemPromptFile, chars: systemPromptText.length, sha256_12: crypto.createHash("sha256").update(systemPromptText).digest("hex").slice(0, 12) },
@@ -1319,6 +1840,45 @@ function buildSummary({ options, results, notesProtocol, client, systemPromptTex
     scenarios_errored: erroredCount,
     failures,
   };
+}
+
+// Round 6: how often a reply on the four weighted dimensions carried DRAW, CARD or ROW tags. An "ordinary"
+// scenario is one where nothing visual was asked for (see visualReplyAllowance); the count there should be 0.
+// Scenario ids only, never scenario text or replies.
+function summarizeDrawTagUsage(results) {
+  const scored = results.filter((result) => !result.errored && result.draw && DIMENSION_ORDER.includes(result.dimension));
+  if (scored.length === 0) return null;
+  const withTags = scored.filter((result) => result.draw.raw_tag_count > 0);
+  const unrequested = scored.filter((result) => result.detail?.unrequested_drawing);
+  return {
+    scenarios_counted: scored.length,
+    ordinary_scenarios_with_any_draw_card_or_row_tag: unrequested.length,
+    ordinary_scenario_ids_with_tags: unrequested.map((result) => result.id),
+    elaboration_scenarios_answered_with_a_card: withTags.filter((result) => !result.detail?.unrequested_drawing && result.draw.card_opened).map((result) => result.id),
+    replies_with_tags_dropped_by_the_app_parser: scored.filter((result) => (result.draw.ignored_tag_count ?? 0) > 0).map((result) => result.id),
+    penalty: "an unrequested draw, card or row tag halves the scenario score",
+  };
+}
+
+// Round 6: markdown or code formatting (backticks, bold, list markers, headings) in the text the app would
+// speak, across every scenario of the run. Needs --assembler (spoken text comes from the app's parser).
+function summarizeSpokenFormatting(results) {
+  const spoken = results.filter((result) => !result.errored && typeof result.spoken_text === "string");
+  if (spoken.length === 0) return null;
+  const withBackticks = spoken.filter((result) => result.spoken_text.includes("`"));
+  const withMarkdown = spoken.filter((result) => MARKDOWN_PATTERN.test(result.spoken_text));
+  return {
+    scenarios_counted: spoken.length,
+    spoken_text_with_markdown_or_code_formatting: withMarkdown.length,
+    spoken_text_with_backticks: withBackticks.length,
+    scenario_ids: withMarkdown.map((result) => result.id),
+  };
+}
+
+function summarizeLatency(results) {
+  const latencies = results.filter((result) => !result.errored && typeof result.latency_ms === "number").map((result) => result.latency_ms);
+  if (latencies.length === 0) return null;
+  return { scenario_calls_counted: latencies.length, median_ms: Math.round(median(latencies)), p90_ms: Math.round(percentile(latencies, 0.9)) };
 }
 
 // Scenario-call token usage (judge calls are not included: they are not app traffic). Numbers only, safe to share.
@@ -1470,12 +2030,100 @@ function runSelfTest() {
   const sizeAssembled = { includedProfileFactTexts: Array.from({ length: 20 }, (_, index) => `fact ${index + 6}`), profileFactTextsInFile: Array.from({ length: 25 }, (_, index) => `fact ${index + 1}`) };
   check("personalization: size caps hold", scorePersonalization({ kind: "size", expect: { answerKeywordGroups: [["fact 25"]], forbiddenSpokenPatterns: ["fact 1 "], expectedFactCountAfter: 25 } }, { ...finishedDropped, modelProfileTexts: [], profileFactTextsAfter: sizeAssembled.profileFactTextsInFile, spokenText: "hi there, fact 25." }, sizeAssembled).score === 100);
 
+  // Round 6: draw, card and row tags on the existing dimensions, and the visual rubric, on canned driver records.
+  const drawReplyText = "the search field is up here. [DRAW:circle:640,52:38] [POINT:none]";
+  check("draw tags: stripped before the trailing POINT tag is read (no assembler)", parsePointTag(drawReplyText).isNone === true && parsePointTag(drawReplyText).spokenText === "the search field is up here.");
+  check("draw tags: a tag after POINT does not hide the POINT tag", parsePointTag("up here. [POINT:640,52:search] [DRAW:circle:640,52:38]").x === 640);
+  check("draw tags: a reply without them is left byte-identical", stripDrawFamilyTags("line one.\n  two  spaces. [POINT:none]") === "line one.\n  two  spaces. [POINT:none]");
+  const circleCommand = (x, y, radius, screenNumber = null) => ({ commandKind: "addMark", spokenFractionBeforeTag: 1, screenNumber, shape: { shapeKind: "circle", center: { x, y }, radius } });
+  const finishedWith = (spokenText, drawCommands, extras = {}) => ({ spokenText, pointTarget: null, drawCommands, ignoredDrawTagCount: 0, drawingMarksBeforeReply: [], drawingMarksAfterReply: [], ...extras });
+  const finishedCircle = finishedWith("the search field is up here.", [circleCommand(640, 52, 38)]);
+  const ordinaryScenario = { dimension: "brevity", expect: { maxSentences: 2, maxWords: 45, pointExpectation: "none" } };
+  const drawUseOnOrdinary = summarizeDrawUse(drawReplyText, finishedCircle);
+  check("draw tags: counted from the app's parse", drawUseOnOrdinary.raw_tag_count === 1 && drawUseOnOrdinary.accepted_command_count === 1 && drawUseOnOrdinary.shape_kinds[0] === "circle");
+  check("draw tags: unrequested on an ordinary scenario", unrequestedDrawing(ordinaryScenario, drawUseOnOrdinary) === true);
+  const penalisedRecord = applyUnrequestedDrawingPenalty(ordinaryScenario, { score: 90, outcome: "clean", detail: {} }, drawUseOnOrdinary);
+  check("draw tags: an unrequested drawing halves the score and is flagged", penalisedRecord.score === 45 && penalisedRecord.outcome === "clean+unrequested_drawing" && penalisedRecord.detail.unrequested_drawing === true);
+  check("draw tags: no tags, no penalty", applyUnrequestedDrawingPenalty(ordinaryScenario, { score: 90, outcome: "clean", detail: {} }, summarizeDrawUse("sure. [POINT:none]", finishedWith("sure.", []))).score === 90);
+  const cardCommands = [
+    { commandKind: "addMark", spokenFractionBeforeTag: 0.2, screenNumber: null, shape: { shapeKind: "card", title: "dependency injection", rows: [] } },
+    { commandKind: "addCardRow", spokenFractionBeforeTag: 0.6, row: { rowKind: "flow", partTexts: ["make it outside", "pass it in", "use it"], canonicalTagBody: "flow:make it outside > pass it in > use it" } },
+    { commandKind: "addCardRow", spokenFractionBeforeTag: 1, row: { rowKind: "boxes", partTexts: ["view", "service", "testable"], canonicalTagBody: "boxes:view|service -> testable" } },
+  ];
+  const cardRawReply = "here's the idea. [CARD:dependency injection] an object gets what it needs from outside. [ROW:flow:make it outside > pass it in > use it] that makes it easy to test. [ROW:boxes:view|service -> testable] [POINT:none]";
+  const finishedCard = finishedWith("here's the idea. an object gets what it needs from outside. that makes it easy to test.", cardCommands);
+  const elaborationScenario = { dimension: "brevity", expect: { allowLong: true, minSentences: 4, minWords: 20, pointExpectation: "none" } };
+  check("draw tags: a card on an explicit elaboration request is allowed", unrequestedDrawing(elaborationScenario, summarizeDrawUse(cardRawReply, finishedCard)) === false);
+  check("draw tags: a circle on an elaboration request is still unrequested", unrequestedDrawing(elaborationScenario, summarizeDrawUse(drawReplyText, finishedCircle)) === true);
+  const cardElaborationAnalysis = analyzeSpokenReply(replyViewFromFinishedTurn(cardRawReply, finishedCard), elaborationScenario.expect);
+  check("draw tags: an accepted card relaxes the elaboration length checks", !cardElaborationAnalysis.failedChecks.includes("sentences") && !cardElaborationAnalysis.failedChecks.includes("words") && !cardElaborationAnalysis.failedChecks.includes("point_tag"));
+  check("draw tags: without a card the elaboration checks are unchanged", analyzeSpokenReply(replyViewFromFinishedTurn("short. [POINT:none]", finishedWith("short.", [])), elaborationScenario.expect).failedChecks.includes("sentences"));
+
+  const runButtonRectangle = manifest["xcode_main.jpg"].elements.xcode_run_button; // 136,33 28x26
+  check("visual geometry: circle centre inside the element", markGeometryQuality({ shapeKind: "circle", center: { x: 150, y: 46 }, radius: 22 }, runButtonRectangle).quality === 1);
+  check("visual geometry: circle centre outside the element", markGeometryQuality({ shapeKind: "circle", center: { x: 184, y: 46 }, radius: 22 }, runButtonRectangle).quality === 0);
+  check("visual geometry: huge circle is only partial", markGeometryQuality({ shapeKind: "circle", center: { x: 150, y: 46 }, radius: 300 }, runButtonRectangle).quality === 0.6);
+  check("visual geometry: box around the element", markGeometryQuality({ shapeKind: "box", topLeftCorner: { x: 130, y: 28 }, width: 40, height: 36 }, runButtonRectangle).quality === 1);
+  check("visual geometry: box next to the element", markGeometryQuality({ shapeKind: "box", topLeftCorner: { x: 170, y: 28 }, width: 40, height: 36 }, runButtonRectangle).quality === 0);
+  const errorLineRectangle = manifest["terminal_main.jpg"].elements.terminal_error_line; // 124,378 697x18
+  check("visual geometry: highlight over part of a text line", markGeometryQuality({ shapeKind: "highlight", topLeftCorner: { x: 124, y: 378 }, width: 300, height: 18 }, errorLineRectangle).quality === 1);
+  check("visual geometry: underline just below the line", markGeometryQuality({ shapeKind: "underline", start: { x: 124, y: 398 }, end: { x: 820, y: 398 } }, errorLineRectangle).quality === 1);
+  check("visual geometry: underline one line too low", markGeometryQuality({ shapeKind: "underline", start: { x: 124, y: 440 }, end: { x: 820, y: 440 } }, errorLineRectangle).quality === 0);
+  check("visual geometry: underline through the text is partial", markGeometryQuality({ shapeKind: "underline", start: { x: 124, y: 381 }, end: { x: 820, y: 381 } }, errorLineRectangle).quality === 0.6);
+  check("visual geometry: arrow head on the element", markGeometryQuality({ shapeKind: "arrow", tail: { x: 260, y: 120 }, head: { x: 160, y: 56 } }, runButtonRectangle).quality === 1);
+  check("visual geometry: arrow drawn backwards", markGeometryQuality({ shapeKind: "arrow", tail: { x: 150, y: 46 }, head: { x: 400, y: 300 } }, runButtonRectangle).quality === 0);
+
+  const markScenario = { kind: "mark", screens: ["xcode_main.jpg"], expect: { shape: "circle", targets: [{ screen: 1, element: "xcode_run_button" }] } };
+  const goodMarkReply = "that's the run button. [DRAW:circle:150,46:22] [POINT:none]";
+  check("visual mark: circle on the element = 100", scoreVisual(markScenario, finishedWith("that's the run button.", [circleCommand(150, 46, 22)]), goodMarkReply, manifest).score === 100);
+  const offTargetMark = scoreVisual(markScenario, finishedWith("that's the run button.", [circleCommand(600, 400, 22)]), goodMarkReply, manifest);
+  check("visual mark: circle somewhere else loses the geometry points", offTargetMark.score <= 45 && offTargetMark.outcome === "mark_off_target");
+  const droppedMark = scoreVisual(markScenario, finishedWith("that's the run button.", [], { ignoredDrawTagCount: 1 }), "that's the run button. [DRAW:circle:150] [POINT:none]", manifest);
+  check("visual mark: a tag the app's parser dropped draws nothing", droppedMark.outcome === "tags_all_dropped" && droppedMark.score <= 15);
+  const wrongShapeMark = scoreVisual(markScenario, finishedWith("that's the run button.", [{ commandKind: "addMark", spokenFractionBeforeTag: 1, screenNumber: null, shape: { shapeKind: "box", topLeftCorner: { x: 130, y: 28 }, width: 40, height: 36 } }]), "x [DRAW:box:130,28:40,36] [POINT:none]", manifest);
+  check("visual mark: right place, wrong shape loses only the shape points", wrongShapeMark.score === 85 && wrongShapeMark.outcome === "wrong_shape_on_target");
+  const secondScreenScenario = { kind: "second_screen", screens: ["vscode_main.jpg", "browser_main.jpg"], expect: { shape: "circle", targets: [{ screen: 2, element: "browser_reload_button" }] } };
+  check("visual second screen: mark without :screen2 is on the wrong screen", scoreVisual(secondScreenScenario, finishedWith("there.", [circleCommand(104, 82, 22)]), "there. [DRAW:circle:104,82:22] [POINT:none]", manifest).score <= 40);
+  check("visual second screen: mark on screen 2 = 100", scoreVisual(secondScreenScenario, finishedWith("there.", [circleCommand(104, 82, 22, 2)]), "there. [DRAW:circle:104,82:22:screen2] [POINT:none]", manifest).score === 100);
+  const calloutCommand = (x, y, text, calloutNumber) => ({ commandKind: "addMark", spokenFractionBeforeTag: 1, screenNumber: null, shape: { shapeKind: "callout", target: { x, y }, text, calloutNumber } });
+  const calloutScenario = { kind: "callouts", screens: ["xcode_main.jpg"], expect: { minimumCorrect: 2, parts: [{ screen: 1, elements: ["xcode_run_button"], textAnyOf: ["run"] }, { screen: 1, elements: ["xcode_stop_button"], textAnyOf: ["stop"] }] } };
+  check("visual callouts: two parts on target and named = 100", scoreVisual(calloutScenario, finishedWith("here they are.", [calloutCommand(150, 46, "run", 1), calloutCommand(184, 46, "stop", 2)]), "here they are. [DRAW:callout:150,46:run] [DRAW:callout:184,46:stop] [POINT:none]", manifest).score === 100);
+  const labelCommand = (x, y, text) => ({ commandKind: "addMark", spokenFractionBeforeTag: 1, screenNumber: null, shape: { shapeKind: "label", topLeftCorner: { x, y }, text } });
+  check("visual callouts: labels under neighbouring buttons go to the nearest one", scoreVisual(calloutScenario, finishedWith("here they are.", [labelCommand(150, 68, "run"), labelCommand(184, 68, "stop")]), "x [DRAW:label:150,68:run] [DRAW:label:184,68:stop] [POINT:none]", manifest).score === 100);
+  check("visual callouts: two callouts on the same part count once", scoreVisual(calloutScenario, finishedWith("here they are.", [calloutCommand(150, 46, "run", 1), calloutCommand(152, 44, "stop", 2)]), "x [DRAW:callout:150,46:run] [DRAW:callout:152,44:stop] [POINT:none]", manifest).outcome === "too_few_parts_on_target");
+  const cardScenario = { kind: "card", screens: ["xcode_main.jpg"], expect: { rowKindAnyOf: ["flow"], cardKeywordGroups: [["test"]] } };
+  check("visual card: one card, two rows, short speech = 100", scoreVisual(cardScenario, finishedCard, cardRawReply, manifest).score === 100);
+  check("visual card: no card at all", scoreVisual(cardScenario, finishedWith("it passes things in. that helps tests.", []), "it passes things in. that helps tests. [POINT:none]", manifest).outcome === "no_card");
+  const absentScenario = { kind: "absent", screens: ["settings_main.jpg"], expect: {} };
+  check("visual absent: nothing drawn and honest = 100", scoreVisual(absentScenario, finishedWith("i don't see a run button on screen right now.", []), "i don't see a run button on screen right now. [POINT:none]", manifest).score === 100);
+  check("visual absent: drawing anyway loses the 50", scoreVisual(absentScenario, finishedCircle, drawReplyText, manifest).outcome === "drew_on_an_absent_element");
+  const seededMark = (markIdentifier) => ({ markIdentifier, screenNumber: null, shape: { shapeKind: "circle", center: { x: 150, y: 46 }, radius: 22 } });
+  const eraseScenario = { kind: "edit", screens: ["xcode_main.jpg"], expect: { editKind: "erase", expectedRemovedMarkIdentifiers: ["m2"], expectedKeptMarkIdentifiers: ["m1", "m3"] } };
+  const erasedRight = finishedWith("done.", [{ commandKind: "eraseMark", markIdentifier: "m2", spokenFractionBeforeTag: 1 }], { drawingMarksBeforeReply: [seededMark("m1"), seededMark("m2"), seededMark("m3")], drawingMarksAfterReply: [seededMark("m1"), seededMark("m3")] });
+  check("visual edit: the right mark erased = 100", scoreVisual(eraseScenario, erasedRight, "done. [DRAW:erase:m2] [POINT:none]", manifest).score === 100);
+  const erasedAll = { ...erasedRight, drawingMarksAfterReply: [] };
+  check("visual edit: clearing everything to remove one mark is penalised", scoreVisual(eraseScenario, erasedAll, "done. [DRAW:clear] [POINT:none]", manifest).outcome === "removed_too_much");
+  const cardMark = (rows) => ({ markIdentifier: "m1", screenNumber: null, shape: { shapeKind: "card", title: "t", rows } });
+  const flowRow = { rowKind: "flow", partTexts: ["a", "b"], canonicalTagBody: "flow:a > b" };
+  const reviewRow = { rowKind: "text", partTexts: ["a teammate reviews it"], canonicalTagBody: "text:a teammate reviews it" };
+  const addRowScenario = { kind: "edit", screens: ["xcode_main.jpg"], expect: { editKind: "add_row", rowKeywordGroups: [["review"]] } };
+  check("visual edit: a row added to the card on screen = 100", scoreVisual(addRowScenario, finishedWith("added.", [{ commandKind: "addCardRow", row: reviewRow, spokenFractionBeforeTag: 1 }], { drawingMarksBeforeReply: [cardMark([flowRow])], drawingMarksAfterReply: [cardMark([flowRow, reviewRow])] }), "added. [ROW:text:a teammate reviews it] [POINT:none]", manifest).score === 100);
+  check("visual edit: replacing the card instead is caught", scoreVisual(addRowScenario, finishedWith("added.", [], { drawingMarksBeforeReply: [cardMark([flowRow])], drawingMarksAfterReply: [{ ...cardMark([reviewRow]), markIdentifier: "m2" }] }), "added. [CARD:t] [ROW:text:a teammate reviews it] [POINT:none]", manifest).outcome === "card_replaced_instead_of_row_added");
+  const controlScenario = { kind: "control", screens: ["xcode_main.jpg"], expect: { targets: [{ screen: 1, element: "xcode_stop_button" }] } };
+  check("visual control: pointing as usual = 100", scoreVisual(controlScenario, { ...finishedWith("it's the square next to run.", []), pointTarget: { x: 184, y: 46, label: "stop", screenNumber: null } }, "it's the square next to run. [POINT:184,46:stop]", manifest).score === 100);
+  check("visual control: drawing for an ordinary question loses the 70", scoreVisual(controlScenario, finishedCircle, drawReplyText, manifest).outcome === "drew_for_an_ordinary_question");
+
   // Every fixture and element referenced by a scenario must exist in the manifest.
   let referencesValid = true;
   for (const scenario of loadScenarios({ split: "all", dimensions: ALL_DIMENSIONS, only: null })) {
     for (const fixture of scenario.screens) if (!manifest[fixture]) referencesValid = false;
     for (const target of scenario.expect?.targets ?? []) {
       if (!manifest[scenario.screens[target.screen - 1]]?.elements?.[target.element]) referencesValid = false;
+    }
+    for (const part of scenario.expect?.parts ?? []) {
+      for (const elementName of part.elements) {
+        if (!manifest[scenario.screens[part.screen - 1]]?.elements?.[elementName]) referencesValid = false;
+      }
     }
   }
   check("all scenario fixtures and elements exist", referencesValid);
@@ -1509,6 +2157,38 @@ async function main() {
     } else {
       logLine(JSON.stringify(resummarized, null, 2));
     }
+    return;
+  }
+
+  if (options.rescoreVisual) {
+    // Stored replies of a visual run go through the driver and the rubric again (for a scorer fix).
+    // No Worker call is made; latencies, tokens and replies are kept as stored.
+    if (!options.assembler) throw new Error("--rescore-visual needs --assembler (the driver re-parses the stored replies)");
+    const stored = JSON.parse(fs.readFileSync(options.rescoreVisual, "utf8"));
+    const manifest = loadManifest();
+    const scenariosById = new Map(loadScenarios({ split: "all", dimensions: ["visual"], only: null }).map((scenario) => [scenario.id, scenario]));
+    const assembler = new PromptAssembler({ driverBinaryPath: options.assembler, promptsDirectory: options.promptsDirectory });
+    const rescoredResults = stored.scenario_results.map((storedResult) => {
+      const scenario = scenariosById.get(storedResult.id);
+      if (!scenario || storedResult.errored) return storedResult;
+      const finishedTurn = assembler.finishReply(scenario, storedResult.reply);
+      const result = scoreVisual(scenario, finishedTurn, storedResult.reply, manifest);
+      if (round1(result.score) !== round1(storedResult.score)) logLine(`rescored ${storedResult.id}: ${round1(storedResult.score)} -> ${round1(result.score)} (${result.outcome})`);
+      return { ...storedResult, score: result.score, outcome: result.outcome, detail: result.detail };
+    });
+    assembler.cleanUp();
+    const storedCalls = stored.summary.calls_used;
+    const storedClient = { callsUsed: storedCalls.total, workerCalls: storedCalls.scenario_calls, judgeCalls: storedCalls.judge_calls, maxCalls: storedCalls.budget };
+    const rescoreOptions = { ...options, dimensions: ["visual"], round: options.round ?? stored.summary.round, label: options.label !== "run" ? options.label : stored.summary.label, systemPromptFile: stored.summary.system_prompt.file, systemBlocks: stored.summary.request_shape?.system_sent_as?.startsWith("blocks") ?? false };
+    const rescoredSummary = buildSummary({ options: rescoreOptions, results: rescoredResults, notesProtocol: loadNotesProtocol(options.notesProtocolFile), client: storedClient, systemPromptText: "", status: stored.summary.status });
+    rescoredSummary.system_prompt = stored.summary.system_prompt;
+    rescoredSummary.rescored_offline = "scores recomputed from the stored replies after a scorer fix; no API calls, replies and timings unchanged";
+    fs.writeFileSync(options.rescoreVisual, JSON.stringify({ summary: rescoredSummary, scenario_results: rescoredResults }, null, 2));
+    if (options.summaryOut) {
+      fs.writeFileSync(options.summaryOut, JSON.stringify(rescoredSummary, null, 2));
+      writeLeaderboard(path.dirname(options.summaryOut));
+    }
+    logLine(`re-scored ${rescoredResults.length} stored visual replies (no API calls): visual ${rescoredSummary.visual.score}, visible ${rescoredSummary.visual.split_scores.visible}, holdout ${rescoredSummary.visual.split_scores.holdout}`);
     return;
   }
 
@@ -1611,6 +2291,7 @@ async function main() {
 
   logLine(`\nstatus ${status}; calls used ${client.callsUsed}/${client.maxCalls} (scenario ${client.workerCalls}, judge ${client.judgeCalls}); scenarios errored ${summary.scenarios_errored}`);
   for (const dimension of DIMENSION_ORDER) logLine(`  ${dimension.padEnd(9)} ${summary.dimensions[dimension].score}`);
+  if (summary.visual) logLine(`  visual ${summary.visual.score} (tracked separately, excluded from the weighted total; visible ${summary.visual.split_scores.visible}, holdout ${summary.visual.split_scores.holdout})`);
   if (summary.personalization) logLine(`  personalization ${summary.personalization.score} (tracked separately, excluded from the weighted total; visible ${summary.personalization.split_scores.visible}, holdout ${summary.personalization.split_scores.holdout})`);
   logLine(`  weighted total ${summary.total}   (equal-weight average ${summary.total_equal_weight})`);
   logLine(`  visible total ${summary.split_scores.visible.total}   holdout total ${summary.split_scores.holdout.total}`);

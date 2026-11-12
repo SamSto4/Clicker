@@ -115,6 +115,10 @@ final class CompanionManager: ObservableObject {
 
     private var shortcutTransitionCancellable: AnyCancellable?
     private var escapeKeyCancellable: AnyCancellable?
+    private var scrollWheelCancellable: AnyCancellable?
+    private var dictationChordActionCancellable: AnyCancellable?
+    private var dictationPhaseCancellable: AnyCancellable?
+    private var dictationOverlayStateCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
@@ -132,6 +136,199 @@ final class CompanionManager: ObservableObject {
     /// Whether the blue cursor overlay is currently visible on screen.
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
+
+    // MARK: - Dictation (hold fn + option, speak, release: the words are pasted where the user was typing)
+
+    /// What the cursor overlay shows for dictation (the listening label, hands-free label, a short
+    /// notice). Mirrors `dictationController.overlayState` so the overlay views, which watch this
+    /// object, redraw when it changes.
+    @Published private(set) var dictationOverlayState: ClickyDictationOverlayState = .hidden
+
+    /// The "dictation" switch in the panel. On by default. Persisted to UserDefaults.
+    @Published var isDictationEnabled: Bool = UserDefaults.standard.object(forKey: "isDictationEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isDictationEnabled")
+
+    func setDictationEnabled(_ enabled: Bool) {
+        isDictationEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isDictationEnabled")
+        dictationController.isDictationEnabled = enabled
+        // Switching it off in the middle of a dictation ends that dictation too.
+        if !enabled {
+            dictationController.cancelEverythingWithoutMetrics()
+        }
+    }
+
+    // MARK: - Status pill (the small state pill at the top of the screen)
+
+    /// Shows "listening", "thinking", "speaking" or "dictating" at the top centre of the screen
+    /// (hanging from the notch where there is one). It has its own small panel that never takes
+    /// focus; see `ClickyStatusPillController`.
+    let statusPillController = ClickyStatusPillController()
+
+    /// The "Status pill" switch in the panel. On by default. Persisted to UserDefaults.
+    @Published var isStatusPillEnabled: Bool = UserDefaults.standard.object(forKey: "isStatusPillEnabled") == nil
+        ? true
+        : UserDefaults.standard.bool(forKey: "isStatusPillEnabled")
+
+    func setStatusPillEnabled(_ enabled: Bool) {
+        isStatusPillEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isStatusPillEnabled")
+        // Switching it off hides a pill that is showing; switching it on shows one at once if
+        // Clicky is busy right now.
+        refreshStatusPill()
+    }
+
+    private var statusPillStateCancellable: AnyCancellable?
+    private var statusPillAudioPowerCancellable: AnyCancellable?
+    /// Waits for the spoken answer to end so the pill can stop saying "speaking". The audio
+    /// player publishes nothing when it finishes, so this asks it now and then, the same way
+    /// the response turn and the transient cursor already wait for speech to end.
+    private var statusPillSpeechEndWatchTask: Task<Void, Never>?
+
+    /// The pill has no state of its own. It is worked out again, from what the app already
+    /// tracks, every time one of those things changes.
+    private func bindStatusPill() {
+        statusPillStateCancellable = $voiceState
+            .combineLatest($dictationOverlayState, buddyDictationManager.$isPreparingToRecord)
+            // After the hop the properties themselves hold the new values, so
+            // `refreshStatusPill` can simply read them.
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _, _, _ in
+                self?.refreshStatusPill()
+            }
+
+        statusPillAudioPowerCancellable = buddyDictationManager.$currentAudioPowerLevel
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] audioPowerLevel in
+                self?.statusPillController.updateListeningAudioPowerLevel(audioPowerLevel)
+            }
+    }
+
+    private func refreshStatusPill() {
+        guard isStatusPillEnabled else {
+            statusPillController.hide()
+            return
+        }
+
+        let isSpeechAudioPlaying = elevenLabsTTSClient.isPlaying
+        let statusPillContent = ClickyStatusPillContent.content(
+            voiceActivity: statusPillVoiceActivity,
+            dictationActivity: statusPillDictationActivity,
+            isMicrophoneStartingUp: buddyDictationManager.isPreparingToRecord,
+            isSpeechAudioPlaying: isSpeechAudioPlaying,
+            turnFailureNoticeText: turnFailureNoticeText
+        )
+
+        if let statusPillContent, let screenUnderCursor = Self.screenUnderCursor() {
+            statusPillController.show(statusPillContent, onScreen: screenUnderCursor)
+        } else {
+            statusPillController.hide()
+        }
+
+        if isSpeechAudioPlaying {
+            refreshStatusPillWhenSpeechEnds()
+        }
+    }
+
+    /// The notice of an ask turn that failed, shown in the status pill for a few seconds: the
+    /// spoken error sentence, or the unspoken reply after "voice unavailable". nil otherwise.
+    private var turnFailureNoticeText: String?
+    private var turnFailureNoticeHideTask: Task<Void, Never>?
+
+    /// Shows a failure notice in the status pill and takes it away again after the time it takes
+    /// to read. A newer notice replaces an older one.
+    private func showTurnFailureNoticeInStatusPill(_ noticeText: String) {
+        turnFailureNoticeHideTask?.cancel()
+        turnFailureNoticeText = noticeText
+        refreshStatusPill()
+
+        let noticeDisplaySeconds = ClickyTurnFailureMessage.noticeDisplaySeconds(forNoticeText: noticeText)
+        turnFailureNoticeHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(noticeDisplaySeconds * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.turnFailureNoticeText = nil
+            self.refreshStatusPill()
+        }
+    }
+
+    /// Stops a spoken error sentence and removes its notice at once. Called wherever the answer's
+    /// own audio is stopped (a new press of the ask keys, a new turn, Escape), so the last turn's
+    /// error neither talks over the user nor comes back after the new turn's "thinking".
+    private func stopTellingUserAboutTurnFailure() {
+        if spokenErrorSpeechSynthesizer.isSpeaking {
+            spokenErrorSpeechSynthesizer.stopSpeaking()
+        }
+        turnFailureNoticeHideTask?.cancel()
+        turnFailureNoticeHideTask = nil
+        guard turnFailureNoticeText != nil else { return }
+        turnFailureNoticeText = nil
+        refreshStatusPill()
+    }
+
+    private func refreshStatusPillWhenSpeechEnds() {
+        guard statusPillSpeechEndWatchTask == nil else { return }
+        statusPillSpeechEndWatchTask = Task { @MainActor [weak self] in
+            while let self, self.elevenLabsTTSClient.isPlaying, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.statusPillSpeechEndWatchTask = nil
+            self.refreshStatusPill()
+        }
+    }
+
+    private var statusPillVoiceActivity: ClickyStatusPillVoiceActivity {
+        switch voiceState {
+        case .idle: return .idle
+        case .listening: return .listening
+        case .processing: return .processing
+        case .responding: return .responding
+        }
+    }
+
+    private var statusPillDictationActivity: ClickyStatusPillDictationActivity {
+        switch dictationOverlayState {
+        case .hidden: return .hidden
+        case .listening: return .listening
+        case .listeningHandsFree: return .listeningHandsFree
+        case .working: return .working
+        case .notice(let noticeText): return .notice(noticeText)
+        }
+    }
+
+    /// The screen the mouse cursor is on, which is where the user is looking.
+    private static func screenUnderCursor() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
+    /// Runs the dictation itself. It shares the microphone with ask-Clicky through
+    /// `buddyDictationManager`, and the two never run at the same time: this controller refuses to
+    /// start while the ask shortcut has the microphone, and `handleShortcutTransition` ignores the
+    /// ask shortcut while a dictation is going on.
+    private lazy var dictationController: ClickyDictationController = {
+        ClickyDictationController(
+            dictationManager: buddyDictationManager,
+            cleanupClient: ClickyDictationCleanupClient(),
+            isAnotherFeatureUsingTheMicrophone: { [weak self] in
+                guard let self else { return false }
+                return self.globalPushToTalkShortcutMonitor.isShortcutCurrentlyPressed
+                    || (self.buddyDictationManager.isDictationInProgress && self.dictationController.phase == .idle)
+            },
+            prepareApplicationForDictationStart: { [weak self] in
+                self?.prepareApplicationForDictationStart()
+            },
+            resetShortcutRecogniserAfterAppEndedDictation: { [weak self] in
+                self?.globalPushToTalkShortcutMonitor.resetDictationChordAfterDictationEndedByTheApp()
+            }
+        )
+    }()
+
+    /// True when the ask shortcut was pressed while a dictation was active and so was ignored.
+    /// Its release must then be ignored too: handling it would reset the dictation's microphone
+    /// start (see `BuddyDictationManager.stopPushToTalk`).
+    private var askShortcutPressWasIgnoredBecauseDictationIsActive = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-5-5"
@@ -193,10 +390,17 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        bindDictation()
+        bindStatusPill()
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
+        // Keep a copy of the notes and the profile in memory, so a turn's prompt is built without
+        // waiting for ~/Documents (which sometimes took several seconds to answer).
+        ClickyMemoryFileSnapshotCache.shared.enable(forDirectory: ClickyNoteStore.defaultNotesDirectoryURL)
+        refreshNotesAndProfileCopyInBackground()
         warmUpPromptAssemblyInBackground()
+        runDrawingSelfTestIfRequested()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -304,6 +508,7 @@ final class CompanionManager: ObservableObject {
 
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
+        dictationController.cancelEverythingWithoutMetrics()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
@@ -313,6 +518,13 @@ final class CompanionManager: ObservableObject {
         currentSpeechPrefetch?.cancel()
         shortcutTransitionCancellable?.cancel()
         escapeKeyCancellable?.cancel()
+        dictationChordActionCancellable?.cancel()
+        dictationPhaseCancellable?.cancel()
+        dictationOverlayStateCancellable?.cancel()
+        statusPillStateCancellable?.cancel()
+        statusPillAudioPowerCancellable?.cancel()
+        statusPillSpeechEndWatchTask?.cancel()
+        statusPillController.hide()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
@@ -336,6 +548,110 @@ final class CompanionManager: ObservableObject {
             let exchangesToSave = self.exchangesNotYetSavedToLongTermMemory
             self.exchangesNotYetSavedToLongTermMemory.removeAll()
             await self.clickerMemoryClient.saveSessionSummary(conversationExchanges: exchangesToSave)
+        }
+    }
+
+    /// Re-reads the notes folder off the main thread. Called at launch and each time the
+    /// push-to-talk keys go down, so files edited by hand are picked up by the time the user has
+    /// finished speaking. If the disk is slow, the turn simply uses the previous copy.
+    private func refreshNotesAndProfileCopyInBackground() {
+        let notesDirectoryURL = ClickyNoteStore.defaultNotesDirectoryURL
+        Task.detached(priority: .utility) {
+            let refreshStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+            ClickyMemoryFileSnapshotCache.shared.refresh(directory: notesDirectoryURL)
+            let refreshMilliseconds = ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: refreshStartedUptimeSeconds)
+            // A number only. Printed when slow, so a stalling disk can be seen in the console.
+            if refreshMilliseconds >= 200 {
+                print("⏱ notes and profile copy refreshed in \(refreshMilliseconds)ms")
+            }
+        }
+    }
+
+    /// Debug aid: when the app is launched with CLICKY_DRAW_SELF_TEST=1 it draws a few sample
+    /// marks (pen-drawn strokes, a label, a sticky note, two numbered callouts, an explanation
+    /// card with a boxes row, a flow row and a timeline row, and a small 3D scene of six parts,
+    /// one of each shape, three of them labelled) on every screen a few seconds after
+    /// launch and shows the status pill saying "thinking", with no voice and no model call, so
+    /// the drawing surface, the handwriting text and the pill can be checked without speaking.
+    /// It does nothing in normal use.
+    private func runDrawingSelfTestIfRequested() {
+        guard ProcessInfo.processInfo.environment["CLICKY_DRAW_SELF_TEST"] == "1" else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if !isOverlayVisible {
+                overlayWindowManager.hasShownOverlayBefore = true
+                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                isOverlayVisible = true
+            }
+            // The sticky note sits left of the right third of the screen, where the card goes.
+            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [DRAW:sticky:560,120:self test: pen-drawn marks, a handwriting label and this sticky note] [CARD:how the self test works] [ROW:boxes:launch|wait -> draw] [ROW:flow:marks > card > picture] [ROW:timeline:0s=app starts|4s=marks appear|10s=picture taken] [DRAW:callout:250,180:first callout] [DRAW:callout:520,640:second callout] [SCENE:self test model] [PART:cylinder:body:0,0,0:0.8,3:blue:x] [PART:cone:nose:2.2,0,0:0.8,1.4:red:x] [PART:box::-0.4,0,0:1,0.12,3.4:gray] [PART:sphere:window:1,0.55,0:0.4:glass] [PART:tube::-1.9,0,0:0.7,0.6:orange:x] [PART:capsule::-0.4,-0.9,0.9:0.22,1.2:yellow:x] [POINT:none]"
+            let parsedSampleReply = ClickyDrawTagParser.parse(sampleReplyText)
+            // A user who scrolls or switches apps in these few seconds must not spoil the picture.
+            let drawingOverlayController = overlayWindowManager.drawingOverlayController
+            drawingOverlayController.isIgnoringScrollAndApplicationSwitchClearing = true
+            defer { drawingOverlayController.isIgnoringScrollAndApplicationSwitchClearing = false }
+            let samplePlacements = NSScreen.screens.map { screen in
+                ClickyDrawingDisplayPlacement(
+                    displayFrame: screen.frame,
+                    screenshotToDisplayMapping: ClickyScreenshotToDisplayMapping(
+                        screenshotWidthInPixels: 1280,
+                        screenshotHeightInPixels: Double(1280 * screen.frame.height / screen.frame.width),
+                        displayWidthInPoints: Double(screen.frame.width),
+                        displayHeightInPoints: Double(screen.frame.height)
+                    )
+                )
+            }
+            print("✏️ draw self test: screens=\(NSScreen.screens.count) commands=\(parsedSampleReply.commands.count) overlayVisible=\(isOverlayVisible) cursorEnabled=\(isClickyCursorEnabled) drawnTextFont=\(ClickyDrawingMarkLayerBuilder.drawnTextFontDescription)")
+
+            // The status pill in one state, on the main display (the one the proof picture is
+            // taken of), whatever the "Status pill" switch says. It is normally hidden from
+            // every capture, so for the proof picture alone it is made capturable.
+            let selfTestImagePathFromEnvironment = ProcessInfo.processInfo.environment["CLICKY_DRAW_SELF_TEST_IMAGE"]
+            if let mainDisplayScreen = NSScreen.screens.first {
+                statusPillController.setVisibleInScreenCapturesForSelfTest(selfTestImagePathFromEnvironment != nil)
+                statusPillController.show(
+                    ClickyStatusPillContent(
+                        word: ClickyStatusPillContent.thinkingWord,
+                        indicator: .thinkingDots,
+                        accent: .asking
+                    ),
+                    onScreen: mainDisplayScreen
+                )
+                print("✏️ draw self test: status pill shown saying \"\(ClickyStatusPillContent.thinkingWord)\" notch=\(mainDisplayScreen.safeAreaInsets.top > 0)")
+            }
+            overlayWindowManager.drawingOverlayController.performDrawCommands(
+                parsedSampleReply.commands,
+                displayPlacementsInScreenshotOrder: samplePlacements,
+                cursorScreenshotIndex: 0,
+                speechAudioDurationSeconds: nil
+            )
+
+            // Optional proof picture: only Clicky's own windows, saved where the launcher asked.
+            if let selfTestImagePath = selfTestImagePathFromEnvironment {
+                // Eighteen marks, rows and scene parts follow each other 0.35 seconds apart (the
+                // last starts after 5.95 seconds) and the last is then still appearing, so the
+                // picture waits until all of them are done. The 3D scene is a Metal layer in
+                // Clicky's own overlay window, which ScreenCaptureKit captures like any other
+                // layer, so no separate snapshot of it is needed.
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                do {
+                    if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
+                        try ownWindowsPNGData.write(to: URL(fileURLWithPath: selfTestImagePath))
+                        print("✏️ draw self test: saved picture of Clicky's own windows (\(ownWindowsPNGData.count) bytes)")
+                    } else {
+                        print("✏️ draw self test: no display to capture")
+                    }
+                } catch {
+                    print("✏️ draw self test: capture failed: \(error.localizedDescription)")
+                }
+            } else {
+                // No picture was asked for: leave the pill up long enough to be looked at.
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+            }
+
+            // The pill goes back to being hidden from captures and to showing Clicky's real state.
+            statusPillController.setVisibleInScreenCapturesForSelfTest(false)
+            refreshStatusPill()
         }
     }
 
@@ -476,6 +792,9 @@ final class CompanionManager: ObservableObject {
                 // Don't override .responding — the AI response pipeline
                 // manages that state directly until streaming finishes.
                 guard self.voiceState != .responding else { return }
+                // While a dictation is going on it owns the cursor's state (see
+                // `applyDictationPhaseToVoiceState`); this sink only knows about ask-Clicky.
+                guard self.dictationController.phase == .idle else { return }
 
                 if isFinalizing {
                     self.voiceState = .processing
@@ -512,6 +831,94 @@ final class CompanionManager: ObservableObject {
             .sink { [weak self] in
                 self?.handleEscapeKeyPressed()
             }
+
+        // Marks Clicky drew point at places on the page, so they fade when the page scrolls.
+        scrollWheelCancellable = globalPushToTalkShortcutMonitor
+            .scrollWheelScrolledPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.overlayWindowManager.drawingOverlayController.fadeMarksThatPointAtScreenContent()
+            }
+    }
+
+    private func bindDictation() {
+        dictationController.isDictationEnabled = isDictationEnabled
+
+        dictationChordActionCancellable = globalPushToTalkShortcutMonitor
+            .dictationChordActionPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] chordAction in
+                self?.handleDictationChordAction(chordAction)
+            }
+
+        dictationPhaseCancellable = dictationController.$phase
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] dictationPhase in
+                self?.applyDictationPhaseToVoiceState(dictationPhase)
+            }
+
+        dictationOverlayStateCancellable = dictationController.$overlayState
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] overlayState in
+                guard let self else { return }
+                self.dictationOverlayState = overlayState
+                // In transient cursor mode the overlay fades away once the dictation (and its
+                // notice, if any) is over.
+                if overlayState == .hidden && self.dictationController.phase == .idle {
+                    self.scheduleTransientHideIfNeeded()
+                }
+            }
+    }
+
+    private func handleDictationChordAction(_ chordAction: ClickyDictationChordAction) {
+        // Like push-to-talk, dictation is not registered while the onboarding video plays.
+        if case .startCapturing = chordAction, showOnboardingVideo {
+            globalPushToTalkShortcutMonitor.resetDictationChordAfterDictationEndedByTheApp()
+            return
+        }
+        dictationController.handleChordAction(chordAction)
+    }
+
+    /// While dictating, the blue cursor shows what ask-Clicky shows while listening and while
+    /// working (the waveform, then the spinner), tinted differently and with a label.
+    private func applyDictationPhaseToVoiceState(_ dictationPhase: ClickyDictationPhase) {
+        switch dictationPhase {
+        case .holding, .handsFreeLocked:
+            voiceState = .listening
+        case .finishing:
+            voiceState = .processing
+        case .idle:
+            if voiceState != .responding {
+                voiceState = .idle
+            }
+        }
+    }
+
+    /// The same first steps as pressing the ask shortcut: dismiss the panel, stop any spoken
+    /// answer, and bring the cursor back for the interaction if "Show Clicky" is off.
+    private func prepareApplicationForDictationStart() {
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        if !isClickyCursorEnabled && !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
+        clearDetectedElementLocation()
+        // The answer's speech has just been cut off, so the marks that were waiting for their
+        // moment in it are not drawn. Marks already on the screen stay.
+        overlayWindowManager.drawingOverlayController.cancelCommandsNotYetDrawn()
     }
 
     /// Escape stops Clicky while it is working out or saying an answer: it ends the audio,
@@ -519,6 +926,16 @@ final class CompanionManager: ObservableObject {
     /// when Clicky is idle or listening, so Escape keeps working normally everywhere else. The
     /// key itself is never swallowed (the event tap is listen-only).
     private func handleEscapeKeyPressed() {
+        // Escape always wipes Clicky's drawing at once, whatever else it does or does not stop.
+        overlayWindowManager.drawingOverlayController.clearAllMarks(fadeOutSeconds: 0)
+
+        // A dictation in any step (listening, hands-free, cleaning up, pasting) is cancelled first
+        // and nothing is inserted. Escape is used up by it.
+        if dictationController.cancelBecauseEscapeWasPressed() {
+            print("⎋ Clicky: Escape cancelled the dictation")
+            return
+        }
+
         // While the user is holding the keys and talking there is nothing to stop yet.
         guard !buddyDictationManager.isActivelyRecordingAudio, !buddyDictationManager.isPreparingToRecord else {
             return
@@ -542,6 +959,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         currentSpeechPrefetch?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
         clearDetectedElementLocation()
         voiceState = .idle
         scheduleTransientHideIfNeeded()
@@ -588,7 +1006,17 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            // Asking and dictating never run together: while a dictation is active the ask shortcut
+            // does nothing, and its release is skipped as well.
+            guard dictationController.phase == .idle else {
+                askShortcutPressWasIgnoredBecauseDictationIsActive = true
+                return
+            }
             guard !buddyDictationManager.isDictationInProgress else { return }
+            // A normal press: forget any ignored press whose release was never seen (for example
+            // because the event tap was restarted while the keys were held). Otherwise that stale
+            // flag would swallow the release of this press and leave the microphone open.
+            askShortcutPressWasIgnoredBecauseDictationIsActive = false
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
 
@@ -609,7 +1037,14 @@ final class CompanionManager: ObservableObject {
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
             elevenLabsTTSClient.stopPlayback()
+            stopTellingUserAboutTurnFailure()
             clearDetectedElementLocation()
+
+            // Marks already drawn stay on the screen while the user asks again, so the next
+            // reply can erase or add to them. Marks the interrupted reply had not drawn yet are
+            // dropped, because the speech they belonged to has stopped.
+            overlayWindowManager.drawingOverlayController.cancelCommandsNotYetDrawn()
+            overlayWindowManager.drawingOverlayController.beginKeepingMarks()
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -623,6 +1058,7 @@ final class CompanionManager: ObservableObject {
             }
 
             ClickyAnalytics.trackPushToTalkStarted()
+            refreshNotesAndProfileCopyInBackground()
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
@@ -643,6 +1079,10 @@ final class CompanionManager: ObservableObject {
                 )
             }
         case .released:
+            if askShortcutPressWasIgnoredBecauseDictationIsActive {
+                askShortcutPressWasIgnoredBecauseDictationIsActive = false
+                return
+            }
             // Cancel the pending start task in case the user released the shortcut
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
@@ -678,12 +1118,19 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
 
         let turnIdentifier = UUID()
         let speechPrefetch = ElevenLabsSpeechPrefetch()
         activeResponseTurnIdentifier = turnIdentifier
         currentSpeechPrefetch?.cancel()
         currentSpeechPrefetch = speechPrefetch
+
+        // Marks on the screen are kept for the whole turn (so the reply can edit them), and their
+        // countdown to fading starts again when this turn's reply has ended.
+        let drawingOverlayController = overlayWindowManager.drawingOverlayController
+        drawingOverlayController.cancelCommandsNotYetDrawn()
+        let keepMarksGeneration = drawingOverlayController.beginKeepingMarks()
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -714,6 +1161,10 @@ final class CompanionManager: ObservableObject {
                 // However the turn ends, an early speech fetch that is still running is stopped.
                 // Cancelling one that already finished or was used does nothing.
                 speechPrefetch.cancel()
+                // The reply is over (spoken to the end, failed or cancelled): from now the marks
+                // on the screen have their 12 seconds. Ignored if a newer press or turn has
+                // already asked for the marks to be kept.
+                drawingOverlayController.finishKeepingMarks(keepMarksGeneration: keepMarksGeneration)
                 if activeResponseTurnIdentifier == turnIdentifier {
                     activeResponseTurnIdentifier = nil
                 }
@@ -798,13 +1249,21 @@ final class CompanionManager: ObservableObject {
                 let promptAssemblyStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                 let noteStore = ClickyNoteStore(notesDirectoryURL: ClickyNoteStore.defaultNotesDirectoryURL)
                 let profileStore = ClickyProfileStore(profileDirectoryURL: ClickyProfileStore.defaultProfileDirectoryURL)
+                // The marks Clicky drew that are still on the screen. Clicky's windows are left
+                // out of the screenshots, so this list is the only way Claude knows about them.
+                // It is empty on an ordinary turn, which then gets no extra prompt text.
+                let storesCreatedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+                let drawingMarksOnScreen = drawingOverlayController.drawingMarksForPrompt(
+                    displayFramesInScreenshotOrder: screenCaptures.map(\.displayFrame)
+                )
                 let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
                     for: ClickyTurnContext(
                         userTranscript: transcript,
                         frontmostApplicationBundleIdentifier: frontmostApplicationAtTurnStart?.bundleIdentifier,
                         frontmostApplicationName: frontmostApplicationAtTurnStart?.localizedName,
                         screenCount: screenCaptures.count,
-                        currentDate: Date()
+                        currentDate: Date(),
+                        drawingMarksOnScreen: drawingMarksOnScreen
                     ),
                     promptsDirectoryURL: ClickyPromptAssembler.promptsDirectoryURL(in: .main),
                     noteStore: noteStore,
@@ -813,6 +1272,9 @@ final class CompanionManager: ObservableObject {
                 turnMetrics.promptAssemblyMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
                     sinceUptimeSeconds: promptAssemblyStartedUptimeSeconds
                 )
+                // Numbers only: where a slow assembly spends its time (creating the stores, or
+                // reading the prompt files, notes and profile).
+                print("⏱ assembly parts: stores \(ClickyTurnMetrics.millisecondsBetween(startUptimeSeconds: promptAssemblyStartedUptimeSeconds, endUptimeSeconds: storesCreatedUptimeSeconds))ms, marks+prepare \(ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: storesCreatedUptimeSeconds))ms")
                 turnMetrics.skillCount = preparedPrompt.selectedSkillNames.count
                 turnMetrics.noteCount = preparedPrompt.includedNotes.count
 
@@ -849,6 +1311,11 @@ final class CompanionManager: ObservableObject {
                         // the early speech fetch once the first reply tag has opened (the words
                         // before it are final). Nothing is played from here.
                         replyTextArrivalClock.markReplyTextArrived()
+                        // A draw, card or 3D scene reply has tags between its sentences ([DRAW,
+                        // [CARD, [ROW, [SCENE, [PART), so the words before its closing tag are not the whole spoken
+                        // answer and audio fetched for them would always be thrown away. The
+                        // early fetch is skipped for such a reply.
+                        guard !ClickySpeechPrefetch.replyHoldsTagsBetweenItsSentences(accumulatedReplyText) else { return }
                         speechPrefetch.startIfFirstReplyTagHasOpened(
                             accumulatedReplyText: accumulatedReplyText,
                             userTranscript: transcript,
@@ -880,6 +1347,44 @@ final class CompanionManager: ObservableObject {
                 )
                 let spokenText = finishedTurn.spokenText
                 turnMetrics.spokenReplyCharacterCount = spokenText.count
+
+                // The [DRAW:...], [CARD:...], [ROW:...], [SCENE:...] and [PART:...] tags of the reply, each with how far
+                // into the spoken text it sits. An ordinary reply has none, and nothing below
+                // changes for it. A row needs a card to go on: the one this reply opens, or the
+                // one the model was told is on the screen (nil when there is none).
+                let rowCountOfCardAlreadyOnScreen: Int? = drawingMarksOnScreen
+                    .compactMap { drawingMarkOnScreen -> Int? in
+                        if case .explanationCard(let cardOnScreen) = drawingMarkOnScreen.shape {
+                            return cardOnScreen.rows.count
+                        }
+                        return nil
+                    }
+                    .last
+                // The same for a [PART:...] tag and the 3D scene it goes in.
+                let partCountOfSceneAlreadyOnScreen: Int? = drawingMarksOnScreen
+                    .compactMap { drawingMarkOnScreen -> Int? in
+                        if case .scene(let sceneOnScreen) = drawingMarkOnScreen.shape {
+                            return sceneOnScreen.parts.count
+                        }
+                        return nil
+                    }
+                    .last
+                let parsedDrawReply = ClickyDrawTagParser.parse(
+                    fullResponseText,
+                    rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
+                    partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
+                )
+                let drawingDisplayPlacementsInScreenshotOrder = screenCaptures.map { screenCapture in
+                    ClickyDrawingDisplayPlacement(
+                        displayFrame: screenCapture.displayFrame,
+                        screenshotToDisplayMapping: screenCapture.screenshotToDisplayMapping
+                    )
+                }
+                let cursorScreenshotIndex = screenCaptures.firstIndex(where: { $0.isCursorScreen })
+                if !parsedDrawReply.commands.isEmpty || parsedDrawReply.ignoredDrawTagCount > 0 {
+                    // Counts only, never the text of a label or sticky note.
+                    print("✏️ draw: commands=\(parsedDrawReply.commands.count) ignoredTags=\(parsedDrawReply.ignoredDrawTagCount)")
+                }
                 turnMetrics.usedPointing = finishedTurn.parsedReply.pointTarget != nil
                 // Counts only, never the text of a note or profile fact.
                 print("📚 prompt: skills=\(preparedPrompt.selectedSkillNames) notes=\(preparedPrompt.includedNotes.count) saved=\(finishedTurn.savedNoteTexts.count) profileFacts=\(preparedPrompt.includedProfileFactTexts.count) profileSaved=\(finishedTurn.savedProfileFactTexts.count) profileDropped=\(finishedTurn.droppedProfileTagCount) secretRefused=\(finishedTurn.secretRefusalCount) profileFull=\(finishedTurn.profileWasFull)")
@@ -921,19 +1426,17 @@ final class CompanionManager: ObservableObject {
                     // Claude's coordinates are in the screenshot's pixel space
                     // (top-left origin, e.g. 1280x831). Scale to the display's
                     // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
                     let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
                     let displayFrame = targetScreenCapture.displayFrame
 
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+                    // Clamp to the screenshot and scale from screenshot pixels to display points.
+                    // The same mapping places Clicky's drawing, so a mark and the cursor agree on
+                    // where a coordinate is.
+                    let displayPointFromTopLeft = targetScreenCapture.screenshotToDisplayMapping.displayPointFromTopLeft(
+                        forScreenshotPixel: ClickyDrawingPoint(x: pointTarget.x, y: pointTarget.y)
+                    )
+                    let displayLocalX = CGFloat(displayPointFromTopLeft.x)
+                    let displayLocalY = CGFloat(displayPointFromTopLeft.y)
 
                     // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
                     let appKitY = displayHeight - displayLocalY
@@ -954,9 +1457,17 @@ final class CompanionManager: ObservableObject {
 
                 // Save this exchange to conversation history. The point tag is stripped, but
                 // [NOTE:...] and [PROFILE:...] tags stay so the model keeps saving in the same format.
+                // The [DRAW:...] tags of a draw reply are kept for the same reason; for a reply
+                // without them this is exactly the finisher's history text.
                 conversationHistory.append((
                     userTranscript: transcript,
-                    assistantResponse: finishedTurn.historyAssistantText
+                    assistantResponse: ClickyDrawTagParser.historyAssistantText(
+                        rawReplyText: fullResponseText,
+                        finishedSpokenText: spokenText,
+                        finishedHistoryAssistantText: finishedTurn.historyAssistantText,
+                        rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
+                        partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
+                    )
                 ))
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
@@ -998,6 +1509,14 @@ final class CompanionManager: ObservableObject {
                         try elevenLabsTTSClient.playSpeechAudio(resolvedSpeech.fetchedSpeech.audioData)
                         // playSpeechAudio returns after player.play() — audio is now playing
                         let audioStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+                        // The voice has just started: each mark is now scheduled for the moment
+                        // its sentence ends, worked out from the length of this audio.
+                        drawingOverlayController.performDrawCommands(
+                            parsedDrawReply.commands,
+                            displayPlacementsInScreenshotOrder: drawingDisplayPlacementsInScreenshotOrder,
+                            cursorScreenshotIndex: cursorScreenshotIndex,
+                            speechAudioDurationSeconds: elevenLabsTTSClient.currentSpeechAudioDurationSeconds
+                        )
                         turnMetrics.textToSpeechMilliseconds = ClickyTurnMetrics.millisecondsBetween(
                             startUptimeSeconds: textToSpeechStartedUptimeSeconds,
                             endUptimeSeconds: audioStartedUptimeSeconds
@@ -1016,10 +1535,31 @@ final class CompanionManager: ObservableObject {
                             // turnStepInProgress stays at .textToSpeech so the metrics line records the failure.
                             ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                             print("⚠️ ElevenLabs TTS error: \(error)")
-                            speakCreditsErrorFallback()
+                            // The answer is good and only the voice failed, so no error is
+                            // spoken: the answer is shown in the status pill instead.
+                            tellUserAboutTurnFailure(
+                                failingStep: .textToSpeech,
+                                error: error,
+                                spokenReplyTextThatCouldNotBeSpoken: spokenText
+                            )
+                            // The voice failed, but the drawing can still be shown: with no audio
+                            // to pace against, the marks follow each other at a steady beat.
+                            drawingOverlayController.performDrawCommands(
+                                parsedDrawReply.commands,
+                                displayPlacementsInScreenshotOrder: drawingDisplayPlacementsInScreenshotOrder,
+                                cursorScreenshotIndex: cursorScreenshotIndex,
+                                speechAudioDurationSeconds: nil
+                            )
                         }
                     }
                 } else {
+                    // A reply with marks but no words (for example only an erase) draws at once.
+                    drawingOverlayController.performDrawCommands(
+                        parsedDrawReply.commands,
+                        displayPlacementsInScreenshotOrder: drawingDisplayPlacementsInScreenshotOrder,
+                        cursorScreenshotIndex: cursorScreenshotIndex,
+                        speechAudioDurationSeconds: nil
+                    )
                     // Nothing to say, so there is no speech step left to wait for.
                     turnMetrics.speechPrefetchOutcome = speechPrefetch.outcomeWhenPrefetchedAudioIsNotUsed
                     turnStepInProgress = nil
@@ -1031,7 +1571,11 @@ final class CompanionManager: ObservableObject {
                 if !Task.isCancelled {
                     ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                     print("⚠️ Companion response error: \(error)")
-                    speakCreditsErrorFallback()
+                    tellUserAboutTurnFailure(
+                        failingStep: turnStepInProgress,
+                        error: error,
+                        spokenReplyTextThatCouldNotBeSpoken: nil
+                    )
                 }
             }
 
@@ -1079,6 +1623,20 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
             }
 
+            // Wait for a dictation (and its notice, such as "copied. press command v to paste.")
+            // to be over, so the notice is not faded away before it can be read.
+            while dictationOverlayState != .hidden {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+
+            // Marks Clicky drew live in the overlay windows, so the overlay stays until the
+            // drawing has faded (12 seconds after the reply) or was cleared.
+            while overlayWindowManager.drawingOverlayController.hasMarksOnScreen {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled else { return }
+            }
+
             // Pause 1s after everything finishes, then fade out
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard !Task.isCancelled else { return }
@@ -1087,15 +1645,43 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
+    /// Tells the user honestly what went wrong with a turn. The sentence is chosen from the step
+    /// that failed and the error (`ClickyTurnFailureMessage`), spoken with the Mac's own voice
+    /// (NSSpeechSynthesizer, so it works with no network and with ElevenLabs down) and shown in
+    /// the status pill. When only the voice failed after a good reply, nothing is spoken and the
+    /// reply itself is shown in the pill.
+    ///
+    /// The real error is printed by the caller; nothing about it is spoken or shown.
+    private func tellUserAboutTurnFailure(
+        failingStep: ClickyTurnStep?,
+        error: Error,
+        spokenReplyTextThatCouldNotBeSpoken: String?
+    ) {
+        let bridgedError = error as NSError
+        let turnFailureResponse = ClickyTurnFailureMessage.response(
+            failingStep: failingStep,
+            errorDomain: bridgedError.domain,
+            errorCode: bridgedError.code,
+            errorMessage: bridgedError.localizedDescription
+        )
+
+        switch turnFailureResponse {
+        case .speakSentence(let honestErrorSentence):
+            spokenErrorSpeechSynthesizer.startSpeaking(honestErrorSentence)
+            voiceState = .responding
+            showTurnFailureNoticeInStatusPill(honestErrorSentence)
+        case .showReplyAsNoticeWithoutSpeaking:
+            showTurnFailureNoticeInStatusPill(
+                ClickyTurnFailureMessage.voiceUnavailableNoticeText(
+                    forSpokenReplyText: spokenReplyTextThatCouldNotBeSpoken ?? ""
+                )
+            )
+        }
     }
+
+    /// Kept for the lifetime of the manager: a synthesizer that is released while it speaks stops
+    /// in the middle of the sentence.
+    private let spokenErrorSpeechSynthesizer = NSSpeechSynthesizer()
 
     // MARK: - Point Tag Parsing
 

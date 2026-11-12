@@ -99,6 +99,12 @@ final class ElevenLabsTTSClient {
         audioPlayer?.isPlaying ?? false
     }
 
+    /// How long the audio that is playing (or was last played) lasts, in seconds. nil when there
+    /// is none. The drawing schedule uses it to place each mark at its moment in the speech.
+    var currentSpeechAudioDurationSeconds: TimeInterval? {
+        audioPlayer?.duration
+    }
+
     /// Stops any in-progress playback immediately.
     func stopPlayback() {
         audioPlayer?.stop()

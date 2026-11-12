@@ -112,29 +112,34 @@ nonisolated struct ClickyNoteStore {
         let minuteText = Self.formattedDate(minuteTruncatedSavedAt, dateFormat: "HH:mm")
         let newLineText = "- \(minuteText) — \(normalizedNoteText)\n"
         try (existingFileContents + newLineText).write(to: dayFileURL, atomically: true, encoding: .utf8)
+        ClickyMemoryFileSnapshotCache.shared.refresh(directory: notesDirectoryURL)
 
         return ClickyNote(savedAt: minuteTruncatedSavedAt, text: normalizedNoteText, sourceFileName: dayFileName)
     }
 
     /// Reads every daily file in oldest-to-newest order. A missing folder or an unreadable file
     /// yields no notes instead of an error, because a notes problem must never block an answer.
-    func loadAllNotes() -> [ClickyNote] {
-        let fileURLsInNotesDirectory = (try? FileManager.default.contentsOfDirectory(
-            at: notesDirectoryURL,
-            includingPropertiesForKeys: nil
-        )) ?? []
+    /// `preferringCachedFiles` is true only for the read that builds a turn's prompt: it then uses
+    /// the in-memory copy of the folder when there is one, so the turn never waits for the disk.
+    /// Saving and removing always read from disk.
+    func loadAllNotes(preferringCachedFiles: Bool = false) -> [ClickyNote] {
+        let cachedMarkdownFileContentsByFileName = preferringCachedFiles
+            ? ClickyMemoryFileSnapshotCache.shared.cachedMarkdownFileContentsByFileName(inDirectory: notesDirectoryURL)
+            : nil
+        let markdownFileContentsByFileName = cachedMarkdownFileContentsByFileName
+            ?? ClickyMemoryFileSnapshotCache.readMarkdownFilesFromDisk(inDirectory: notesDirectoryURL)
 
         var loadedNotes: [ClickyNote] = []
         // Files are named yyyy-MM-dd.md, so sorting by file name sorts by day.
-        for fileURL in fileURLsInNotesDirectory.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where fileURL.pathExtension == "md" {
-            guard let dayStartDate = Self.dayStartDate(fromFileName: fileURL.lastPathComponent),
-                  let fileContents = try? String(contentsOf: fileURL, encoding: .utf8) else {
+        for fileName in markdownFileContentsByFileName.keys.sorted() {
+            guard let dayStartDate = Self.dayStartDate(fromFileName: fileName),
+                  let fileContents = markdownFileContentsByFileName[fileName] else {
                 continue
             }
             loadedNotes += Self.parseNotes(
                 fromFileContents: fileContents,
                 dayStartDate: dayStartDate,
-                fileName: fileURL.lastPathComponent
+                fileName: fileName
             )
         }
         return loadedNotes
@@ -147,7 +152,7 @@ nonisolated struct ClickyNoteStore {
     /// - Otherwise: notes sharing words with the transcript, best match first, plus the newest
     ///   recent notes so that a note is never lost just because the words differ.
     func notesRelevant(toTranscript userTranscript: String, wantsFullRecall: Bool, now: Date = Date()) -> [ClickyNote] {
-        let allNotes = loadAllNotes()
+        let allNotes = loadAllNotes(preferringCachedFiles: true)
         guard !allNotes.isEmpty else {
             return []
         }
@@ -293,6 +298,7 @@ nonisolated struct ClickyNoteStore {
                 }
                 // Atomic, so a failed write leaves the day's notes as they were.
                 try remainingRawLines.joined(separator: "\n").write(to: dayFileURL, atomically: true, encoding: .utf8)
+                ClickyMemoryFileSnapshotCache.shared.refresh(directory: notesDirectoryURL)
             } catch {
                 return .failed(errorDescription: error.localizedDescription)
             }

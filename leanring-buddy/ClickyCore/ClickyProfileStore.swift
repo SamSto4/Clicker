@@ -87,8 +87,8 @@ nonisolated struct ClickyProfileStore {
     // MARK: - Reading
 
     /// Every fact in the file, oldest first. A missing or unreadable file gives no facts.
-    func loadFactTexts() -> [String] {
-        switch readFileLines() {
+    func loadFactTexts(preferringCachedFile: Bool = false) -> [String] {
+        switch readFileLines(preferringCachedFile: preferringCachedFile) {
         case .readable(let fileLines, _):
             return fileLines.compactMap(\.factText)
         case .unreadable:
@@ -103,7 +103,8 @@ nonisolated struct ClickyProfileStore {
         var newestFirstSelectedFactTexts: [String] = []
         var accumulatedCharacterCount = 0
 
-        for factText in loadFactTexts().reversed() {
+        // This is the read that builds a turn's prompt, so it may use the in-memory copy.
+        for factText in loadFactTexts(preferringCachedFile: true).reversed() {
             // A hand-edited line longer than a saved fact may be is cut, so one huge line cannot
             // use the whole budget or push every other fact out.
             let injectedFactText = Self.normalizedSingleLineFactText(factText)
@@ -330,20 +331,32 @@ nonisolated struct ClickyProfileStore {
         case unreadable(errorDescription: String)
     }
 
-    private func readFileLines() -> ProfileFileReadResult {
+    /// `preferringCachedFile` is true only for the read that builds a turn's prompt (see
+    /// `ClickyMemoryFileSnapshotCache`). Saving and removing always read the file from disk.
+    private func readFileLines(preferringCachedFile: Bool = false) -> ProfileFileReadResult {
+        if preferringCachedFile,
+           let cachedMarkdownFileContentsByFileName = ClickyMemoryFileSnapshotCache.shared.cachedMarkdownFileContentsByFileName(inDirectory: profileDirectoryURL) {
+            guard let cachedFileContents = cachedMarkdownFileContentsByFileName[Self.profileFileName] else {
+                return .readable(fileLines: [], fileExisted: false)
+            }
+            return .readable(fileLines: Self.fileLines(fromFileContents: cachedFileContents), fileExisted: true)
+        }
         guard FileManager.default.fileExists(atPath: profileFileURL.path) else {
             return .readable(fileLines: [], fileExisted: false)
         }
         do {
             let fileContents = try String(contentsOf: profileFileURL, encoding: .utf8)
-            // Splitting on Character.isNewline keeps "\r\n" as one line break.
-            let rawLineTexts = fileContents.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
-            let fileLines = rawLineTexts.map { rawLineText in
-                ProfileFileLine(rawLineText: rawLineText, factText: Self.factText(fromRawLine: rawLineText))
-            }
-            return .readable(fileLines: fileLines, fileExisted: true)
+            return .readable(fileLines: Self.fileLines(fromFileContents: fileContents), fileExisted: true)
         } catch {
             return .unreadable(errorDescription: error.localizedDescription)
+        }
+    }
+
+    private static func fileLines(fromFileContents fileContents: String) -> [ProfileFileLine] {
+        // Splitting on Character.isNewline keeps "\r\n" as one line break.
+        let rawLineTexts = fileContents.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+        return rawLineTexts.map { rawLineText in
+            ProfileFileLine(rawLineText: rawLineText, factText: Self.factText(fromRawLine: rawLineText))
         }
     }
 
@@ -358,6 +371,7 @@ nonisolated struct ClickyProfileStore {
             }
             let fileContents = rawLineTexts.joined(separator: "\n") + "\n"
             try fileContents.write(to: profileFileURL, atomically: true, encoding: .utf8)
+            ClickyMemoryFileSnapshotCache.shared.refresh(directory: profileDirectoryURL)
             return nil
         } catch {
             return error.localizedDescription

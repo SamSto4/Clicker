@@ -16,7 +16,16 @@
 //            (round 4B) For each `transcript`: the intent detectors' verdicts only (lasting fact, secret,
 //            forget request, note save text, note save intent, recall). No files are touched.
 //   selftest <output.json> <promptsDirectory>
-//            Offline checks of the parser, intent detectors, note and profile stores, retrieval, skills and prompt size.
+//            Offline checks of the parser, intent detectors, note and profile stores, retrieval, skills, prompt size
+//            and (round 6) the draw, card and row tags.
+//
+// Round 6 (drawing and the explanation card): `prepare` and `finish` both accept `seedDrawTagTexts`, a list
+// of earlier reply texts whose [DRAW:...], [CARD:...] and [ROW:...] tags are parsed with ClickyDrawTagParser
+// and applied to a ClickyDrawingBoard, one reply after the other. `prepare` passes the resulting marks to the
+// assembler as `drawingMarksOnScreen` (so the prompt carries the app's own "marks on screen" text); `finish`
+// rebuilds the same board, parses the new reply with ClickyDrawTagParser (with the row count of the card on
+// screen, as the app does), applies its commands, and reports the commands, the dropped tag count and the
+// board before and after. The harness scores those records and never re-implements the grammar.
 //
 // SAFETY: every note and profile operation goes to a directory under notesRootDirectory. That directory must be
 // a folder whose name starts with "clicky-eval-notes-" and must not be the real Clicky notes folder.
@@ -117,6 +126,126 @@ func seedDate(fromDayText dayText: String) -> Date {
 
 // MARK: - prepare
 
+// MARK: - drawing (round 6)
+
+func drawingPointRecord(_ point: ClickyDrawingPoint) -> [String: Any] {
+    ["x": point.x, "y": point.y]
+}
+
+func explanationCardRowRecord(_ row: ClickyExplanationCardRow) -> [String: Any] {
+    var partTexts: [String] = []
+    switch row {
+    case .text(let text):
+        partTexts = [text]
+    case .boxes(let inputTexts, let resultText):
+        partTexts = inputTexts + (resultText.map { [$0] } ?? [])
+    case .flow(let nodeTexts):
+        partTexts = nodeTexts
+    case .timeline(let points):
+        partTexts = points.map { "\($0.whenText)=\($0.whatText)" }
+    }
+    return ["rowKind": row.tagKindName, "partTexts": partTexts, "canonicalTagBody": row.canonicalTagBody]
+}
+
+/// One shape as plain numbers and text, in screenshot pixels, exactly as the app's parser read it.
+func drawingShapeRecord(_ shape: ClickyDrawingShape) -> [String: Any] {
+    switch shape {
+    case .arrow(let tail, let head):
+        return ["shapeKind": "arrow", "tail": drawingPointRecord(tail), "head": drawingPointRecord(head)]
+    case .circle(let center, let radius):
+        return ["shapeKind": "circle", "center": drawingPointRecord(center), "radius": radius]
+    case .box(let topLeftCorner, let size):
+        return ["shapeKind": "box", "topLeftCorner": drawingPointRecord(topLeftCorner), "width": size.width, "height": size.height]
+    case .underline(let start, let end):
+        return ["shapeKind": "underline", "start": drawingPointRecord(start), "end": drawingPointRecord(end)]
+    case .highlight(let topLeftCorner, let size):
+        return ["shapeKind": "highlight", "topLeftCorner": drawingPointRecord(topLeftCorner), "width": size.width, "height": size.height]
+    case .label(let topLeftCorner, let text):
+        return ["shapeKind": "label", "topLeftCorner": drawingPointRecord(topLeftCorner), "text": text]
+    case .stickyNote(let topLeftCorner, let text):
+        return ["shapeKind": "sticky", "topLeftCorner": drawingPointRecord(topLeftCorner), "text": text]
+    case .callout(let target, let text, let calloutNumber):
+        return ["shapeKind": "callout", "target": drawingPointRecord(target), "text": text, "calloutNumber": calloutNumber]
+    case .explanationCard(let card):
+        return ["shapeKind": "card", "title": card.title, "rows": card.rows.map { explanationCardRowRecord($0) }]
+    case .scene(let scene):
+        // Round 11: a simple 3D scene. Only its size is reported; the visual rubric does not score scenes yet.
+        return ["shapeKind": "scene", "title": scene.title, "partCount": scene.parts.count]
+    }
+}
+
+func drawCommandRecord(_ parsedDrawCommand: ClickyParsedDrawCommand) -> [String: Any] {
+    var commandRecord: [String: Any] = ["spokenFractionBeforeTag": parsedDrawCommand.spokenFractionBeforeTag]
+    switch parsedDrawCommand.command {
+    case .addMark(let shape, let screenNumber):
+        commandRecord["commandKind"] = "addMark"
+        commandRecord["shape"] = drawingShapeRecord(shape)
+        commandRecord["screenNumber"] = screenNumber ?? NSNull()
+    case .eraseMark(let markIdentifier):
+        commandRecord["commandKind"] = "eraseMark"
+        commandRecord["markIdentifier"] = markIdentifier
+    case .undoNewestMark:
+        commandRecord["commandKind"] = "undoNewestMark"
+    case .clearAllMarks:
+        commandRecord["commandKind"] = "clearAllMarks"
+    case .addCardRow(let row):
+        commandRecord["commandKind"] = "addCardRow"
+        commandRecord["row"] = explanationCardRowRecord(row)
+    case .addScenePart:
+        commandRecord["commandKind"] = "addScenePart"
+    }
+    return commandRecord
+}
+
+func drawingMarkRecord(_ mark: ClickyDrawingMark) -> [String: Any] {
+    [
+        "markIdentifier": mark.markIdentifier,
+        "shape": drawingShapeRecord(mark.shape),
+        "screenNumber": mark.screenNumber ?? NSNull(),
+    ]
+}
+
+func rowCountOfExplanationCard(on drawingBoard: ClickyDrawingBoard) -> Int? {
+    guard let cardMark = drawingBoard.explanationCardMark, case .explanationCard(let card) = cardMark.shape else {
+        return nil
+    }
+    return card.rows.count
+}
+
+/// The board as it would be after the earlier replies in `seedDrawTagTexts`, each parsed and applied the way
+/// the app does it for a reply (ClickyDrawTagParser.parse with the row count of the card on the board, then
+/// ClickyDrawingBoard.apply for every accepted command).
+func drawingBoard(fromSeedDrawTagTexts seedDrawTagTexts: [String]) -> ClickyDrawingBoard {
+    var drawingBoard = ClickyDrawingBoard()
+    for seedDrawTagText in seedDrawTagTexts {
+        let parsedSeedReply = ClickyDrawTagParser.parse(
+            seedDrawTagText,
+            rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: drawingBoard)
+        )
+        if parsedSeedReply.ignoredDrawTagCount > 0 {
+            failWithMessage("a seed draw tag was rejected by the app's parser: \(seedDrawTagText)")
+        }
+        for parsedSeedCommand in parsedSeedReply.commands {
+            _ = drawingBoard.apply(parsedSeedCommand.command)
+        }
+    }
+    return drawingBoard
+}
+
+/// The marks as the app hands them to the assembler (ClickyDrawingOverlayController.drawingMarksForPrompt):
+/// with one screen the list carries no screen number; with several, every mark carries the number of the
+/// screenshot it is on, and a mark drawn without `:screenN` is on the cursor's screen, which is screen 1.
+func drawingMarksForPrompt(on drawingBoard: ClickyDrawingBoard, screenCount: Int) -> [ClickyDrawingMark] {
+    drawingBoard.marks.map { markOnBoard in
+        ClickyDrawingMark(
+            markNumber: markOnBoard.markNumber,
+            shape: markOnBoard.shape,
+            screenNumber: screenCount > 1 ? (markOnBoard.screenNumber ?? 1) : nil
+        )
+    }
+}
+
+
 func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: String, notesRootPath: String) {
     let notesRootDirectoryURL = URL(fileURLWithPath: notesRootPath, isDirectory: true)
     requireTemporaryNotesRoot(notesRootDirectoryURL)
@@ -162,13 +291,19 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             }
         }
 
+        // Round 6: the marks that are on the screen when this turn starts (empty for an ordinary scenario,
+        // which then gets exactly the prompt it got before drawing existed).
+        let seededDrawingBoard = drawingBoard(fromSeedDrawTagTexts: (scenarioInput["seedDrawTagTexts"] as? [String]) ?? [])
+        let drawingMarksOnScreen = drawingMarksForPrompt(on: seededDrawingBoard, screenCount: screenCount)
+
         let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
             for: ClickyTurnContext(
                 userTranscript: userTranscript,
                 frontmostApplicationBundleIdentifier: applicationBundleIdentifier,
                 frontmostApplicationName: applicationName,
                 screenCount: screenCount,
-                currentDate: Date()
+                currentDate: Date(),
+                drawingMarksOnScreen: drawingMarksOnScreen
             ),
             promptsDirectoryURL: promptsDirectoryURL,
             noteStore: noteStore,
@@ -190,6 +325,9 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             ),
             "selectedSkillNames": preparedPrompt.selectedSkillNames,
             "includedNoteTexts": preparedPrompt.includedNotes.map(\.text),
+            // Round 6: the seeded marks, and the lines the app's "marks on screen" section lists for them.
+            "drawingMarksOnScreen": drawingMarksOnScreen.map { drawingMarkRecord($0) },
+            "drawingMarksOnScreenLineTexts": drawingMarksOnScreen.map { ClickyDrawingMarksOnScreenText.lineText(for: $0) },
         ])
     }
     writeJSON(outputRecords, toPath: outputPath)
@@ -220,6 +358,27 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             profileStore: profileStore,
             previousAssistantHistoryText: previousAssistantHistoryText
         )
+        // Round 6: the draw, card and row tags of the reply, read the way CompanionManager reads them: with
+        // the row count of the card that is on the screen, then applied to the board in order.
+        var drawingBoardForReply = drawingBoard(fromSeedDrawTagTexts: (replyInput["seedDrawTagTexts"] as? [String]) ?? [])
+        let drawingMarksBeforeReply = drawingBoardForReply.marks
+        let parsedDrawReply = ClickyDrawTagParser.parse(
+            rawReplyText,
+            rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: drawingBoardForReply)
+        )
+        var drawCommandsThatChangedNothingCount = 0
+        for parsedDrawCommand in parsedDrawReply.commands {
+            if case .nothingChanged = drawingBoardForReply.apply(parsedDrawCommand.command) {
+                drawCommandsThatChangedNothingCount += 1
+            }
+        }
+        let drawHistoryAssistantText = ClickyDrawTagParser.historyAssistantText(
+            rawReplyText: rawReplyText,
+            finishedSpokenText: finishedTurn.spokenText,
+            finishedHistoryAssistantText: finishedTurn.historyAssistantText,
+            rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: drawingBoard(fromSeedDrawTagTexts: (replyInput["seedDrawTagTexts"] as? [String]) ?? []))
+        )
+
         var pointTargetRecord: Any = NSNull()
         if let pointTarget = finishedTurn.parsedReply.pointTarget {
             pointTargetRecord = [
@@ -255,6 +414,13 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             "profileFactTextsAfter": profileStore.loadFactTexts(),
             "profileFileContentsAfter": profileFileContents(of: profileStore) ?? NSNull(),
             "noteTextsAfter": noteStore.loadAllNotes().map(\.text),
+            // Round 6: what ClickyDrawTagParser accepted and dropped, and the board before and after.
+            "drawCommands": parsedDrawReply.commands.map { drawCommandRecord($0) },
+            "ignoredDrawTagCount": parsedDrawReply.ignoredDrawTagCount,
+            "drawCommandsThatChangedNothingCount": drawCommandsThatChangedNothingCount,
+            "drawingMarksBeforeReply": drawingMarksBeforeReply.map { drawingMarkRecord($0) },
+            "drawingMarksAfterReply": drawingBoardForReply.marks.map { drawingMarkRecord($0) },
+            "drawHistoryAssistantText": drawHistoryAssistantText,
         ])
     }
     writeJSON(outputRecords, toPath: outputPath)
@@ -496,9 +662,13 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     // seen so far (round 2), so a prompt that grows past its round 2 size fails this check and has to be
     // justified, while ordinary wording edits do not.
     let baseWordCount = ((try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("clicky_base_system_prompt.md"), encoding: .utf8)) ?? "").split(whereSeparator: \.isWhitespace).count
-    check("prompt: base at most 875 words", baseWordCount <= 875, "\(baseWordCount) words")
+    // Round 6: the base prompt grew from 849 to 1,247 words when it started teaching drawing on the screen
+    // and the explanation card (the keyword-triggered draw skill was folded into it). The guard is raised to
+    // 1,300 so it still catches further growth; the old limit was 875.
+    check("prompt: base at most 1300 words", baseWordCount <= 1300, "\(baseWordCount) words")
     let approximateTokenCount = xcodePrompt.systemPromptText.count / 4
-    check("prompt: assembled xcode prompt about 2k tokens or less (chars/4)", approximateTokenCount <= 2000, "about \(approximateTokenCount) tokens")
+    // Round 6: raised from 2,000 with the larger base prompt (about 2,530 by this estimate at the time).
+    check("prompt: assembled xcode prompt about 2.7k tokens or less (chars/4)", approximateTokenCount <= 2700, "about \(approximateTokenCount) tokens")
 
     // Round 4A: static and dynamic system prompt parts, and the two-block `system` array.
     let baseFileText = ((try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("clicky_base_system_prompt.md"), encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -579,6 +749,37 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     let budgetedFacts = budgetProfileStore.factTextsWithinInjectionBudget()
     let budgetedCharacterCount = budgetedFacts.reduce(0) { $0 + $1.count + ClickyProfileStore.injectedLineOverheadCharacterCount }
     check("profile budget: 25 facts inject at most 20 and 1000 chars, newest kept", budgetedFacts.count <= 20 && budgetedCharacterCount <= 1000 && budgetedFacts.last?.hasPrefix("fact number 25") == true && budgetProfileStore.loadFactTexts().count == 25, "count \(budgetedFacts.count), chars \(budgetedCharacterCount)")
+
+    // Round 6: draw, card and row tags through the app's parsers and board.
+    let drawSampleReplyText = "the search field is up here. [DRAW:circle:640,52:38] and this is the run button. [DRAW:callout:150,46:run button] [POINT:none]"
+    let drawSampleFinishedTurn = ClickyTurnFinisher.finishTurn(rawReplyText: drawSampleReplyText, userTranscript: "circle the search field", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("draw: tags never reach the spoken text", drawSampleFinishedTurn.spokenText == "the search field is up here. and this is the run button.", drawSampleFinishedTurn.spokenText)
+    let drawSampleParsedReply = ClickyDrawTagParser.parse(drawSampleReplyText)
+    check("draw: two commands accepted, none ignored, POINT none kept", drawSampleParsedReply.commands.count == 2 && drawSampleParsedReply.ignoredDrawTagCount == 0 && drawSampleFinishedTurn.parsedReply.pointTarget == nil, "\(drawSampleParsedReply.commands.count) / \(drawSampleParsedReply.ignoredDrawTagCount)")
+    let nineCircleReplyText = (1...9).map { "[DRAW:circle:\($0 * 10),50:20]" }.joined(separator: " ")
+    let nineCircleParsedReply = ClickyDrawTagParser.parse(nineCircleReplyText)
+    check("draw: ninth draw tag is dropped by the per-reply limit", nineCircleParsedReply.commands.count == ClickyDrawTagParser.maximumDrawTagCountPerReply && nineCircleParsedReply.ignoredDrawTagCount == 1, "\(nineCircleParsedReply.commands.count) / \(nineCircleParsedReply.ignoredDrawTagCount)")
+    let malformedDrawParsedReply = ClickyDrawTagParser.parse("here. [DRAW:circle:640] [ROW:text:no card to go on] [POINT:none]")
+    check("draw: malformed tag and a row without a card are ignored", malformedDrawParsedReply.commands.isEmpty && malformedDrawParsedReply.ignoredDrawTagCount == 2, "\(malformedDrawParsedReply.commands.count) / \(malformedDrawParsedReply.ignoredDrawTagCount)")
+    let cardSampleParsedReply = ClickyDrawTagParser.parse("here's how. [CARD:how it works] first. [ROW:flow:guess > compare > adjust] then. [ROW:boxes:a|b -> c] [POINT:none]")
+    var cardSampleBoard = ClickyDrawingBoard()
+    for cardSampleCommand in cardSampleParsedReply.commands {
+        _ = cardSampleBoard.apply(cardSampleCommand.command)
+    }
+    check("card: one card with two rows lands on the board", cardSampleParsedReply.commands.count == 3 && rowCountOfExplanationCard(on: cardSampleBoard) == 2, "\(cardSampleParsedReply.commands.count) / \(String(describing: rowCountOfExplanationCard(on: cardSampleBoard)))")
+    let seededBoard = drawingBoard(fromSeedDrawTagTexts: ["[DRAW:circle:150,46:20] [DRAW:box:10,125:210,34]", "[CARD:how it works] [ROW:flow:guess > compare]"])
+    check("draw seed: three marks m1, m2, m3 with a one-row card", seededBoard.marks.map(\.markIdentifier) == ["m1", "m2", "m3"] && rowCountOfExplanationCard(on: seededBoard) == 1, "\(seededBoard.marks.map(\.markIdentifier))")
+    let rowOnSeededCardParsedReply = ClickyDrawTagParser.parse("added. [ROW:text:one more line] [POINT:none]", rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: seededBoard))
+    check("draw seed: a lone row goes on the card that is on screen", rowOnSeededCardParsedReply.commands.count == 1 && rowOnSeededCardParsedReply.ignoredDrawTagCount == 0)
+    let marksOnScreenSectionText = ClickyDrawingMarksOnScreenText.sectionText(for: drawingMarksForPrompt(on: seededBoard, screenCount: 1)) ?? ""
+    check("draw seed: marks on screen text lists every id and no screen number with one screen", marksOnScreenSectionText.contains("m1: circle at 150,46 radius 20") && marksOnScreenSectionText.contains("m3: card titled") && !marksOnScreenSectionText.contains("(screen"), marksOnScreenSectionText)
+    let twoScreenMarksOnScreenSectionText = ClickyDrawingMarksOnScreenText.sectionText(for: drawingMarksForPrompt(on: seededBoard, screenCount: 2)) ?? ""
+    check("draw seed: with two screens every mark carries its screen", twoScreenMarksOnScreenSectionText.contains("m1: circle at 150,46 radius 20 (screen 1)"), twoScreenMarksOnScreenSectionText)
+    let ordinaryTurnPrompt = ClickyPromptAssembler.prepareSystemPrompt(
+        for: ClickyTurnContext(userTranscript: "what is a closure", frontmostApplicationBundleIdentifier: "com.apple.dt.Xcode", frontmostApplicationName: "Xcode", screenCount: 1, currentDate: Date()),
+        promptsDirectoryURL: URL(fileURLWithPath: promptsDirectoryPath, isDirectory: true), noteStore: profileGateNoteStore, profileStore: nil
+    )
+    check("draw: an ordinary turn's prompt has no marks on screen section", !ordinaryTurnPrompt.systemPromptText.contains("marks on screen ("))
 
     try? FileManager.default.removeItem(at: temporaryRootURL)
 
