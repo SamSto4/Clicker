@@ -1,6 +1,7 @@
 import Foundation
 
-/// One `[DRAW:...]`, `[CARD:...]` or `[ROW:...]` tag of a reply, with where it sits in the spoken text.
+/// One `[DRAW:...]`, `[CARD:...]`, `[ROW:...]`, `[SCENE:...]` or `[PART:...]` tag of a reply, with
+/// where it sits in the spoken text.
 nonisolated struct ClickyParsedDrawCommand: Equatable {
     let command: ClickyDrawCommand
     /// How much of the spoken text comes before this tag, from 0 (the tag opens the reply) to 1
@@ -11,10 +12,11 @@ nonisolated struct ClickyParsedDrawCommand: Equatable {
 
 nonisolated struct ClickyParsedDrawReply: Equatable {
     /// In the order they were written. At most `ClickyDrawTagParser.maximumDrawTagCountPerReply`
-    /// from `[DRAW:...]` tags, plus at most one card and the rows that fit on it.
+    /// from `[DRAW:...]` tags, plus at most one card and the rows that fit on it, plus at most one
+    /// 3D scene and the parts that fit in it.
     let commands: [ClickyParsedDrawCommand]
-    /// Draw, card and row tags that were dropped: malformed, out of range, past a limit, or a row
-    /// with no card to go on. They are still removed from the spoken text by `ClickyReplyTagParser`.
+    /// Draw, card, row, scene and part tags that were dropped: malformed, out of range, past a
+    /// limit, a row with no card to go on, or a part with no scene to go in. They are still removed from the spoken text by `ClickyReplyTagParser`.
     let ignoredDrawTagCount: Int
 }
 
@@ -37,6 +39,13 @@ nonisolated struct ClickyParsedDrawReply: Equatable {
 /// - `[ROW:text:words]`, `[ROW:boxes:a|b|c -> d]`, `[ROW:flow:a > b > c]`,
 ///   `[ROW:timeline:when=what|when=what]` add a row to the card opened in this reply, or to the
 ///   card already on screen
+///
+/// A simple 3D scene has tags of its own too, which do not count towards the draw tag limit either:
+/// - `[SCENE:title]` opens a scene (one per reply; it replaces a scene already on screen)
+/// - `[PART:shape:label:x,y,z:size:colour]` with an optional last `:axis` adds a part to the scene
+///   opened in this reply, or to the scene already on screen. shape is box, cylinder, sphere,
+///   cone, tube or capsule; the label may be empty; size is `w,h,d` for a box, `radius` for a
+///   sphere and `radius,length` for the others; axis is x, y or z (default y, up)
 ///
 /// This parser only finds and validates draw tags. Removing them from the spoken text stays the
 /// job of `ClickyReplyTagParser`, which knows the tag name so they are never read aloud.
@@ -65,7 +74,7 @@ nonisolated enum ClickyDrawTagParser {
     /// The pattern of one complete draw, card or row tag. Group 1 is the tag name and group 2 is
     /// everything after its colon. Brackets are excluded from the body so one tag can never
     /// swallow the next.
-    private static let completeDrawTagPattern = "\\[\\s*(DRAW|CARD|ROW)\\s*:([^\\[\\]]*)\\]"
+    private static let completeDrawTagPattern = "\\[\\s*(DRAW|CARD|ROW|SCENE|PART)\\s*:([^\\[\\]]*)\\]"
 
     private struct DrawTagOccurrence {
         let rangeInReplyText: Range<String.Index>
@@ -76,8 +85,19 @@ nonisolated enum ClickyDrawTagParser {
     /// `rowCountOfCardAlreadyOnScreen` is how many rows the explanation card on the screen has, or
     /// nil when no card is on the screen. A `[ROW:...]` tag needs a card to go on: the one opened
     /// earlier in the same reply, or else the one on screen.
-    static func parse(_ rawReplyText: String, rowCountOfCardAlreadyOnScreen: Int? = nil) -> ClickyParsedDrawReply {
-        let drawTagOccurrences = drawTagOccurrences(in: rawReplyText, rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen)
+    ///
+    /// `partCountOfSceneAlreadyOnScreen` is the same for a `[PART:...]` tag and the 3D scene: how
+    /// many parts the scene on the screen has, or nil when no scene is on the screen.
+    static func parse(
+        _ rawReplyText: String,
+        rowCountOfCardAlreadyOnScreen: Int? = nil,
+        partCountOfSceneAlreadyOnScreen: Int? = nil
+    ) -> ClickyParsedDrawReply {
+        let drawTagOccurrences = drawTagOccurrences(
+            in: rawReplyText,
+            rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
+            partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
+        )
         guard !drawTagOccurrences.isEmpty else {
             return ClickyParsedDrawReply(commands: [], ignoredDrawTagCount: 0)
         }
@@ -232,6 +252,11 @@ nonisolated enum ClickyDrawTagParser {
             return "[DRAW:erase:\(markIdentifier)]"
         case .addCardRow(let row):
             return "[ROW:\(row.canonicalTagBody)]"
+        case .addScenePart(let part):
+            return "[PART:\(part.canonicalTagBody)]"
+        case .addMark(.scene(let scene), _):
+            // A scene is opened by its title alone; its parts are tags of their own.
+            return "[SCENE:\(scene.title)]"
         case .addMark(.explanationCard(let card), _):
             // A card is opened by its title alone; its rows are tags of their own.
             return "[CARD:\(card.title)]"
@@ -255,6 +280,8 @@ nonisolated enum ClickyDrawTagParser {
                 tagBodyAfterKind = "\(coordinateText(target)):\(text)"
             case .explanationCard(let card):
                 tagBodyAfterKind = card.title
+            case .scene(let scene):
+                tagBodyAfterKind = scene.title
             }
             let screenSuffix = screenNumber.map { ":screen\($0)" } ?? ""
             return "[DRAW:\(shape.tagKindName):\(tagBodyAfterKind)\(screenSuffix)]"
@@ -276,9 +303,14 @@ nonisolated enum ClickyDrawTagParser {
         rawReplyText: String,
         finishedSpokenText: String,
         finishedHistoryAssistantText: String,
-        rowCountOfCardAlreadyOnScreen: Int? = nil
+        rowCountOfCardAlreadyOnScreen: Int? = nil,
+        partCountOfSceneAlreadyOnScreen: Int? = nil
     ) -> String {
-        let drawTagOccurrences = drawTagOccurrences(in: rawReplyText, rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen)
+        let drawTagOccurrences = drawTagOccurrences(
+            in: rawReplyText,
+            rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
+            partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
+        )
         let canonicalTagTexts = drawTagOccurrences.compactMap { drawTagOccurrence in
             drawTagOccurrence.command.map { canonicalTagText(for: $0) }
         }
@@ -323,9 +355,14 @@ nonisolated enum ClickyDrawTagParser {
 
     // MARK: - Finding the tags
 
-    /// Every complete draw, card and row tag of the reply, in order, each with its command or nil.
+    /// Every complete draw, card, row, scene and part tag of the reply, in order, each with its
+    /// command or nil.
     /// The limits are applied here so parsing and the history text always agree on which tags count.
-    private static func drawTagOccurrences(in rawReplyText: String, rowCountOfCardAlreadyOnScreen: Int?) -> [DrawTagOccurrence] {
+    private static func drawTagOccurrences(
+        in rawReplyText: String,
+        rowCountOfCardAlreadyOnScreen: Int?,
+        partCountOfSceneAlreadyOnScreen: Int?
+    ) -> [DrawTagOccurrence] {
         let completeDrawTagRegex = try! NSRegularExpression(pattern: completeDrawTagPattern, options: [.caseInsensitive])
         let completeDrawTagMatches = completeDrawTagRegex.matches(
             in: rawReplyText,
@@ -339,6 +376,10 @@ nonisolated enum ClickyDrawTagParser {
         // How many rows the card a `[ROW:...]` tag would go on has at this point of the reply.
         // nil while there is no card for a row to go on.
         var rowCountOfCardRowsGoOn = rowCountOfCardAlreadyOnScreen
+        var hasOpenedASceneInThisReply = false
+        // The same for a `[PART:...]` tag: how many parts the scene it would go in has at this
+        // point of the reply, nil while there is no scene.
+        var partCountOfScenePartsGoIn = partCountOfSceneAlreadyOnScreen
 
         for completeDrawTagMatch in completeDrawTagMatches {
             guard let rangeInReplyText = Range(completeDrawTagMatch.range, in: rawReplyText),
@@ -368,6 +409,23 @@ nonisolated enum ClickyDrawTagParser {
                     rowCountOfCardRowsGoOn = rowCountSoFar + 1
                 }
 
+            case "SCENE":
+                // One scene per reply, for the reason there is one card per reply: a second one
+                // would replace the first while its parts are still being spoken about.
+                if !hasOpenedASceneInThisReply, let sceneTitle = sceneTitle(fromTagBody: tagBody) {
+                    command = .addMark(shape: .scene(ClickyScene(title: sceneTitle, parts: [])), screenNumber: nil)
+                    hasOpenedASceneInThisReply = true
+                    partCountOfScenePartsGoIn = 0
+                }
+
+            case "PART":
+                if let partCountSoFar = partCountOfScenePartsGoIn,
+                   partCountSoFar < ClickyScene.maximumPartCount,
+                   let scenePart = scenePart(fromTagBody: tagBody) {
+                    command = .addScenePart(scenePart)
+                    partCountOfScenePartsGoIn = partCountSoFar + 1
+                }
+
             default:
                 command = self.command(fromTagBody: tagBody, calloutNumber: nextCalloutNumber)
                 if command != nil {
@@ -382,7 +440,9 @@ nonisolated enum ClickyDrawTagParser {
                 }
                 if case .clearAllMarks = command {
                     // The card went with everything else, so a later row has nothing to go on.
+                    // The same for the scene and a later part.
                     rowCountOfCardRowsGoOn = nil
+                    partCountOfScenePartsGoIn = nil
                 }
             }
             drawTagOccurrences.append(DrawTagOccurrence(rangeInReplyText: rangeInReplyText, command: command))
@@ -479,6 +539,121 @@ nonisolated enum ClickyDrawTagParser {
             .components(separatedBy: separator)
             .map { singleLineText($0, cutToCharacterCount: maximumCharacterCount) }
             .filter { !$0.isEmpty }
+    }
+
+    // MARK: - Reading a 3D scene and its parts
+
+    /// Reads the body of a `[SCENE:...]` tag: all of it is the title, colons included.
+    static func sceneTitle(fromTagBody tagBody: String) -> String? {
+        let sceneTitle = singleLineText(tagBody, cutToCharacterCount: ClickyScene.maximumTitleCharacterCount)
+        return sceneTitle.isEmpty ? nil : sceneTitle
+    }
+
+    /// Reads the body of a `[PART:...]` tag, such as "cylinder:fan:0,0,2:1.2,0.3:blue:x".
+    /// Returns nil for an unknown shape or colour, a position or size outside the limits, or the
+    /// wrong count of numbers for the shape. Nothing is clamped: a part the model did not mean is
+    /// worse than a missing one. Only the label is cut when it is too long.
+    static func scenePart(fromTagBody tagBody: String) -> ClickyScenePart? {
+        let untrimmedColonSeparatedComponents = tagBody
+            .split(separator: ":", omittingEmptySubsequences: false)
+            .map { String($0) }
+        var colonSeparatedComponents = untrimmedColonSeparatedComponents
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        // shape, label, position, size and colour at the least.
+        let minimumComponentCount = 5
+        guard colonSeparatedComponents.count >= minimumComponentCount,
+              let shapeKind = ClickyScenePartShapeKind(rawValue: colonSeparatedComponents[0].lowercased()) else {
+            return nil
+        }
+
+        // The tag is read from its end, because the label (the second piece) may be empty or may
+        // itself hold a colon. A last piece that is "x", "y" or "z" is the axis, but only when a
+        // colour is still left before it.
+        var axis = ClickyScenePartAxis.y
+        if colonSeparatedComponents.count > minimumComponentCount,
+           let lastComponent = colonSeparatedComponents.last,
+           let axisFromLastComponent = ClickyScenePartAxis(rawValue: lastComponent.lowercased()) {
+            axis = axisFromLastComponent
+            colonSeparatedComponents.removeLast()
+        }
+
+        let colourComponent = colonSeparatedComponents[colonSeparatedComponents.count - 1]
+        let sizeComponent = colonSeparatedComponents[colonSeparatedComponents.count - 2]
+        let positionComponent = colonSeparatedComponents[colonSeparatedComponents.count - 3]
+        // Everything between the shape and the position is the label.
+        let labelComponentCount = colonSeparatedComponents.count - 4
+        let rejoinedLabelText = untrimmedColonSeparatedComponents[1..<(1 + labelComponentCount)].joined(separator: ":")
+        let labelText = singleLineText(rejoinedLabelText, cutToCharacterCount: ClickyScene.maximumPartLabelCharacterCount)
+
+        guard let colour = ClickyScenePartColour.colour(named: colourComponent),
+              let positionNumbers = sceneNumbers(
+                  fromComponent: positionComponent,
+                  expectedCount: 3,
+                  smallestAllowedValue: -ClickyScene.maximumCentreCoordinate,
+                  largestAllowedValue: ClickyScene.maximumCentreCoordinate
+              ) else {
+            return nil
+        }
+
+        let expectedSizeNumberCount: Int
+        switch shapeKind {
+        case .box: expectedSizeNumberCount = 3
+        case .sphere: expectedSizeNumberCount = 1
+        case .cylinder, .cone, .tube, .capsule: expectedSizeNumberCount = 2
+        }
+        guard let sizeNumbers = sceneNumbers(
+            fromComponent: sizeComponent,
+            expectedCount: expectedSizeNumberCount,
+            smallestAllowedValue: ClickyScene.minimumPartSize,
+            largestAllowedValue: ClickyScene.maximumPartSize
+        ) else {
+            return nil
+        }
+
+        let dimensions: ClickyScenePartDimensions
+        switch shapeKind {
+        case .box:
+            dimensions = .box(width: sizeNumbers[0], height: sizeNumbers[1], depth: sizeNumbers[2])
+        case .sphere:
+            dimensions = .sphere(radius: sizeNumbers[0])
+        case .cylinder, .cone, .tube, .capsule:
+            dimensions = .radiusAndLength(radius: sizeNumbers[0], length: sizeNumbers[1])
+        }
+
+        return ClickyScenePart(
+            shapeKind: shapeKind,
+            labelText: labelText.isEmpty ? nil : labelText,
+            centre: ClickySceneVector(x: positionNumbers[0], y: positionNumbers[1], z: positionNumbers[2]),
+            dimensions: dimensions,
+            colour: colour,
+            // An axis written for a box or a sphere means nothing and is not kept.
+            axis: shapeKind.pointsAlongAnAxis ? axis : .y
+        )
+    }
+
+    /// Reads "0,0,2" or "1.2,0.3" as exactly `expectedCount` real numbers inside the given range.
+    private static func sceneNumbers(
+        fromComponent component: String,
+        expectedCount: Int,
+        smallestAllowedValue: Double,
+        largestAllowedValue: Double
+    ) -> [Double]? {
+        let numberStrings = component
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard numberStrings.count == expectedCount else {
+            return nil
+        }
+        var numbers: [Double] = []
+        for numberString in numberStrings {
+            guard let number = Double(numberString), number.isFinite,
+                  number >= smallestAllowedValue, number <= largestAllowedValue else {
+                return nil
+            }
+            numbers.append(number)
+        }
+        return numbers
     }
 
     // MARK: - Reading the pieces of a tag

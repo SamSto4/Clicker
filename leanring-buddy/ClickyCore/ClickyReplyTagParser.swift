@@ -29,8 +29,8 @@ nonisolated struct ClickyParsedReply: Equatable {
 }
 
 /// Parses the bracketed tags Claude embeds in its replies: [POINT:...], [NOTE:...] and [PROFILE:...].
-/// [DRAW:...], [CARD:...] and [ROW:...] tags are removed from the spoken text here and read by
-/// `ClickyDrawTagParser`.
+/// [DRAW:...], [CARD:...], [ROW:...], [SCENE:...] and [PART:...] tags are removed from the spoken
+/// text here and read by `ClickyDrawTagParser`.
 /// The chat pipeline and the onboarding demo both use this one grammar so they cannot drift apart.
 nonisolated enum ClickyReplyTagParser {
     /// Notes are stored as single lines, so a longer note is cut here instead of being rejected.
@@ -42,10 +42,10 @@ nonisolated enum ClickyReplyTagParser {
     static func parse(_ rawReplyText: String) -> ClickyParsedReply {
         // Group 1 is the tag name, group 2 is everything after the colon. Brackets are excluded from
         // the body so one tag can never swallow the next tag.
-        // DRAW, CARD and ROW tags are matched here only so they are removed from the spoken text.
+        // DRAW, CARD, ROW, SCENE and PART tags are matched here only so they are removed from the spoken text.
         // What they draw is read separately by `ClickyDrawTagParser`.
         let completeTagRegex = try! NSRegularExpression(
-            pattern: "\\[\\s*(POINT|NOTE|PROFILE|DRAW|CARD|ROW)\\s*:([^\\[\\]]*)\\]",
+            pattern: "\\[\\s*(POINT|NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART)\\s*:([^\\[\\]]*)\\]",
             options: [.caseInsensitive]
         )
 

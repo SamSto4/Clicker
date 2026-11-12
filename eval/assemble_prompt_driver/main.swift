@@ -168,6 +168,9 @@ func drawingShapeRecord(_ shape: ClickyDrawingShape) -> [String: Any] {
         return ["shapeKind": "callout", "target": drawingPointRecord(target), "text": text, "calloutNumber": calloutNumber]
     case .explanationCard(let card):
         return ["shapeKind": "card", "title": card.title, "rows": card.rows.map { explanationCardRowRecord($0) }]
+    case .scene(let scene):
+        // Round 11: a simple 3D scene. Only its size is reported; the visual rubric does not score scenes yet.
+        return ["shapeKind": "scene", "title": scene.title, "partCount": scene.parts.count]
     }
 }
 
@@ -188,6 +191,8 @@ func drawCommandRecord(_ parsedDrawCommand: ClickyParsedDrawCommand) -> [String:
     case .addCardRow(let row):
         commandRecord["commandKind"] = "addCardRow"
         commandRecord["row"] = explanationCardRowRecord(row)
+    case .addScenePart:
+        commandRecord["commandKind"] = "addScenePart"
     }
     return commandRecord
 }

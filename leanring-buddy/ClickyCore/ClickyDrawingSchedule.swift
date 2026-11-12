@@ -66,8 +66,9 @@ nonisolated struct ClickyScreenshotToDisplayMapping: Equatable {
             return .stickyNote(topLeftCorner: displayPointFromTopLeft(forScreenshotPixel: topLeftCorner), text: text)
         case .callout(let target, let text, let calloutNumber):
             return .callout(target: displayPointFromTopLeft(forScreenshotPixel: target), text: text, calloutNumber: calloutNumber)
-        case .explanationCard:
-            // The card holds no screenshot coordinates: the app places it on the display.
+        case .explanationCard, .scene:
+            // The card and the 3D scene hold no screenshot coordinates: the app places them on
+            // the display.
             return shape
         }
     }

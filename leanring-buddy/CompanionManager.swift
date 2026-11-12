@@ -568,8 +568,9 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Debug aid: when the app is launched with CLICKY_DRAW_SELF_TEST=1 it draws a few sample
-    /// marks (pen-drawn strokes, a label, a sticky note, two numbered callouts and an explanation
-    /// card with a boxes row, a flow row and a timeline row) on every screen a few seconds after
+    /// marks (pen-drawn strokes, a label, a sticky note, two numbered callouts, an explanation
+    /// card with a boxes row, a flow row and a timeline row, and a small 3D scene of six parts,
+    /// one of each shape, three of them labelled) on every screen a few seconds after
     /// launch and shows the status pill saying "thinking", with no voice and no model call, so
     /// the drawing surface, the handwriting text and the pill can be checked without speaking.
     /// It does nothing in normal use.
@@ -583,7 +584,7 @@ final class CompanionManager: ObservableObject {
                 isOverlayVisible = true
             }
             // The sticky note sits left of the right third of the screen, where the card goes.
-            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [DRAW:sticky:560,120:self test: pen-drawn marks, a handwriting label and this sticky note] [CARD:how the self test works] [ROW:boxes:launch|wait -> draw] [ROW:flow:marks > card > picture] [ROW:timeline:0s=app starts|4s=marks appear|10s=picture taken] [DRAW:callout:250,180:first callout] [DRAW:callout:520,640:second callout] [POINT:none]"
+            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [DRAW:sticky:560,120:self test: pen-drawn marks, a handwriting label and this sticky note] [CARD:how the self test works] [ROW:boxes:launch|wait -> draw] [ROW:flow:marks > card > picture] [ROW:timeline:0s=app starts|4s=marks appear|10s=picture taken] [DRAW:callout:250,180:first callout] [DRAW:callout:520,640:second callout] [SCENE:self test model] [PART:cylinder:body:0,0,0:0.8,3:blue:x] [PART:cone:nose:2.2,0,0:0.8,1.4:red:x] [PART:box::-0.4,0,0:1,0.12,3.4:gray] [PART:sphere:window:1,0.55,0:0.4:glass] [PART:tube::-1.9,0,0:0.7,0.6:orange:x] [PART:capsule::-0.4,-0.9,0.9:0.22,1.2:yellow:x] [POINT:none]"
             let parsedSampleReply = ClickyDrawTagParser.parse(sampleReplyText)
             // A user who scrolls or switches apps in these few seconds must not spoil the picture.
             let drawingOverlayController = overlayWindowManager.drawingOverlayController
@@ -627,9 +628,12 @@ final class CompanionManager: ObservableObject {
 
             // Optional proof picture: only Clicky's own windows, saved where the launcher asked.
             if let selfTestImagePath = selfTestImagePathFromEnvironment {
-                // Eleven marks and rows follow each other 0.35 seconds apart and the last is then
-                // still being written, so the picture waits until all of them are done.
-                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                // Eighteen marks, rows and scene parts follow each other 0.35 seconds apart (the
+                // last starts after 5.95 seconds) and the last is then still appearing, so the
+                // picture waits until all of them are done. The 3D scene is a Metal layer in
+                // Clicky's own overlay window, which ScreenCaptureKit captures like any other
+                // layer, so no separate snapshot of it is needed.
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
                 do {
                     if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
                         try ownWindowsPNGData.write(to: URL(fileURLWithPath: selfTestImagePath))
@@ -1307,8 +1311,8 @@ final class CompanionManager: ObservableObject {
                         // the early speech fetch once the first reply tag has opened (the words
                         // before it are final). Nothing is played from here.
                         replyTextArrivalClock.markReplyTextArrived()
-                        // A draw or card reply has tags between its sentences ([DRAW, [CARD,
-                        // [ROW), so the words before its closing tag are not the whole spoken
+                        // A draw, card or 3D scene reply has tags between its sentences ([DRAW,
+                        // [CARD, [ROW, [SCENE, [PART), so the words before its closing tag are not the whole spoken
                         // answer and audio fetched for them would always be thrown away. The
                         // early fetch is skipped for such a reply.
                         guard !ClickySpeechPrefetch.replyHoldsTagsBetweenItsSentences(accumulatedReplyText) else { return }
@@ -1344,7 +1348,7 @@ final class CompanionManager: ObservableObject {
                 let spokenText = finishedTurn.spokenText
                 turnMetrics.spokenReplyCharacterCount = spokenText.count
 
-                // The [DRAW:...], [CARD:...] and [ROW:...] tags of the reply, each with how far
+                // The [DRAW:...], [CARD:...], [ROW:...], [SCENE:...] and [PART:...] tags of the reply, each with how far
                 // into the spoken text it sits. An ordinary reply has none, and nothing below
                 // changes for it. A row needs a card to go on: the one this reply opens, or the
                 // one the model was told is on the screen (nil when there is none).
@@ -1356,9 +1360,19 @@ final class CompanionManager: ObservableObject {
                         return nil
                     }
                     .last
+                // The same for a [PART:...] tag and the 3D scene it goes in.
+                let partCountOfSceneAlreadyOnScreen: Int? = drawingMarksOnScreen
+                    .compactMap { drawingMarkOnScreen -> Int? in
+                        if case .scene(let sceneOnScreen) = drawingMarkOnScreen.shape {
+                            return sceneOnScreen.parts.count
+                        }
+                        return nil
+                    }
+                    .last
                 let parsedDrawReply = ClickyDrawTagParser.parse(
                     fullResponseText,
-                    rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen
+                    rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
+                    partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
                 )
                 let drawingDisplayPlacementsInScreenshotOrder = screenCaptures.map { screenCapture in
                     ClickyDrawingDisplayPlacement(
@@ -1451,7 +1465,8 @@ final class CompanionManager: ObservableObject {
                         rawReplyText: fullResponseText,
                         finishedSpokenText: spokenText,
                         finishedHistoryAssistantText: finishedTurn.historyAssistantText,
-                        rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen
+                        rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
+                        partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
                     )
                 ))
 

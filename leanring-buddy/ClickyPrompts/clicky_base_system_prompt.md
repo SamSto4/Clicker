@@ -60,3 +60,12 @@ when asked to explain, teach, break down or compare something, or "how does this
 [ROW:timeline:when=what|when=what] two to five dated points
 at most 5 rows; each box, step or point at most 24 characters. callouts work here too.
 "how does training work": here's how. [CARD:one small task, lots of practice] it sees some words. [ROW:boxes:the|sky|is -> blue] it guesses, compares and adjusts. [ROW:flow:guess > compare > adjust] [POINT:none]
+
+3d scene:
+only when asked for a 3d model or view, or the parts or inside of an object, build a simple model: two to four short sentences, [SCENE:title] after the first, then each sentence's parts, ending with [POINT:none].
+[SCENE:title] at most 40 characters, one per reply. [PART:...] alone adds to the scene on screen.
+[PART:shape:label:x,y,z:size:colour:axis]
+box w,h,d; sphere radius; cylinder, cone, tube, capsule radius,length. label at most 24 characters or empty.
+centre x,y,z from -5 to 5, sizes 0.05 to 6, axis x, y or z (default y). colours: red, orange, yellow, green, teal, blue, purple, pink, brown, gray, white, black, glass.
+at most 12 parts, built along one axis, sizes consistent.
+"a jet engine in 3d": here's a jet engine. [SCENE:jet engine] air enters the fan. [PART:cylinder:fan:-2,0,0:1.2,0.3:blue:x] the compressor squeezes it. [PART:cone:compressor:-1,0,0:1,1.4:gray:x] [POINT:none]

@@ -32,6 +32,9 @@ nonisolated enum ClickyDrawingShape: Equatable {
     /// A paper card with a title and rows, written while Clicky explains something. It carries no
     /// position: the app places it (see `ClickyExplanationCardPlacement`).
     case explanationCard(ClickyExplanationCard)
+    /// A simple 3D model built from basic shapes, turning slowly on a small panel. It carries no
+    /// position either: the app places the panel (see `ClickyScenePanelPlacement`).
+    case scene(ClickyScene)
 
     /// The word used for this shape in a `[DRAW:...]` tag and in the "marks on screen" list.
     var tagKindName: String {
@@ -45,6 +48,7 @@ nonisolated enum ClickyDrawingShape: Equatable {
         case .stickyNote: return "sticky"
         case .callout: return "callout"
         case .explanationCard: return "card"
+        case .scene: return "scene"
         }
     }
 
@@ -53,11 +57,18 @@ nonisolated enum ClickyDrawingShape: Equatable {
     /// content and would be wrong the moment that content moves.
     var pointsAtScreenContent: Bool {
         switch self {
-        case .stickyNote, .explanationCard:
+        case .stickyNote, .explanationCard, .scene:
             return false
         case .arrow, .circle, .box, .underline, .highlight, .label, .callout:
             return true
         }
+    }
+
+    var isScene: Bool {
+        if case .scene = self {
+            return true
+        }
+        return false
     }
 
     var isExplanationCard: Bool {
@@ -83,7 +94,7 @@ nonisolated enum ClickyDrawingShape: Equatable {
             return topLeftCorner
         case .callout(let target, _, _):
             return target
-        case .explanationCard:
+        case .explanationCard, .scene:
             return nil
         }
     }
@@ -113,6 +124,8 @@ nonisolated enum ClickyDrawCommand: Equatable {
     case clearAllMarks
     /// From a `[ROW:...]` tag: one more row on the explanation card that is on the board.
     case addCardRow(ClickyExplanationCardRow)
+    /// From a `[PART:...]` tag: one more part on the 3D scene that is on the board.
+    case addScenePart(ClickyScenePart)
 
     /// True for the commands that put something new on the screen.
     var addsAMark: Bool {
@@ -131,8 +144,11 @@ nonisolated enum ClickyDrawingBoardChange: Equatable {
     /// A row was written on the card. `cardMark` is the card with the row already on it, and
     /// `rowIndex` is the new row's place in it.
     case addedRowToCard(cardMark: ClickyDrawingMark, rowIndex: Int)
+    /// A part was added to the 3D scene. `sceneMark` is the scene with the part already in it,
+    /// and `partIndex` is the new part's place in it.
+    case addedPartToScene(sceneMark: ClickyDrawingMark, partIndex: Int)
     /// An erase of an unknown id, an undo or clear with nothing drawn, or a row with no card to
-    /// go on (or a card that is already full).
+    /// go on (or a card that is already full). The same for a part with no scene or a full scene.
     case nothingChanged
 }
 
@@ -165,6 +181,11 @@ nonisolated struct ClickyDrawingBoard: Equatable {
             if shape.isExplanationCard {
                 marksRemovedToMakeRoom += marks.filter { $0.shape.isExplanationCard }
                 marks.removeAll { $0.shape.isExplanationCard }
+            }
+            // The same for the 3D scene: one at a time, and a new one replaces the old one.
+            if shape.isScene {
+                marksRemovedToMakeRoom += marks.filter { $0.shape.isScene }
+                marks.removeAll { $0.shape.isScene }
             }
 
             let addedMark = ClickyDrawingMark(markNumber: nextMarkNumber, shape: shape, screenNumber: screenNumber)
@@ -207,7 +228,42 @@ nonisolated struct ClickyDrawingBoard: Equatable {
             )
             marks[cardMarkIndex] = cardMarkWithRow
             return .addedRowToCard(cardMark: cardMarkWithRow, rowIndex: card.rows.count)
+
+        case .addScenePart(let part):
+            guard let sceneMarkIndex = marks.lastIndex(where: { $0.shape.isScene }),
+                  case .scene(let scene) = marks[sceneMarkIndex].shape,
+                  scene.parts.count < ClickyScene.maximumPartCount else {
+                return .nothingChanged
+            }
+            // Like the card, the scene keeps its number and its place in the order of the marks.
+            let sceneMarkWithPart = ClickyDrawingMark(
+                markNumber: marks[sceneMarkIndex].markNumber,
+                shape: .scene(scene.addingPart(part)),
+                screenNumber: marks[sceneMarkIndex].screenNumber
+            )
+            marks[sceneMarkIndex] = sceneMarkWithPart
+            return .addedPartToScene(sceneMark: sceneMarkWithPart, partIndex: scene.parts.count)
         }
+    }
+
+    /// The 3D scene on the board, if there is one.
+    var sceneMark: ClickyDrawingMark? {
+        marks.last { $0.shape.isScene }
+    }
+
+    /// Takes parts back out of a scene: used when the parts of an interrupted reply were accepted
+    /// but never shown, so the board and the screen agree again.
+    mutating func keepOnlyFirstParts(_ partCountToKeep: Int, ofSceneWithMarkNumber sceneMarkNumber: Int) {
+        guard let sceneMarkIndex = marks.firstIndex(where: { $0.markNumber == sceneMarkNumber }),
+              case .scene(let scene) = marks[sceneMarkIndex].shape,
+              scene.parts.count > partCountToKeep else {
+            return
+        }
+        marks[sceneMarkIndex] = ClickyDrawingMark(
+            markNumber: sceneMarkNumber,
+            shape: .scene(scene.keepingFirstParts(partCountToKeep)),
+            screenNumber: marks[sceneMarkIndex].screenNumber
+        )
     }
 
     /// The explanation card on the board, if there is one.
@@ -290,6 +346,17 @@ nonisolated enum ClickyDrawingMarksOnScreenText {
                 ? "add a row with [ROW:...]"
                 : "it is full"
             shapeDescription = "card titled \"\(card.title)\", \(rowsDescription) (\(roomDescription); a new [CARD:title] replaces it)"
+        case .scene(let scene):
+            // Like the card, the scene has no position to give. Its parts are listed the way
+            // their tags are written (labels, places, sizes and colours), so the model can add a
+            // part that fits the ones already there.
+            let partsDescription = scene.parts.isEmpty
+                ? "no parts yet"
+                : "parts: " + scene.parts.map { "[PART:\($0.canonicalTagBody)]" }.joined(separator: " ")
+            let roomDescription = scene.parts.count < ClickyScene.maximumPartCount
+                ? "add a part with [PART:...]"
+                : "it is full"
+            shapeDescription = "3d scene titled \"\(scene.title)\", \(partsDescription) (\(roomDescription); a new [SCENE:title] replaces it)"
         }
 
         let screenDescription = mark.screenNumber.map { " (screen \($0))" } ?? ""

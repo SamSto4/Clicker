@@ -179,8 +179,8 @@ nonisolated enum ClickyHandDrawnPathGenerator {
                     highlighterBandWidthInPoints: size.height
                 ))
 
-            case .label, .stickyNote, .callout, .explanationCard:
-                // Text on a pill or a card, not ink. The leader line of a callout and the ink on
+            case .label, .stickyNote, .callout, .explanationCard, .scene:
+                // Text on a pill or a card, or a 3D scene, not ink. The leader line of a callout and the ink on
                 // a card are built from arrows, boxes and lines by their own layouts.
                 break
             }
@@ -206,7 +206,7 @@ nonisolated enum ClickyHandDrawnPathGenerator {
         case .callout:
             // The leader line is always about this long, wherever the app puts the tag.
             return ClickyCalloutPlacement.distanceFromTargetInPoints
-        case .label, .stickyNote, .explanationCard:
+        case .label, .stickyNote, .explanationCard, .scene:
             return 0
         }
     }

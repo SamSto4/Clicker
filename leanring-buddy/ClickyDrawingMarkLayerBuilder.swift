@@ -210,9 +210,10 @@ enum ClickyDrawingMarkLayerBuilder {
                 seed: wobbleSeed
             )
             return makeInkLayer(for: handDrawnStrokes, displaySizeInPoints: displaySizeInPoints, backingScaleFactor: backingScaleFactor)
-        case .callout, .explanationCard:
+        case .callout, .explanationCard, .scene:
             // The app decides where these go, so they need more than a shape to be built. The
-            // overlay controller builds them with `ClickyExplanationCardLayerBuilder`.
+            // overlay controller builds them with `ClickyExplanationCardLayerBuilder` (and a 3D
+            // scene as a `ClickyScenePanelView`, which is a view and not a layer).
             return CALayer()
         }
     }
