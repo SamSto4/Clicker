@@ -68,16 +68,18 @@ final class ClickyDictationCleanupClient {
 
     /// Asks the model to clean up `rawTranscript`. Always returns within the cleanup time limit:
     /// the answer, `.timedOut`, or `.failed`. It never throws, because every failure has the same
-    /// remedy (insert the raw transcript).
-    func requestCleanedText(forRawTranscript rawTranscript: String) async -> ClickyDictationCleanupModelResult {
-        guard let chatURL else { return .failed }
+    /// remedy (insert the raw transcript). When the answer came with a usage report, the tokens it
+    /// used come back too (numbers only, for the dictation metrics line).
+    func requestCleanedText(forRawTranscript rawTranscript: String) async -> ClickyDictationCleanupResponse {
+        let failedResponse = ClickyDictationCleanupResponse(modelResult: .failed, tokenUsage: nil)
+        guard let chatURL else { return failedResponse }
 
         let requestBody = ClickyDictationCleanup.makeRequestBody(
             rawTranscript: rawTranscript,
             systemPromptText: systemPromptText
         )
         guard let requestBodyData = try? JSONSerialization.data(withJSONObject: requestBody) else {
-            return .failed
+            return failedResponse
         }
 
         var cleanupRequest = URLRequest(
@@ -97,36 +99,39 @@ final class ClickyDictationCleanupClient {
         // The request and a stopwatch race each other, so the 2.5 second limit holds even if the
         // network layer would keep waiting. Whichever finishes first decides, and the other is
         // cancelled.
-        return await withTaskGroup(of: ClickyDictationCleanupModelResult.self) { raceGroup in
+        return await withTaskGroup(of: ClickyDictationCleanupResponse.self) { raceGroup in
             raceGroup.addTask {
                 await Self.performRequest(cleanupRequest, using: urlSessionForRequest)
             }
             raceGroup.addTask {
                 try? await Task.sleep(nanoseconds: timeoutNanoseconds)
-                return .timedOut
+                return ClickyDictationCleanupResponse(modelResult: .timedOut, tokenUsage: nil)
             }
-            let firstFinishedResult = await raceGroup.next() ?? .failed
+            let firstFinishedResponse = await raceGroup.next() ?? failedResponse
             raceGroup.cancelAll()
-            return firstFinishedResult
+            return firstFinishedResponse
         }
     }
 
     private nonisolated static func performRequest(
         _ cleanupRequest: URLRequest,
         using session: URLSession
-    ) async -> ClickyDictationCleanupModelResult {
+    ) async -> ClickyDictationCleanupResponse {
         do {
             let (responseData, response) = try await session.data(for: cleanupRequest)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode),
                   let cleanedText = ClickyDictationCleanup.extractText(fromResponseData: responseData) else {
-                return .failed
+                return ClickyDictationCleanupResponse(modelResult: .failed, tokenUsage: nil)
             }
-            return .text(cleanedText)
+            return ClickyDictationCleanupResponse(
+                modelResult: .text(cleanedText),
+                tokenUsage: ClickyDictationCleanup.extractTokenUsage(fromResponseData: responseData)
+            )
         } catch let urlError as URLError where urlError.code == .timedOut {
-            return .timedOut
+            return ClickyDictationCleanupResponse(modelResult: .timedOut, tokenUsage: nil)
         } catch {
-            return .failed
+            return ClickyDictationCleanupResponse(modelResult: .failed, tokenUsage: nil)
         }
     }
 }

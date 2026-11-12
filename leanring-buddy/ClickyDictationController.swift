@@ -339,13 +339,17 @@ final class ClickyDictationController: ObservableObject {
             dictationMetrics.cleanupOutcome = .skipped
         } else {
             let cleanupStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
-            let cleanupModelResult = await cleanupClient.requestCleanedText(forRawTranscript: rawTranscript)
+            let cleanupResponse = await cleanupClient.requestCleanedText(forRawTranscript: rawTranscript)
             guard isCurrentSession(withToken: sessionToken) else { return }
             dictationMetrics.cleanupMilliseconds = ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: cleanupStartedUptimeSeconds)
+            // The tokens the request used, as numbers only, so the panel's usage tab can show what
+            // dictation costs. Nothing about the words themselves is kept.
+            dictationMetrics.cleanupInputTokens = cleanupResponse.tokenUsage?.inputTokens
+            dictationMetrics.cleanupOutputTokens = cleanupResponse.tokenUsage?.outputTokens
 
             let resolvedCleanup = ClickyDictationCleanup.resolveTextToInsert(
                 rawTranscript: rawTranscript,
-                modelResult: cleanupModelResult
+                modelResult: cleanupResponse.modelResult
             )
             textToInsert = resolvedCleanup.textToInsert
             dictationMetrics.cleanupOutcome = resolvedCleanup.outcome

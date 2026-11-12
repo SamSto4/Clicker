@@ -2,9 +2,11 @@
 //  ClickyChatPanelView.swift
 //  leanring-buddy
 //
-//  The SwiftUI content of the chat panel that drops down from the notch: a text field to type to
-//  Clicky, the current chat with the reply streaming in, and a list of past chats grouped by
-//  project with search, open, continue, keep and delete.
+//  The SwiftUI content of the chat panel that drops down from the notch: five tabs. "chat" has a
+//  text field to type to Clicky and the current chat with the reply streaming in; "chats" lists
+//  past chats grouped by project with search, open, continue, keep and delete; "memory", "usage"
+//  and "settings" are in ClickyChatPanelMemoryView, ClickyChatPanelUsageView and
+//  ClickyChatPanelSettingsView.
 //
 //  Every colour and size is a `DS.Colors.chatPanel...` or `DS.ChatPanel` token. Every button has
 //  a pointer cursor and a hover state. The view needs nothing from the rest of the app except its
@@ -25,7 +27,7 @@ private struct ClickyChatPanelHeightPreferenceKey: PreferenceKey {
     }
 }
 
-private extension View {
+extension View {
     /// Reports this view's height (the height it chose, not the room it was offered).
     func reportingHeight(_ reportHeight: @escaping (CGFloat) -> Void) -> some View {
         background(
@@ -42,8 +44,8 @@ private extension View {
 // MARK: - Button styles
 
 /// A small word-button: "continue", "keep", "delete", "chats". Lights up under the pointer, shows
-/// the pointing hand, and dims while pressed.
-private struct ClickyChatTextButtonStyle: ButtonStyle {
+/// the pointing hand, and dims while pressed. Also used by the memory, usage and settings tabs.
+struct ClickyChatTextButtonStyle: ButtonStyle {
     var isDestructive = false
     var isProminent = false
 
@@ -82,7 +84,7 @@ private struct ClickyChatTextButtonStyle: ButtonStyle {
 }
 
 /// A square icon button (back, clear search).
-private struct ClickyChatIconButtonStyle: ButtonStyle {
+struct ClickyChatIconButtonStyle: ButtonStyle {
     @State private var isHovered = false
 
     func makeBody(configuration: Configuration) -> some View {
@@ -98,6 +100,41 @@ private struct ClickyChatIconButtonStyle: ButtonStyle {
             .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
             .onHover { isHovered = $0 }
             .pointerCursor()
+    }
+}
+
+/// One tab of the header: an icon and a word. The tab that is showing is lit in blue; the others
+/// light up under the pointer, and every one shows the pointing hand.
+private struct ClickyChatTabButtonStyle: ButtonStyle {
+    let isSelected: Bool
+
+    @State private var isHovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: DS.ChatPanel.tabLabelFontSizeInPoints, weight: .medium))
+            .foregroundColor(labelColor)
+            .frame(maxWidth: .infinity)
+            .frame(height: DS.ChatPanel.tabHeightInPoints)
+            .background(
+                RoundedRectangle(cornerRadius: DS.ChatPanel.tabCornerRadiusInPoints, style: .continuous)
+                    .fill(backgroundColor(isPressed: configuration.isPressed))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: DS.ChatPanel.tabCornerRadiusInPoints, style: .continuous))
+            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .onHover { isHovered = $0 }
+            .pointerCursor()
+    }
+
+    private var labelColor: Color {
+        if isSelected { return DS.Colors.chatPanelTabSelectedText }
+        return isHovered ? DS.Colors.chatPanelPrimaryText : DS.Colors.chatPanelSecondaryText
+    }
+
+    private func backgroundColor(isPressed: Bool) -> Color {
+        if isSelected { return DS.Colors.chatPanelTabSelectedBackground }
+        if isPressed { return DS.Colors.surface3 }
+        return isHovered ? DS.Colors.chatPanelRowHoverBackground : Color.clear
     }
 }
 
@@ -212,42 +249,55 @@ struct ClickyChatPanelView: View {
 
     // MARK: - Header
 
-    @ViewBuilder
+    /// The tab bar on top, and under it what belongs to the tab that is showing: the text field of
+    /// the chat tab, the search field of the chats tab, the title row of an old chat being read.
+    /// The memory, usage and settings tabs have nothing under the bar.
     private var headerRow: some View {
-        Group {
-            switch viewModel.screen {
-            case .activeChat:
-                HStack(alignment: .top, spacing: DS.ChatPanel.headerSpacingInPoints) {
-                    askField
-                    Button(action: { viewModel.showChatList() }) {
-                        Label("chats", systemImage: "clock.arrow.circlepath")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(ClickyChatTextButtonStyle())
-                    .accessibilityLabel("show past chats")
-                    .padding(.top, 5)
-
-                    newChatButton
-                        .padding(.top, 5)
-                }
-            case .chatList:
-                HStack(alignment: .center, spacing: DS.ChatPanel.headerSpacingInPoints) {
-                    Button(action: { viewModel.showActiveChat() }) {
-                        Image(systemName: "chevron.left")
-                    }
-                    .buttonStyle(ClickyChatIconButtonStyle())
-                    .accessibilityLabel("back to the current chat")
-
-                    searchField
-                    newChatButton
-                }
-            case .readOnlyChat(let chatID):
-                readOnlyChatHeader(chatID: chatID)
-            }
+        VStack(spacing: DS.ChatPanel.belowTabBarSpacingInPoints) {
+            tabBar
+            tabHeaderRow
         }
         .padding(.horizontal, DS.ChatPanel.horizontalPaddingInPoints)
-        .padding(.top, DS.ChatPanel.headerTopPaddingInPoints)
-        .padding(.bottom, DS.ChatPanel.headerBottomPaddingInPoints)
+        .padding(.top, DS.ChatPanel.tabBarTopPaddingInPoints)
+        .padding(.bottom, viewModel.screen.hasRowUnderTabBar ? DS.ChatPanel.headerBottomPaddingInPoints : DS.ChatPanel.tabBarBottomPaddingInPoints)
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: DS.ChatPanel.tabSpacingInPoints) {
+            ForEach(ClickyChatPanelTab.allCases, id: \.self) { tab in
+                Button(action: { viewModel.selectTab(tab) }) {
+                    HStack(spacing: DS.ChatPanel.tabIconLabelSpacingInPoints) {
+                        Image(systemName: tab.symbolName)
+                            .font(.system(size: DS.ChatPanel.tabIconFontSizeInPoints, weight: .medium))
+                        Text(tab.title)
+                    }
+                }
+                .buttonStyle(ClickyChatTabButtonStyle(isSelected: viewModel.selectedTab == tab))
+                .accessibilityLabel("show the \(tab.title) tab")
+                .accessibilityAddTraits(viewModel.selectedTab == tab ? .isSelected : [])
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tabHeaderRow: some View {
+        switch viewModel.screen {
+        case .activeChat:
+            HStack(alignment: .top, spacing: DS.ChatPanel.headerSpacingInPoints) {
+                askField
+                newChatButton
+                    .padding(.top, 5)
+            }
+        case .chatList:
+            HStack(alignment: .center, spacing: DS.ChatPanel.headerSpacingInPoints) {
+                searchField
+                newChatButton
+            }
+        case .readOnlyChat(let chatID):
+            readOnlyChatHeader(chatID: chatID)
+        case .memory, .usage, .settings:
+            EmptyView()
+        }
     }
 
     private var newChatButton: some View {
@@ -404,6 +454,24 @@ struct ClickyChatPanelView: View {
             transcriptArea
         case .chatList:
             chatListArea
+        case .memory:
+            tabScrollArea { ClickyChatPanelMemoryContentView(viewModel: viewModel) }
+        case .usage:
+            tabScrollArea { ClickyChatPanelUsageContentView(viewModel: viewModel) }
+        case .settings:
+            tabScrollArea { ClickyChatPanelSettingsContentView(viewModel: viewModel) }
+        }
+    }
+
+    /// The scrolling body of the memory, usage and settings tabs. The panel grows with the content
+    /// up to its maximum height and the content scrolls beyond that, like the other tabs.
+    private func tabScrollArea<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            content()
+                .padding(.horizontal, DS.ChatPanel.horizontalPaddingInPoints)
+                .padding(.vertical, DS.ChatPanel.bodyVerticalPaddingInPoints)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .reportingHeight { bodyContentHeightInPoints = $0 }
         }
     }
 

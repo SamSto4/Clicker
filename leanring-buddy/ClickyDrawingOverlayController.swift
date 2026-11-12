@@ -65,16 +65,13 @@ final class ClickyDrawingOverlayController {
 
     // MARK: - Lifetime and fade timings
 
-    /// Marks stay this long after Clicky has finished speaking, then fade.
-    static let secondsMarksStayAfterReplyEnds: TimeInterval = 12
-
-    /// The explanation card is something to read, not a pointer at the page, so it stays longer
-    /// than the other marks after Clicky has finished speaking.
-    static let secondsExplanationCardStaysAfterReplyEnds: TimeInterval = 20
-
-    /// The 3D scene is something to look at from every side, and one turn of the model takes
-    /// 14 seconds, so it stays longest of all after Clicky has finished speaking.
-    static let secondsSceneStaysAfterReplyEnds: TimeInterval = 25
+    /// How long each kind of mark stays after Clicky has finished speaking, then fades: the marks
+    /// 12 s, the explanation card (something to read, so longer) 20 s and the 3D scene (one turn of
+    /// the model takes 14 s, so longest) 25 s, as `ClickyDrawingLifetimes.standard`, scaled by
+    /// the "drawings stay" setting (short, normal or long) in the chat panel's settings tab. It is
+    /// read when a reply ends, so a change applies from the next reply on. The 60 second limit
+    /// below is a safety net for a turn that never finishes and is not scaled.
+    var drawingLifetimes = ClickyDrawingLifetimes.standard
 
     /// A turn that never finishes (the transcript was empty, a request hung) must not leave marks
     /// on the screen for ever. After this long without a finished reply they fade anyway.
@@ -266,9 +263,9 @@ final class ClickyDrawingOverlayController {
         // when the last of them is done.
         let secondsUntilLastMarkIsDrawn = max(0, latestScheduledDrawingEndUptimeSeconds - ClickyTurnMetrics.currentUptimeSeconds)
         scheduleLifetimeFade(
-            afterSeconds: secondsUntilLastMarkIsDrawn + Self.secondsMarksStayAfterReplyEnds,
-            extraSecondsExplanationCardStays: Self.secondsExplanationCardStaysAfterReplyEnds - Self.secondsMarksStayAfterReplyEnds,
-            extraSecondsSceneStays: Self.secondsSceneStaysAfterReplyEnds - Self.secondsMarksStayAfterReplyEnds
+            afterSeconds: secondsUntilLastMarkIsDrawn + drawingLifetimes.secondsMarksStayAfterReplyEnds,
+            extraSecondsExplanationCardStays: drawingLifetimes.secondsExplanationCardStaysAfterReplyEnds - drawingLifetimes.secondsMarksStayAfterReplyEnds,
+            extraSecondsSceneStays: drawingLifetimes.secondsSceneStaysAfterReplyEnds - drawingLifetimes.secondsMarksStayAfterReplyEnds
         )
     }
 

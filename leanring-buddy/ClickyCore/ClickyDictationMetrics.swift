@@ -19,6 +19,11 @@ nonisolated struct ClickyDictationMetrics: Equatable {
     var releaseToInsertMilliseconds: Int?
     /// Nil when the dictation ended before the cleanup step was reached.
     var cleanupOutcome: ClickyDictationCleanupOutcome?
+    /// The tokens the cleanup request used, as numbers only (this type keeps no text). Nil when no
+    /// request was made, when it gave no answer, and on every line written before round 15, which
+    /// the usage tab counts as unknown.
+    var cleanupInputTokens: Int?
+    var cleanupOutputTokens: Int?
     var insertionOutcome: ClickyDictationInsertionOutcome
     var wasHandsFree: Bool
 
@@ -42,6 +47,8 @@ nonisolated struct ClickyDictationMetrics: Equatable {
         if let cleanupMilliseconds { jsonObject["cleanupMs"] = cleanupMilliseconds }
         if let releaseToInsertMilliseconds { jsonObject["releaseToInsertMs"] = releaseToInsertMilliseconds }
         if let cleanupOutcome { jsonObject["cleanupOutcome"] = cleanupOutcome.rawValue }
+        if let cleanupInputTokens { jsonObject["cleanupInputTokens"] = cleanupInputTokens }
+        if let cleanupOutputTokens { jsonObject["cleanupOutputTokens"] = cleanupOutputTokens }
 
         guard let jsonData = try? JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys]) else {
             return nil
