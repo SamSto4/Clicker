@@ -56,6 +56,15 @@ export function writeLeaderboard(loopFolder) {
     return `| ${summary.round} | ${summary.label ?? fileName} | ${scenarioCount} | **${formatScore(context.score)}** | ${formatScore(context.split_scores?.visible)} | ${formatScore(context.split_scores?.holdout)} | ${rate(context.details?.old_screen_bleed)} | ${rate(context.details?.meta_remark)} | ${kindScore("switch-new-topic")} | ${kindScore("switch-ambiguous-this")} | ${kindScore("follow-up-across-switch")} | ${kindScore("same-screen-follow-up")} | ${kindScore("pointing-after-switch")} | ${summary.calls_used?.total ?? "-"} |`;
   });
 
+  // Round 16: memories (does a memory from an earlier chat help when it should and stay quiet when it should) is tracked separately as well.
+  const memoriesRows = summaries.filter(({ summary }) => summary.memories).map(({ fileName, summary }) => {
+    const memories = summary.memories;
+    const scenarioCount = (memories.details?.scenarios_scored ?? 0) + (memories.details?.scenarios_errored ?? 0);
+    const classScore = (className) => formatScore(memories.details?.by_class?.[className]?.score);
+    const rate = (block) => (block?.rate_percent === null || block?.rate_percent === undefined ? "-" : `${block.rate_percent}%`);
+    return `| ${summary.round} | ${summary.label ?? fileName} | ${scenarioCount} | **${formatScore(memories.score)}** | ${formatScore(memories.split_scores?.visible)} | ${formatScore(memories.split_scores?.holdout)} | ${rate(memories.details?.unrelated_memory_mentions)} | ${rate(memories.details?.invented_details)} | ${rate(memories.details?.missed_recall)} | ${classScore("unrelated-keyword")} | ${classScore("paraphrased-recall")} | ${classScore("missing-detail")} | ${classScore("what-do-you-remember")} | ${classScore("one-of-several")} | ${memories.details?.scenarios_invalid_setup ?? "-"} | ${summary.calls_used?.total ?? "-"} |`;
+  });
+
   const markdown = [
     "# Clicky improvement loop leaderboard",
     "",
@@ -97,6 +106,16 @@ export function writeLeaderboard(loopFolder) {
       ...contextRows,
       "",
       "Old-screen bleed = share of switch scenarios whose spoken reply used words that only belong to the earlier exchange; meta remarks = share of all scenarios whose reply apologised for or commented on the switch. Rubric in eval/README.md.",
+      "",
+    ]),
+    ...(memoriesRows.length === 0 ? [] : [
+      "## Memories: memories from earlier chats in the prompt (round 16; tracked separately, excluded from the weighted total)",
+      "",
+      "| Round | Label | Scenarios | Memories | Visible | Holdout | Unrelated-memory mentions | Invented details | Missed recall | Unrelated keyword | Paraphrased recall | Missing detail | What do you remember | One of several | Invalid setups | API calls |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+      ...memoriesRows,
+      "",
+      "Unrelated-memory mentions = share of replies, where the question only shares a word with a memory (or other memories are seeded), that brought a memory up anyway; invented details = share of recall replies that said a day, time, amount or fact no memory holds. A scenario whose prompt did not hold the memories it expects is invalid_setup and is in neither score. Rubric in eval/README.md.",
       "",
     ]),
   ].join("\n");
