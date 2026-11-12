@@ -26,6 +26,7 @@ struct ClickyChatPanelSettingsContentView: View {
         VStack(alignment: .leading, spacing: DS.ChatPanel.tabSectionSpacingInPoints) {
             generalSection
             voiceSection
+            filesSection
             shortcutsSection
             permissionsSection
         }
@@ -98,6 +99,56 @@ struct ClickyChatPanelSettingsContentView: View {
     private static func secondsText(_ seconds: TimeInterval) -> String {
         let isWholeNumber = seconds == seconds.rounded()
         return (isWholeNumber ? String(format: "%.0f", seconds) : String(format: "%.1f", seconds)) + " s"
+    }
+
+    // MARK: - Files (round 17)
+
+    /// The folders Clicky may read and change. With none, Clicky touches no file at all and every
+    /// request is what it always was, so this section is also the switch of the whole feature.
+    private var filesSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionTitle("FILES")
+
+            Text("folders clicky may edit. it only reads and changes files inside them. every change is shown first and written after you press return or say yes. backups let you undo, and deleted files go to the trash.")
+                .font(.system(size: DS.ChatPanel.rowDetailFontSizeInPoints))
+                .foregroundColor(DS.Colors.chatPanelTertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, DS.ChatPanel.memoryRowHorizontalPaddingInPoints)
+                .padding(.bottom, 6)
+
+            if viewModel.editableFolderRows.isEmpty {
+                Text("no folder yet, so clicky can't touch any file.")
+                    .font(.system(size: DS.ChatPanel.messageFontSizeInPoints))
+                    .foregroundColor(DS.Colors.chatPanelSecondaryText)
+                    .padding(.horizontal, DS.ChatPanel.memoryRowHorizontalPaddingInPoints)
+                    .padding(.vertical, DS.ChatPanel.folderRowVerticalPaddingInPoints)
+            } else {
+                ForEach(viewModel.editableFolderRows) { folderRow in
+                    ClickyEditableFolderRowView(viewModel: viewModel, folderRow: folderRow)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button(action: { viewModel.requestAddingEditableFolder() }) {
+                    Label("add folder…", systemImage: "plus")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(ClickyChatTextButtonStyle(isProminent: true))
+                .accessibilityLabel("add a folder clicky may edit")
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, DS.ChatPanel.memoryRowHorizontalPaddingInPoints)
+            .padding(.top, 6)
+
+            if let editableFolderMessage = viewModel.editableFolderMessage {
+                Text(editableFolderMessage)
+                    .font(.system(size: DS.ChatPanel.rowDetailFontSizeInPoints))
+                    .foregroundColor(DS.Colors.chatPanelErrorText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, DS.ChatPanel.memoryRowHorizontalPaddingInPoints)
+                    .padding(.top, 6)
+            }
+        }
     }
 
     // MARK: - Shortcuts
@@ -320,5 +371,78 @@ private struct ClickyChatChoiceButtonStyle: ButtonStyle {
         if isSelected { return DS.Colors.chatPanelChoiceSelectedBackground }
         if isPressed { return DS.Colors.surface3 }
         return isHovered ? DS.Colors.chatPanelRowHoverBackground : Color.clear
+    }
+}
+
+
+// MARK: - One folder of the "files" section
+
+/// A folder's name and its shortened path, and a remove button that asks "remove this?" in place
+/// (never an alert), like the memory tab's delete.
+private struct ClickyEditableFolderRowView: View {
+    @ObservedObject var viewModel: ClickyChatPanelViewModel
+    let folderRow: ClickyEditableFolderRow
+
+    @State private var isHovered = false
+
+    private var isAskingToConfirmRemoval: Bool {
+        viewModel.editableFolderAwaitingRemovalConfirmation == folderRow.path
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder")
+                .font(.system(size: DS.ChatPanel.iconFontSizeInPoints, weight: .medium))
+                .foregroundColor(DS.Colors.chatPanelTertiaryText)
+                .frame(width: DS.ChatPanel.settingsRowIconWidthInPoints)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(folderRow.name)
+                    .font(.system(size: DS.ChatPanel.rowTitleFontSizeInPoints, weight: .medium))
+                    .foregroundColor(DS.Colors.chatPanelPrimaryText)
+                    .lineLimit(1)
+                Text(folderRow.shortenedPath)
+                    .font(.system(size: DS.ChatPanel.rowDetailFontSizeInPoints))
+                    .foregroundColor(DS.Colors.chatPanelTertiaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            removeControls
+        }
+        .padding(.horizontal, DS.ChatPanel.memoryRowHorizontalPaddingInPoints)
+        .padding(.vertical, DS.ChatPanel.folderRowVerticalPaddingInPoints)
+        .background(
+            RoundedRectangle(cornerRadius: DS.ChatPanel.listRowCornerRadiusInPoints, style: .continuous)
+                .fill(isHovered || isAskingToConfirmRemoval ? DS.Colors.chatPanelRowHoverBackground : Color.clear)
+        )
+        .onHover { isHovered = $0 }
+    }
+
+    @ViewBuilder
+    private var removeControls: some View {
+        if isAskingToConfirmRemoval {
+            HStack(spacing: DS.ChatPanel.memoryRowActionSpacingInPoints) {
+                Text("remove this?")
+                    .font(.system(size: DS.ChatPanel.textActionFontSizeInPoints))
+                    .foregroundColor(DS.Colors.chatPanelSecondaryText)
+                Button(action: { viewModel.confirmRemovingEditableFolder(path: folderRow.path) }) {
+                    Text("remove")
+                }
+                .buttonStyle(ClickyChatTextButtonStyle(isDestructive: true))
+                .accessibilityLabel("confirm removing this folder")
+                Button(action: { viewModel.cancelEditableFolderRemovalConfirmation() }) {
+                    Text("cancel")
+                }
+                .buttonStyle(ClickyChatTextButtonStyle())
+            }
+        } else {
+            Button(action: { viewModel.askToConfirmRemovingEditableFolder(path: folderRow.path) }) {
+                Text("remove")
+            }
+            .buttonStyle(ClickyChatTextButtonStyle(isDestructive: true))
+            .accessibilityLabel("remove this folder")
+        }
     }
 }

@@ -300,6 +300,16 @@ enum DS {
         static let chatPanelSwitchOffTrack = Color(hex: "#2B302E")
         static let chatPanelSwitchKnob = Color(hex: "#F2F6FF")
 
+        /// The change card (round 17, file editing): its background, the diff's added and removed
+        /// lines (a soft background and a light text each) and the unchanged context lines.
+        static let chatPanelChangeCardBackground = Color(hex: "#121615")
+        static let chatPanelChangeCardBorder = Color(hex: "#2B312F")
+        static let chatPanelDiffAddedBackground = Color(hex: "#12301F")
+        static let chatPanelDiffAddedText = Color(hex: "#8CE8B0")
+        static let chatPanelDiffRemovedBackground = Color(hex: "#3A171A")
+        static let chatPanelDiffRemovedText = Color(hex: "#FF9A9F")
+        static let chatPanelDiffContextText = Color(hex: "#8A928E")
+
         // ── Floating Button Gradient ─────────────────────────────────
 
         /// The floating session button gradient colors (unchanged from original —
@@ -544,6 +554,20 @@ enum DS {
         static let permissionDotDiameterInPoints: CGFloat = 6
         /// A setting that cannot be changed now (typed replies while replies are not spoken) is dimmed to this.
         static let disabledRowOpacity: Double = 0.45
+
+        // The change card (round 17)
+        static let changeCardCornerRadiusInPoints: CGFloat = 10
+        static let changeCardPaddingInPoints: CGFloat = 12
+        static let changeCardSectionSpacingInPoints: CGFloat = 8
+        static let changeCardTitleFontSizeInPoints: CGFloat = 12
+        static let diffFontSizeInPoints: CGFloat = 11
+        static let diffLineHorizontalPaddingInPoints: CGFloat = 6
+        static let diffLineVerticalPaddingInPoints: CGFloat = 1
+        static let diffLineNumberWidthInPoints: CGFloat = 26
+        static let diffCornerRadiusInPoints: CGFloat = 6
+        static let changeCardKeyHintFontSizeInPoints: CGFloat = 10
+        // The folder rows of the settings tab's "files" section (round 17)
+        static let folderRowVerticalPaddingInPoints: CGFloat = 6
     }
 
     // MARK: - Animation Durations

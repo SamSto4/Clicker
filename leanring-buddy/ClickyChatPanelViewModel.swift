@@ -37,6 +37,43 @@ enum ClickyChatPanelScreen: Equatable {
     }
 }
 
+/// What the change card of the chat tab shows (round 17, file editing).
+struct ClickyChangeCardState: Equatable {
+    enum Phase: Equatable {
+        /// Waiting for return (apply) or escape (cancel), or a spoken yes or no.
+        case awaitingAnswer
+        /// Writing the files (a moment).
+        case applying
+        /// Applied; the card offers undo for 30 minutes.
+        case applied
+        /// Cancelled: "okay, i left it."
+        case leftAlone
+        case undone
+        /// Something that is not an answer to the change (it expired). Shows the sentence alone.
+        case notice
+    }
+
+    let setIdentifier: UUID
+    let content: ClickyChangeCardContent
+    var phase: Phase
+    /// A line under the title: why the change has not been applied yet ("save the file first, then
+    /// say yes again."), or the sentence of a notice.
+    var lineText: String?
+    /// False once another ordinary turn has started: a spoken or typed yes or no then goes to the
+    /// model (see `ClickyFileChangeLedger`), so the card stops offering it. Return and the buttons stay.
+    var acceptsSpokenAnswer = true
+}
+
+/// One folder of the settings tab's "files" section.
+struct ClickyEditableFolderRow: Equatable, Identifiable {
+    let path: String
+    let name: String
+    /// The path with the home folder written as "~".
+    let shortenedPath: String
+
+    var id: String { path }
+}
+
 @MainActor
 final class ClickyChatPanelViewModel: ObservableObject {
     let session: ClickyChatSession
@@ -55,6 +92,9 @@ final class ClickyChatPanelViewModel: ObservableObject {
     @Published private(set) var pendingUserMessageText: String?
     @Published private(set) var pendingInputMode: ClickyTurnInputMode = .typed
     @Published private(set) var streamingReplyText = ""
+    /// A progress note of the model while it works with files (round 17), shown small and grey. Not
+    /// the reply: it is never spoken and never saved in the chat.
+    @Published private(set) var workingNoteText: String?
     /// A short text error for a typed turn that failed ("i can't reach the internet right now.").
     /// Shown below the messages until the next message is sent.
     @Published private(set) var turnErrorText: String?
@@ -118,6 +158,26 @@ final class ClickyChatPanelViewModel: ObservableObject {
     var openPermissionSettingsHandler: ((ClickyPermissionKind) -> Void)?
     /// The user pressed "open notes folder". Given the folder the memory tab reads.
     var openNotesFolderHandler: ((URL) -> Void)?
+
+    // MARK: - File editing (round 17)
+
+    /// The change waiting for the user's answer (or its result), shown under the messages of the chat tab.
+    @Published private(set) var changeCard: ClickyChangeCardState?
+    /// The folders Clicky may edit, for the settings tab's "files" section. Mirrored from the app.
+    @Published private(set) var editableFolderRows: [ClickyEditableFolderRow] = []
+    /// Why a folder was not added ("your whole home folder is too much..."). Cleared on the next try.
+    @Published private(set) var editableFolderMessage: String?
+    /// The folder row that is asking "remove this?" in place. Nil when none is.
+    @Published private(set) var editableFolderAwaitingRemovalConfirmation: String?
+
+    /// Return on the card, or "apply" on it: write the pending change.
+    var applyPendingChangeHandler: (() -> Void)?
+    /// Escape on the card, or "cancel" on it.
+    var cancelPendingChangeHandler: (() -> Void)?
+    var undoAppliedChangeHandler: (() -> Void)?
+    /// "add folder…": the manager opens the folder picker.
+    var addEditableFolderHandler: (() -> Void)?
+    var removeEditableFolderHandler: ((String) -> Void)?
 
     private var sessionChangeObservation: AnyCancellable?
 
@@ -188,7 +248,10 @@ final class ClickyChatPanelViewModel: ObservableObject {
         searchQueryText = ""
         chatIDAwaitingDeleteConfirmation = nil
         memoryRowAwaitingDeleteConfirmation = nil
-        if requestsKeyboardFocus {
+        folderRemovalConfirmationDidEnd()
+        // A change waiting for an answer takes the keyboard (return and escape act on the card),
+        // so the text field must not.
+        if requestsKeyboardFocus && !isChangeCardAwaitingAnswer {
             requestInputFocus()
         }
     }
@@ -211,7 +274,9 @@ final class ClickyChatPanelViewModel: ObservableObject {
     func showActiveChat() {
         screen = .activeChat
         leaveChatScreens()
-        requestInputFocus()
+        if !isChangeCardAwaitingAnswer {
+            requestInputFocus()
+        }
     }
 
     func showChatList() {
@@ -251,6 +316,7 @@ final class ClickyChatPanelViewModel: ObservableObject {
     private func leaveChatScreens() {
         chatIDAwaitingDeleteConfirmation = nil
         memoryRowAwaitingDeleteConfirmation = nil
+        folderRemovalConfirmationDidEnd()
     }
 
     func openChatToRead(chatID: UUID) {
@@ -354,6 +420,7 @@ final class ClickyChatPanelViewModel: ObservableObject {
         pendingUserMessageText = userText
         pendingInputMode = inputMode
         streamingReplyText = ""
+        workingNoteText = nil
         turnErrorText = nil
         // A typed message is sent from the current chat's own field, so the panel is showing that
         // chat. A spoken one can arrive while the user is browsing the list, reading an old chat
@@ -370,6 +437,20 @@ final class ClickyChatPanelViewModel: ObservableObject {
     func updateStreamingReply(_ replyTextSoFar: String, turnIdentifier: UUID) {
         guard pendingTurnIdentifier == turnIdentifier else { return }
         streamingReplyText = replyTextSoFar
+        // Words of the real reply have started: the working line has done its job.
+        if !replyTextSoFar.isEmpty {
+            workingNoteText = nil
+        }
+    }
+
+    /// The model started a tool call (round 17), so the text it wrote before it was a progress note
+    /// ("i'll open your notes file and check."), not the answer. It moves from the reply to a small
+    /// grey working line. With no words before the call, the line says what is going on.
+    func showWorkingNote(_ progressNoteText: String, turnIdentifier: UUID) {
+        guard pendingTurnIdentifier == turnIdentifier else { return }
+        streamingReplyText = ""
+        let trimmedNoteText = progressNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
+        workingNoteText = trimmedNoteText.isEmpty ? "looking at your files…" : trimmedNoteText
     }
 
     /// The turn finished and its exchange is now in the chat, so the pending message goes away.
@@ -384,6 +465,7 @@ final class ClickyChatPanelViewModel: ObservableObject {
         turnErrorText = errorText
         pendingTurnIdentifier = nil
         streamingReplyText = ""
+        workingNoteText = nil
     }
 
     /// The turn was cancelled (Escape, a newer message, the ask keys): its pending message goes.
@@ -396,6 +478,7 @@ final class ClickyChatPanelViewModel: ObservableObject {
         pendingTurnIdentifier = nil
         pendingUserMessageText = nil
         streamingReplyText = ""
+        workingNoteText = nil
     }
 
     // MARK: - Memory tab
@@ -563,6 +646,158 @@ final class ClickyChatPanelViewModel: ObservableObject {
 
     func openPermissionSettings(for permissionKind: ClickyPermissionKind) {
         openPermissionSettingsHandler?(permissionKind)
+    }
+
+    // MARK: - The change card (round 17)
+
+    var isChangeCardAwaitingAnswer: Bool {
+        changeCard?.phase == .awaitingAnswer
+    }
+
+    /// When the card last started waiting for an answer, in seconds of system uptime (the clock of
+    /// `NSEvent.timestamp`).
+    private(set) var changeCardAwaitingSinceUptimeSeconds: TimeInterval = 0
+    /// A Return this soon after the card appeared is ignored. The card takes the keyboard from the
+    /// app the user was in, so a Return they were already typing there must not apply a change
+    /// they have not seen.
+    static let returnKeyIgnoredAfterCardAppearsSeconds: TimeInterval = 0.7
+
+    /// A turn queued changes: the card shows the diff and waits for return, escape, a yes or a no.
+    func showPendingChangeCard(setIdentifier: UUID, content: ClickyChangeCardContent) {
+        changeCardAwaitingSinceUptimeSeconds = ProcessInfo.processInfo.systemUptime
+        changeCard = ClickyChangeCardState(setIdentifier: setIdentifier, content: content, phase: .awaitingAnswer, lineText: nil)
+        // The card takes the keyboard from the text field; see `ClickyChatPanelController`.
+        screen = .activeChat
+    }
+
+    func showChangeCardApplying() {
+        guard var card = changeCard else { return }
+        card.phase = .applying
+        card.lineText = nil
+        changeCard = card
+    }
+
+    /// The change was refused for now but stays pending (unsaved edits): the card says why.
+    func showChangeCardStillWaiting(lineText: String) {
+        guard var card = changeCard else { return }
+        card.phase = .awaitingAnswer
+        card.lineText = lineText
+        changeCard = card
+    }
+
+    func showChangeCardApplied() {
+        guard var card = changeCard else { return }
+        card.phase = .applied
+        card.lineText = ClickyChangeSpokenSentences.applied
+        changeCard = card
+    }
+
+    func showChangeCardLeftAlone() {
+        guard var card = changeCard else { return }
+        card.phase = .leftAlone
+        card.lineText = ClickyChangeSpokenSentences.discarded
+        changeCard = card
+    }
+
+    func showChangeCardUndone() {
+        guard var card = changeCard else { return }
+        card.phase = .undone
+        card.lineText = ClickyChangeSpokenSentences.undone
+        changeCard = card
+    }
+
+    /// An answer that is only words (the change expired, the file changed): the card shrinks to the sentence.
+    func showChangeCardNotice(_ noticeText: String) {
+        guard var card = changeCard else { return }
+        card.phase = .notice
+        card.lineText = noticeText
+        changeCard = card
+    }
+
+    /// Another ordinary turn started while the card waits: it stops offering "or say yes or no".
+    func showChangeCardNoLongerAcceptsSpokenAnswer() {
+        guard var card = changeCard, card.phase == .awaitingAnswer, card.acceptsSpokenAnswer else { return }
+        card.acceptsSpokenAnswer = false
+        changeCard = card
+    }
+
+    /// The card goes away (a newer change replaced it, or the chat was left).
+    func dismissChangeCard() {
+        changeCard = nil
+    }
+
+    func requestApplyPendingChange() {
+        guard isChangeCardAwaitingAnswer else { return }
+        applyPendingChangeHandler?()
+    }
+
+    /// Return (or keypad Enter) on the card: applies the change unless the key came within
+    /// `returnKeyIgnoredAfterCardAppearsSeconds` of the card appearing.
+    func requestApplyPendingChangeFromReturnKey(keyPressedAtUptimeSeconds: TimeInterval) {
+        let secondsSinceCardAppeared = keyPressedAtUptimeSeconds - changeCardAwaitingSinceUptimeSeconds
+        guard secondsSinceCardAppeared >= Self.returnKeyIgnoredAfterCardAppearsSeconds else {
+            print("⏎ Clicky: Return ignored, the change card appeared \(Int(secondsSinceCardAppeared * 1000)) ms ago")
+            return
+        }
+        requestApplyPendingChange()
+    }
+
+    func requestCancelPendingChange() {
+        guard isChangeCardAwaitingAnswer else { return }
+        cancelPendingChangeHandler?()
+    }
+
+    func requestUndoAppliedChange() {
+        guard changeCard?.phase == .applied else { return }
+        undoAppliedChangeHandler?()
+    }
+
+    // MARK: - The folders Clicky may edit (round 17)
+
+    /// The app's list of folders, mirrored in (it is stored in `UserDefaults` by the manager).
+    func mirrorEditableFolderPaths(_ folderPaths: [String], homeDirectoryPath: String) {
+        let rows = folderPaths.map { folderPath in
+            ClickyEditableFolderRow(
+                path: folderPath,
+                name: ClickyEditableFolders.displayName(forFolderPath: folderPath),
+                shortenedPath: ClickyEditableFolders.shortenedPath(folderPath, homeDirectoryPath: homeDirectoryPath)
+            )
+        }
+        guard rows != editableFolderRows else { return }
+        editableFolderRows = rows
+        if let editableFolderAwaitingRemovalConfirmation, !rows.contains(where: { $0.path == editableFolderAwaitingRemovalConfirmation }) {
+            self.editableFolderAwaitingRemovalConfirmation = nil
+        }
+    }
+
+    func requestAddingEditableFolder() {
+        editableFolderMessage = nil
+        addEditableFolderHandler?()
+    }
+
+    func showEditableFolderMessage(_ messageText: String?) {
+        editableFolderMessage = messageText
+    }
+
+    /// The first click on a folder's remove: the row asks "remove this?" in place. Nothing is removed yet.
+    func askToConfirmRemovingEditableFolder(path: String) {
+        editableFolderAwaitingRemovalConfirmation = path
+        editableFolderMessage = nil
+    }
+
+    func cancelEditableFolderRemovalConfirmation() {
+        editableFolderAwaitingRemovalConfirmation = nil
+    }
+
+    /// The second click, on the confirmation.
+    func confirmRemovingEditableFolder(path: String) {
+        guard editableFolderAwaitingRemovalConfirmation == path else { return }
+        editableFolderAwaitingRemovalConfirmation = nil
+        removeEditableFolderHandler?(path)
+    }
+
+    private func folderRemovalConfirmationDidEnd() {
+        editableFolderAwaitingRemovalConfirmation = nil
     }
 
     // MARK: - Size
