@@ -1,0 +1,491 @@
+[
+ {
+  "id": "vz_v01",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "mark-circle",
+  "kind": "mark",
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "Circle the run button for me.",
+  "expect": {
+   "shape": "circle",
+   "targets": [
+    {
+     "screen": 1,
+     "element": "xcode_run_button"
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_v02",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "mark-box",
+  "kind": "mark",
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "Draw a box around the Create application button.",
+  "expect": {
+   "shape": "box",
+   "targets": [
+    {
+     "screen": 1,
+     "element": "browser_create_application_button"
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_v03",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "mark-underline",
+  "kind": "mark",
+  "screens": [
+   "terminal_main.jpg"
+  ],
+  "userPrompt": "Underline the error line in my terminal.",
+  "expect": {
+   "shape": "underline",
+   "targets": [
+    {
+     "screen": 1,
+     "element": "terminal_error_line"
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_v04",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "mark-highlight",
+  "kind": "mark",
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "Highlight the notes-sync row in that table.",
+  "expect": {
+   "shape": "highlight",
+   "targets": [
+    {
+     "screen": 1,
+     "element": "browser_row_notes_sync"
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_v05",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "mark-arrow",
+  "kind": "mark",
+  "screens": [
+   "settings_main.jpg"
+  ],
+  "userPrompt": "Draw an arrow pointing at Bluetooth in the sidebar.",
+  "expect": {
+   "shape": "arrow",
+   "targets": [
+    {
+     "screen": 1,
+     "element": "settings_sidebar_bluetooth"
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_v06",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "callouts-labelled-toolbar",
+  "kind": "callouts",
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "Label the main buttons in the Xcode toolbar for me.",
+  "expect": {
+   "minimumCorrect": 3,
+   "parts": [
+    {
+     "screen": 1,
+     "elements": [
+      "xcode_run_button"
+     ],
+     "textAnyOf": [
+      "run",
+      "play",
+      "build"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "xcode_stop_button"
+     ],
+     "textAnyOf": [
+      "stop"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "xcode_scheme_selector"
+     ],
+     "textAnyOf": [
+      "scheme",
+      "target",
+      "destination"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "xcode_navigator_toggle"
+     ],
+     "textAnyOf": [
+      "navigator",
+      "sidebar"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "xcode_library_button"
+     ],
+     "textAnyOf": [
+      "library",
+      "add",
+      "plus"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "xcode_activity_viewer"
+     ],
+     "textAnyOf": [
+      "status",
+      "activity",
+      "build"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "xcode_debug_area_toggle"
+     ],
+     "textAnyOf": [
+      "debug",
+      "console",
+      "bottom"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "xcode_inspector_toggle"
+     ],
+     "textAnyOf": [
+      "inspector",
+      "right"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "xcode_editor_options_button"
+     ],
+     "textAnyOf": [
+      "editor",
+      "layout",
+      "canvas",
+      "options"
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_v07",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "callouts-unlabelled-icons",
+  "kind": "callouts",
+  "screens": [
+   "vscode_main.jpg"
+  ],
+  "userPrompt": "Annotate the icons in the activity bar on the left so I know what each one is.",
+  "expect": {
+   "minimumCorrect": 4,
+   "parts": [
+    {
+     "screen": 1,
+     "elements": [
+      "vscode_activity_explorer"
+     ],
+     "textAnyOf": [
+      "explorer",
+      "files"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "vscode_activity_search"
+     ],
+     "textAnyOf": [
+      "search",
+      "find"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "vscode_activity_source_control"
+     ],
+     "textAnyOf": [
+      "source control",
+      "git"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "vscode_activity_run_and_debug"
+     ],
+     "textAnyOf": [
+      "debug",
+      "run"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "vscode_activity_extensions"
+     ],
+     "textAnyOf": [
+      "extension"
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_v08",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "card-process",
+  "kind": "card",
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "Explain how a pull request works, from branch to merge.",
+  "expect": {
+   "rowKindAnyOf": [
+    "flow",
+    "timeline",
+    "boxes"
+   ],
+   "cardKeywordGroups": [
+    [
+     "branch"
+    ],
+    [
+     "review"
+    ],
+    [
+     "merge"
+    ]
+   ]
+  }
+ },
+ {
+  "id": "vz_v09",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "card-comparison",
+  "kind": "card",
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "Break down the difference between TCP and UDP for me. Compare them.",
+  "expect": {
+   "rowKindAnyOf": [
+    "boxes",
+    "flow",
+    "text"
+   ],
+   "cardKeywordGroups": [
+    [
+     "tcp"
+    ],
+    [
+     "udp"
+    ],
+    [
+     "reliab",
+     "order",
+     "guarantee",
+     "deliver"
+    ]
+   ]
+  }
+ },
+ {
+  "id": "vz_v10",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "absent-element",
+  "kind": "absent",
+  "screens": [
+   "settings_main.jpg"
+  ],
+  "userPrompt": "Circle the run button.",
+  "expect": {}
+ },
+ {
+  "id": "vz_v11",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "edit-erase-by-id",
+  "kind": "edit",
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "Remove the circle around the stop button.",
+  "expect": {
+   "editKind": "erase",
+   "expectedRemovedMarkIdentifiers": [
+    "m2"
+   ],
+   "expectedKeptMarkIdentifiers": [
+    "m1",
+    "m3"
+   ]
+  },
+  "seedDrawTagTexts": [
+   "that's the run button. [DRAW:circle:150,46:22] and that's stop. [DRAW:circle:184,46:22] the scheme selector is next to them. [DRAW:box:210,30:198,32] [POINT:none]"
+  ],
+  "history": [
+   {
+    "user": "Circle the run and stop buttons and box the scheme selector.",
+    "assistant": "that's the run button. [DRAW:circle:150,46:22] and that's stop. [DRAW:circle:184,46:22] the scheme selector is next to them. [DRAW:box:210,30:198,32]"
+   }
+  ]
+ },
+ {
+  "id": "vz_v12",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "edit-clear",
+  "kind": "edit",
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "Okay, clear all of that off my screen.",
+  "expect": {
+   "editKind": "clear",
+   "expectedRemovedMarkIdentifiers": [
+    "m1",
+    "m2",
+    "m3"
+   ],
+   "expectedKeptMarkIdentifiers": []
+  },
+  "seedDrawTagTexts": [
+   "reload is up here. [DRAW:circle:104,82:22] and this creates a new app. [DRAW:box:1044,156:202,52] [DRAW:label:1050,214:new app starts here] [POINT:none]"
+  ],
+  "history": [
+   {
+    "user": "Circle the reload button and box the create application button.",
+    "assistant": "reload is up here. [DRAW:circle:104,82:22] and this creates a new app. [DRAW:box:1044,156:202,52] [DRAW:label:1050,214:new app starts here]"
+   }
+  ]
+ },
+ {
+  "id": "vz_v13",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "edit-add-card-row",
+  "kind": "edit",
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "Add a row to that card about code review.",
+  "expect": {
+   "editKind": "add_row",
+   "rowKeywordGroups": [
+    [
+     "review"
+    ]
+   ]
+  },
+  "seedDrawTagTexts": [
+   "here's how a pull request starts. [CARD:how a pull request works] you branch, commit and push. [ROW:flow:branch > commit > push] [POINT:none]"
+  ],
+  "history": [
+   {
+    "user": "Explain how a pull request starts.",
+    "assistant": "here's how a pull request starts. [CARD:how a pull request works] you branch, commit and push. [ROW:flow:branch > commit > push]"
+   }
+  ]
+ },
+ {
+  "id": "vz_v14",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "control-trigger-word-in-ordinary-question",
+  "kind": "control",
+  "screens": [
+   "vscode_main.jpg"
+  ],
+  "userPrompt": "How do I change the syntax highlighting theme in VS Code?",
+  "expect": {}
+ },
+ {
+  "id": "vz_v15",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "control-where-is",
+  "kind": "control",
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "Where's the stop button?",
+  "expect": {
+   "targets": [
+    {
+     "screen": 1,
+     "element": "xcode_stop_button"
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_v16",
+  "split": "visible",
+  "dimension": "visual",
+  "category": "second-screen-mark",
+  "kind": "second_screen",
+  "screens": [
+   "vscode_main.jpg",
+   "browser_main.jpg"
+  ],
+  "userPrompt": "On my other monitor, circle the reload button in the browser.",
+  "expect": {
+   "shape": "circle",
+   "targets": [
+    {
+     "screen": 2,
+     "element": "browser_reload_button"
+    }
+   ]
+  }
+ }
+]

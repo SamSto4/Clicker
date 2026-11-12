@@ -286,9 +286,12 @@ nonisolated enum ClickyDrawTagParser {
             return finishedHistoryAssistantText
         }
 
-        let spokenTextAsWritten = ClickyReplyTagParser.parse(rawReplyText).spokenText
-        let finisherKeptTheWordsAsWritten = finishedSpokenText == spokenTextAsWritten
-            && finishedHistoryAssistantText.hasPrefix(finishedSpokenText)
+        // The finisher speaks the reply without markdown marks but keeps them in history, so the
+        // spoken text is compared without the marks and the history text with them.
+        let parsedReplyAsWritten = ClickyReplyTagParser.parse(rawReplyText)
+        let historyReplyTextAsWritten = parsedReplyAsWritten.spokenTextAsWritten
+        let finisherKeptTheWordsAsWritten = finishedSpokenText == parsedReplyAsWritten.spokenText
+            && finishedHistoryAssistantText.hasPrefix(historyReplyTextAsWritten)
         guard finisherKeptTheWordsAsWritten else {
             return ([finishedHistoryAssistantText] + canonicalTagTexts)
                 .filter { !$0.isEmpty }
@@ -300,16 +303,16 @@ nonisolated enum ClickyDrawTagParser {
         var nextUnreadIndex = rawReplyText.startIndex
         for drawTagOccurrence in drawTagOccurrences {
             let replyTextBeforeTag = String(rawReplyText[nextUnreadIndex..<drawTagOccurrence.rangeInReplyText.lowerBound])
-            historyPieces.append(ClickyReplyTagParser.parse(replyTextBeforeTag).spokenText)
+            historyPieces.append(ClickyReplyTagParser.parse(replyTextBeforeTag).spokenTextAsWritten)
             if let command = drawTagOccurrence.command {
                 historyPieces.append(canonicalTagText(for: command))
             }
             nextUnreadIndex = drawTagOccurrence.rangeInReplyText.upperBound
         }
-        historyPieces.append(ClickyReplyTagParser.parse(String(rawReplyText[nextUnreadIndex...])).spokenText)
+        historyPieces.append(ClickyReplyTagParser.parse(String(rawReplyText[nextUnreadIndex...])).spokenTextAsWritten)
 
         // Whatever the finisher added after the spoken words: the saved [NOTE:] and [PROFILE:] tags.
-        let memoryTagsKeptByTheFinisher = String(finishedHistoryAssistantText.dropFirst(finishedSpokenText.count))
+        let memoryTagsKeptByTheFinisher = String(finishedHistoryAssistantText.dropFirst(historyReplyTextAsWritten.count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         historyPieces.append(memoryTagsKeptByTheFinisher)
 

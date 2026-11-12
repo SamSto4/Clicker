@@ -39,6 +39,14 @@ export function writeLeaderboard(loopFolder) {
     return `| ${summary.round} | ${summary.label ?? fileName} | ${scenarioCount} | **${formatScore(personalization.score)}** | ${formatScore(personalization.split_scores?.visible)} | ${formatScore(personalization.split_scores?.holdout)} | ${personalization.details?.tags_dropped_by_gate_count ?? "-"} | ${summary.calls_used?.total ?? "-"} |`;
   });
 
+  // Round 6: visual (drawing on the screen and the explanation card) is tracked separately as well.
+  const visualRows = summaries.filter(({ summary }) => summary.visual).map(({ fileName, summary }) => {
+    const visual = summary.visual;
+    const scenarioCount = (visual.details?.scenarios_scored ?? 0) + (visual.details?.scenarios_errored ?? 0);
+    const kindScore = (kind) => formatScore(visual.details?.by_kind?.[kind]?.score);
+    return `| ${summary.round} | ${summary.label ?? fileName} | ${scenarioCount} | **${formatScore(visual.score)}** | ${formatScore(visual.split_scores?.visible)} | ${formatScore(visual.split_scores?.holdout)} | ${kindScore("mark")} | ${kindScore("second_screen")} | ${kindScore("callouts")} | ${kindScore("card")} | ${kindScore("absent")} | ${kindScore("edit")} | ${kindScore("control")} | ${visual.details?.tags_dropped_by_the_app_parser_total ?? "-"} | ${summary.calls_used?.total ?? "-"} |`;
+  });
+
   const markdown = [
     "# Clicky improvement loop leaderboard",
     "",
@@ -60,6 +68,16 @@ export function writeLeaderboard(loopFolder) {
       ...personalizationRows,
       "",
       "Scored on what the app's real turn finisher saved or removed in a temporary profile, not on the model's tag alone. Rubric in eval/README.md.",
+      "",
+    ]),
+    ...(visualRows.length === 0 ? [] : [
+      "## Visual: drawing on the screen and the explanation card (round 6; tracked separately, excluded from the weighted total)",
+      "",
+      "| Round | Label | Scenarios | Visual | Visible | Holdout | Mark an element | Mark on screen 2 | Label the parts | Explanation card | Element absent | Edit marks | Controls (must not draw) | Tags dropped by the app parser | API calls |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+      ...visualRows,
+      "",
+      "Tags are read by the app's own ClickyDrawTagParser through the eval driver; marks are compared with the fixtures' known element boxes. Rubric in eval/README.md.",
       "",
     ]),
   ].join("\n");

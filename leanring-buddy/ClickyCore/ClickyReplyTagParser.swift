@@ -11,8 +11,13 @@ nonisolated struct ClickyPointTarget: Equatable {
 }
 
 nonisolated struct ClickyParsedReply: Equatable {
-    /// Text that is safe to hand to text-to-speech: no tags and no stray punctuation left behind by removed tags.
+    /// Text that is safe to hand to text-to-speech: no tags, no stray punctuation left behind by
+    /// removed tags, and no markdown code or emphasis marks (backticks, `**`, list markers), which
+    /// the voice reads badly.
     let spokenText: String
+    /// The same text with the model's markdown marks still in it. Conversation history uses this
+    /// one, so history shows the reply as the model wrote it.
+    let spokenTextAsWritten: String
     let pointTarget: ClickyPointTarget?
     let noteTexts: [String]
     /// Facts Claude wants to add to the user's profile. These are only candidates: the turn
@@ -75,29 +80,43 @@ nonisolated enum ClickyReplyTagParser {
 
         // Every complete tag is removed from the spoken text, including NOTE and PROFILE tags past
         // their caps, so tag text is never read aloud.
-        var spokenText = replacing(completeTagRegex, in: rawReplyText, with: " ")
+        var replyTextWithoutTags = replacing(completeTagRegex, in: rawReplyText, with: " ")
 
         // A reply cut off by the token limit can end inside a tag, such as "[POINT:12,". Any
         // unclosed bracket at the very end is that fragment, so it is dropped before speaking.
         let truncatedTagFragmentRegex = try! NSRegularExpression(pattern: "\\[[^\\]]*\\z")
-        spokenText = replacing(truncatedTagFragmentRegex, in: spokenText, with: " ")
+        replyTextWithoutTags = replacing(truncatedTagFragmentRegex, in: replyTextWithoutTags, with: " ")
+
+        // The markdown marks are removed here, before line breaks are collapsed below, because a
+        // list or heading mark is only recognisable at the start of a line. This is the one place
+        // all spoken text passes through (the turn finisher, the early speech fetch and the
+        // drawing schedule all read `spokenText`), so they agree on what the voice will say.
+        let spokenText = tidiedSpokenText(ClickySpokenTextFormatting.removingMarkdownMarks(from: replyTextWithoutTags))
+        let spokenTextAsWritten = tidiedSpokenText(replyTextWithoutTags)
+
+        let pointTarget = lastPointTagBody.flatMap { pointTarget(fromTagBody: $0) }
+        return ClickyParsedReply(spokenText: spokenText, spokenTextAsWritten: spokenTextAsWritten, pointTarget: pointTarget, noteTexts: noteTexts, profileTexts: profileTexts, emptyMemoryTagCount: emptyMemoryTagCount)
+    }
+
+    /// Cleans up what removing tags (and markdown marks) leaves behind: stray punctuation, runs of
+    /// whitespace and line breaks. Text with no letter or digit left becomes empty.
+    private static func tidiedSpokenText(_ textWithoutTags: String) -> String {
+        var tidiedText = textWithoutTags
 
         // Removing a tag can leave "button ." or "button. ." behind, which the voice would pause on.
         let spaceBeforePunctuationRegex = try! NSRegularExpression(pattern: "\\s+([.,!?;:])")
-        spokenText = replacing(spaceBeforePunctuationRegex, in: spokenText, with: "$1")
+        tidiedText = replacing(spaceBeforePunctuationRegex, in: tidiedText, with: "$1")
         let repeatedSentencePunctuationRegex = try! NSRegularExpression(pattern: "([.!?])(?:\\s*[.!?,;:])+")
-        spokenText = replacing(repeatedSentencePunctuationRegex, in: spokenText, with: "$1")
+        tidiedText = replacing(repeatedSentencePunctuationRegex, in: tidiedText, with: "$1")
 
         let whitespaceRunRegex = try! NSRegularExpression(pattern: "\\s+")
-        spokenText = replacing(whitespaceRunRegex, in: spokenText, with: " ")
-        spokenText = spokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+        tidiedText = replacing(whitespaceRunRegex, in: tidiedText, with: " ")
+        tidiedText = tidiedText.trimmingCharacters(in: .whitespacesAndNewlines)
         // A reply that was only a tag and a period would otherwise speak a lone ".".
-        if !spokenText.contains(where: { $0.isLetter || $0.isNumber }) {
-            spokenText = ""
+        if !tidiedText.contains(where: { $0.isLetter || $0.isNumber }) {
+            tidiedText = ""
         }
-
-        let pointTarget = lastPointTagBody.flatMap { pointTarget(fromTagBody: $0) }
-        return ClickyParsedReply(spokenText: spokenText, pointTarget: pointTarget, noteTexts: noteTexts, profileTexts: profileTexts, emptyMemoryTagCount: emptyMemoryTagCount)
+        return tidiedText
     }
 
     /// Reads the body of one POINT tag, such as "120,40:save button:screen2".

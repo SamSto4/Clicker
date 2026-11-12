@@ -1,0 +1,300 @@
+[
+ {
+  "id": "vz_h01",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "mark-circle",
+  "kind": "mark",
+  "screens": [
+   "vscode_main.jpg"
+  ],
+  "userPrompt": "Can you circle the Problems tab in the bottom panel?",
+  "expect": {
+   "shape": "circle",
+   "targets": [
+    {
+     "screen": 1,
+     "element": "vscode_panel_tab_problems"
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_h02",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "mark-highlight",
+  "kind": "mark",
+  "screens": [
+   "settings_main.jpg"
+  ],
+  "userPrompt": "Highlight the Microphone row.",
+  "expect": {
+   "shape": "highlight",
+   "targets": [
+    {
+     "screen": 1,
+     "element": "settings_row_microphone"
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_h03",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "mark-arrow",
+  "kind": "mark",
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "Point an arrow at the bookmark star.",
+  "expect": {
+   "shape": "arrow",
+   "targets": [
+    {
+     "screen": 1,
+     "element": "browser_bookmark_star"
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_h04",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "callouts-unlabelled-icons",
+  "kind": "callouts",
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "Label the back, forward and reload buttons for me.",
+  "expect": {
+   "minimumCorrect": 3,
+   "parts": [
+    {
+     "screen": 1,
+     "elements": [
+      "browser_back_button"
+     ],
+     "textAnyOf": [
+      "back"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "browser_forward_button"
+     ],
+     "textAnyOf": [
+      "forward"
+     ]
+    },
+    {
+     "screen": 1,
+     "elements": [
+      "browser_reload_button"
+     ],
+     "textAnyOf": [
+      "reload",
+      "refresh"
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "id": "vz_h05",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "card-process",
+  "kind": "card",
+  "screens": [
+   "terminal_main.jpg"
+  ],
+  "userPrompt": "Teach me how git's staging area works, step by step.",
+  "expect": {
+   "rowKindAnyOf": [
+    "flow",
+    "timeline",
+    "boxes"
+   ],
+   "cardKeywordGroups": [
+    [
+     "stag",
+     "add"
+    ],
+    [
+     "commit"
+    ],
+    [
+     "working",
+     "edit",
+     "modif",
+     "change"
+    ]
+   ]
+  }
+ },
+ {
+  "id": "vz_h06",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "card-process",
+  "kind": "card",
+  "screens": [
+   "settings_main.jpg"
+  ],
+  "userPrompt": "How does public key encryption work? Break it down.",
+  "expect": {
+   "rowKindAnyOf": [
+    "flow",
+    "boxes",
+    "timeline"
+   ],
+   "cardKeywordGroups": [
+    [
+     "public"
+    ],
+    [
+     "private"
+    ],
+    [
+     "encrypt",
+     "lock"
+    ]
+   ]
+  }
+ },
+ {
+  "id": "vz_h07",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "absent-element",
+  "kind": "absent",
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "Underline the build error in the debug console.",
+  "expect": {}
+ },
+ {
+  "id": "vz_h08",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "edit-undo",
+  "kind": "edit",
+  "screens": [
+   "settings_main.jpg"
+  ],
+  "userPrompt": "Undo that last one.",
+  "expect": {
+   "editKind": "undo",
+   "expectedRemovedMarkIdentifiers": [
+    "m2"
+   ],
+   "expectedKeptMarkIdentifiers": [
+    "m1"
+   ]
+  },
+  "seedDrawTagTexts": [
+   "wi-fi is right here. [DRAW:circle:305,228:60] [POINT:none]",
+   "and bluetooth is below it. [DRAW:arrow:470,300:414,262] [POINT:none]"
+  ],
+  "history": [
+   {
+    "user": "Circle Wi-Fi in the sidebar.",
+    "assistant": "wi-fi is right here. [DRAW:circle:305,228:60]"
+   },
+   {
+    "user": "Now draw an arrow to Bluetooth.",
+    "assistant": "and bluetooth is below it. [DRAW:arrow:470,300:414,262]"
+   }
+  ]
+ },
+ {
+  "id": "vz_h09",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "edit-erase-by-id",
+  "kind": "edit",
+  "screens": [
+   "vscode_main.jpg"
+  ],
+  "userPrompt": "Get rid of the label on the search icon.",
+  "expect": {
+   "editKind": "erase",
+   "expectedRemovedMarkIdentifiers": [
+    "m2"
+   ],
+   "expectedKeptMarkIdentifiers": [
+    "m1",
+    "m3",
+    "m4"
+   ]
+  },
+  "seedDrawTagTexts": [
+   "here are the first three. [DRAW:callout:24,78:explorer] [DRAW:callout:24,124:search] [DRAW:callout:24,170:source control] and this is the problems tab. [DRAW:box:308,542:108,32] [POINT:none]"
+  ],
+  "history": [
+   {
+    "user": "Label the first three icons on the left and box the problems tab.",
+    "assistant": "here are the first three. [DRAW:callout:24,78:explorer] [DRAW:callout:24,124:search] [DRAW:callout:24,170:source control] and this is the problems tab. [DRAW:box:308,542:108,32]"
+   }
+  ]
+ },
+ {
+  "id": "vz_h10",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "control-marks-on-screen-ordinary-question",
+  "kind": "control",
+  "screens": [
+   "xcode_main.jpg"
+  ],
+  "userPrompt": "What does the published property wrapper do in Swift?",
+  "expect": {},
+  "seedDrawTagTexts": [
+   "that's the run button. [DRAW:circle:150,46:22] [POINT:none]"
+  ],
+  "history": [
+   {
+    "user": "Circle the run button.",
+    "assistant": "that's the run button. [DRAW:circle:150,46:22]"
+   }
+  ]
+ },
+ {
+  "id": "vz_h11",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "control-trigger-word-in-ordinary-question",
+  "kind": "control",
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "How do I underline text in Google Docs?",
+  "expect": {}
+ },
+ {
+  "id": "vz_h12",
+  "split": "holdout",
+  "dimension": "visual",
+  "category": "second-screen-mark",
+  "kind": "second_screen",
+  "screens": [
+   "xcode_main.jpg",
+   "terminal_second.jpg"
+  ],
+  "userPrompt": "Draw a box around the new tab button in the terminal on my second screen.",
+  "expect": {
+   "shape": "box",
+   "targets": [
+    {
+     "screen": 2,
+     "element": "terminal_new_tab_button"
+    }
+   ]
+  }
+ }
+]

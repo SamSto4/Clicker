@@ -216,7 +216,8 @@ final class CompanionManager: ObservableObject {
             voiceActivity: statusPillVoiceActivity,
             dictationActivity: statusPillDictationActivity,
             isMicrophoneStartingUp: buddyDictationManager.isPreparingToRecord,
-            isSpeechAudioPlaying: isSpeechAudioPlaying
+            isSpeechAudioPlaying: isSpeechAudioPlaying,
+            turnFailureNoticeText: turnFailureNoticeText
         )
 
         if let statusPillContent, let screenUnderCursor = Self.screenUnderCursor() {
@@ -228,6 +229,41 @@ final class CompanionManager: ObservableObject {
         if isSpeechAudioPlaying {
             refreshStatusPillWhenSpeechEnds()
         }
+    }
+
+    /// The notice of an ask turn that failed, shown in the status pill for a few seconds: the
+    /// spoken error sentence, or the unspoken reply after "voice unavailable". nil otherwise.
+    private var turnFailureNoticeText: String?
+    private var turnFailureNoticeHideTask: Task<Void, Never>?
+
+    /// Shows a failure notice in the status pill and takes it away again after the time it takes
+    /// to read. A newer notice replaces an older one.
+    private func showTurnFailureNoticeInStatusPill(_ noticeText: String) {
+        turnFailureNoticeHideTask?.cancel()
+        turnFailureNoticeText = noticeText
+        refreshStatusPill()
+
+        let noticeDisplaySeconds = ClickyTurnFailureMessage.noticeDisplaySeconds(forNoticeText: noticeText)
+        turnFailureNoticeHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(noticeDisplaySeconds * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.turnFailureNoticeText = nil
+            self.refreshStatusPill()
+        }
+    }
+
+    /// Stops a spoken error sentence and removes its notice at once. Called wherever the answer's
+    /// own audio is stopped (a new press of the ask keys, a new turn, Escape), so the last turn's
+    /// error neither talks over the user nor comes back after the new turn's "thinking".
+    private func stopTellingUserAboutTurnFailure() {
+        if spokenErrorSpeechSynthesizer.isSpeaking {
+            spokenErrorSpeechSynthesizer.stopSpeaking()
+        }
+        turnFailureNoticeHideTask?.cancel()
+        turnFailureNoticeHideTask = nil
+        guard turnFailureNoticeText != nil else { return }
+        turnFailureNoticeText = nil
+        refreshStatusPill()
     }
 
     private func refreshStatusPillWhenSpeechEnds() {
@@ -874,6 +910,7 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
         clearDetectedElementLocation()
         // The answer's speech has just been cut off, so the marks that were waiting for their
         // moment in it are not drawn. Marks already on the screen stay.
@@ -918,6 +955,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         currentSpeechPrefetch?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
         clearDetectedElementLocation()
         voiceState = .idle
         scheduleTransientHideIfNeeded()
@@ -995,6 +1033,7 @@ final class CompanionManager: ObservableObject {
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
             elevenLabsTTSClient.stopPlayback()
+            stopTellingUserAboutTurnFailure()
             clearDetectedElementLocation()
 
             // Marks already drawn stay on the screen while the user asks again, so the next
@@ -1075,6 +1114,7 @@ final class CompanionManager: ObservableObject {
 
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
 
         let turnIdentifier = UUID()
         let speechPrefetch = ElevenLabsSpeechPrefetch()
@@ -1480,7 +1520,13 @@ final class CompanionManager: ObservableObject {
                             // turnStepInProgress stays at .textToSpeech so the metrics line records the failure.
                             ClickyAnalytics.trackTTSError(error: error.localizedDescription)
                             print("⚠️ ElevenLabs TTS error: \(error)")
-                            speakCreditsErrorFallback()
+                            // The answer is good and only the voice failed, so no error is
+                            // spoken: the answer is shown in the status pill instead.
+                            tellUserAboutTurnFailure(
+                                failingStep: .textToSpeech,
+                                error: error,
+                                spokenReplyTextThatCouldNotBeSpoken: spokenText
+                            )
                             // The voice failed, but the drawing can still be shown: with no audio
                             // to pace against, the marks follow each other at a steady beat.
                             drawingOverlayController.performDrawCommands(
@@ -1510,7 +1556,11 @@ final class CompanionManager: ObservableObject {
                 if !Task.isCancelled {
                     ClickyAnalytics.trackResponseError(error: error.localizedDescription)
                     print("⚠️ Companion response error: \(error)")
-                    speakCreditsErrorFallback()
+                    tellUserAboutTurnFailure(
+                        failingStep: turnStepInProgress,
+                        error: error,
+                        spokenReplyTextThatCouldNotBeSpoken: nil
+                    )
                 }
             }
 
@@ -1580,15 +1630,43 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
+    /// Tells the user honestly what went wrong with a turn. The sentence is chosen from the step
+    /// that failed and the error (`ClickyTurnFailureMessage`), spoken with the Mac's own voice
+    /// (NSSpeechSynthesizer, so it works with no network and with ElevenLabs down) and shown in
+    /// the status pill. When only the voice failed after a good reply, nothing is spoken and the
+    /// reply itself is shown in the pill.
+    ///
+    /// The real error is printed by the caller; nothing about it is spoken or shown.
+    private func tellUserAboutTurnFailure(
+        failingStep: ClickyTurnStep?,
+        error: Error,
+        spokenReplyTextThatCouldNotBeSpoken: String?
+    ) {
+        let bridgedError = error as NSError
+        let turnFailureResponse = ClickyTurnFailureMessage.response(
+            failingStep: failingStep,
+            errorDomain: bridgedError.domain,
+            errorCode: bridgedError.code,
+            errorMessage: bridgedError.localizedDescription
+        )
+
+        switch turnFailureResponse {
+        case .speakSentence(let honestErrorSentence):
+            spokenErrorSpeechSynthesizer.startSpeaking(honestErrorSentence)
+            voiceState = .responding
+            showTurnFailureNoticeInStatusPill(honestErrorSentence)
+        case .showReplyAsNoticeWithoutSpeaking:
+            showTurnFailureNoticeInStatusPill(
+                ClickyTurnFailureMessage.voiceUnavailableNoticeText(
+                    forSpokenReplyText: spokenReplyTextThatCouldNotBeSpoken ?? ""
+                )
+            )
+        }
     }
+
+    /// Kept for the lifetime of the manager: a synthesizer that is released while it speaks stops
+    /// in the middle of the sentence.
+    private let spokenErrorSpeechSynthesizer = NSSpeechSynthesizer()
 
     // MARK: - Point Tag Parsing
 

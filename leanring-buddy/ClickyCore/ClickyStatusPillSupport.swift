@@ -63,11 +63,17 @@ nonisolated struct ClickyStatusPillContent: Equatable {
     /// `isMicrophoneStartingUp` is true for the short moment between the ask keys going down and
     /// the microphone running. The app's state calls that moment "processing"; for the user the
     /// keys are already held, so the pill says "listening" and does not flash "thinking" first.
+    ///
+    /// `turnFailureNoticeText` is the short notice of an ask turn that failed ("i can't reach the
+    /// internet right now.", or the unspoken reply after "voice unavailable"). Like a dictation
+    /// notice it gives way to anything live, and it comes before "speaking" because the error
+    /// sentence is spoken by the Mac's own voice while the notice shows.
     static func content(
         voiceActivity: ClickyStatusPillVoiceActivity,
         dictationActivity: ClickyStatusPillDictationActivity,
         isMicrophoneStartingUp: Bool,
-        isSpeechAudioPlaying: Bool
+        isSpeechAudioPlaying: Bool,
+        turnFailureNoticeText: String? = nil
     ) -> ClickyStatusPillContent? {
         switch dictationActivity {
         case .listening:
@@ -92,6 +98,12 @@ nonisolated struct ClickyStatusPillContent: Equatable {
             let trimmedNoticeText = noticeText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedNoticeText.isEmpty {
                 return ClickyStatusPillContent(word: trimmedNoticeText, indicator: .none, accent: .dictating)
+            }
+        }
+        if let turnFailureNoticeText {
+            let trimmedTurnFailureNoticeText = turnFailureNoticeText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedTurnFailureNoticeText.isEmpty {
+                return ClickyStatusPillContent(word: trimmedTurnFailureNoticeText, indicator: .none, accent: .asking)
             }
         }
         if voiceActivity == .responding || isSpeechAudioPlaying {
