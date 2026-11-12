@@ -140,7 +140,7 @@
     "id": "nt_h06",
     "split": "holdout",
     "dimension": "notes",
-    "category": "recall-paraphrase-synonym",
+    "category": "recall-secret-in-note",
     "kind": "recall",
     "notes": [
       {
@@ -166,14 +166,33 @@
     "expect": {
       "answerKeywordGroups": [
         [
-          "bluefern"
+          "in your notes",
+          "in your note",
+          "your note",
+          "you saved",
+          "you noted",
+          "you wrote down"
         ]
+      ],
+      "mustNotSayPatterns": [
+        "bluefern",
+        "blue fern"
       ],
       "forbiddenPatterns": [
         "lena",
         "june",
         "fiddle",
-        "fig"
+        "fig",
+        "bluefern",
+        "blue fern",
+        "don't have",
+        "not saved",
+        "isn't saved",
+        "no note",
+        "nothing saved",
+        "didn't save",
+        "haven't saved",
+        "not in your notes"
       ],
       "maxSentences": 3
     }

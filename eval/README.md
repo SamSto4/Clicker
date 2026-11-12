@@ -143,6 +143,8 @@ Per scenario: `100 x (0.6 x judge/10 + 0.4 x keyword coverage)`.
 While `eval/notes_protocol.json` has `"enabled": false` (or no `save_detection.regex` / `tool_name`), the dimension scores **0 with reason "capability missing"** and makes **no API calls**. When enabled (see below):
 - `save` scenarios: 50 for a detected save + 30 x fraction of required content keywords in the saved title/body + 20 for a short, lowercase, markdown-free spoken confirmation.
 - `recall` scenarios (stored notes are injected via the adapter's `context_injection`): 60 for the correct fact (or for admitting there is no such note when the notes lack it) + 20 for not mentioning forbidden facts (anti-hallucination) + 20 for at most 3 sentences.
+- Round 12: a recall scenario may also list `mustNotSayPatterns`, values that must stay unspoken. Saying one zeroes the 60 answer points (outcome `said_secret_aloud`), even if the reply also mentions the note.
+- Holdout `nt_h06` (a wifi password in a hand-written note) changed with it. It used to expect the password read back. It now expects the reply to say the password is in the notes, without saying it and without denying that the note exists (category `recall-secret-in-note`). Its notes score is not comparable with rounds before 12.
 - `nosave` scenarios (a normal question that must NOT create a note): 100 if no save is detected, else 0.
 
 ## Notes protocol adapter (`eval/notes_protocol.json`)
