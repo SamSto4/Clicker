@@ -25,6 +25,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// shortcuts cannot match at once: dictation is exactly fn + option and asking needs control.
     let dictationChordActionPublisher = PassthroughSubject<ClickyDictationChordAction, Never>()
 
+    /// Sends when a clean tap of option + command is recognised: open the chat panel, or close it
+    /// if it is open. Worked out from the same event tap as everything else here (no second tap).
+    /// The tap is listen-only, so every key still reaches the app in front.
+    let chatPanelTapActionPublisher = PassthroughSubject<ClickyChatPanelTapAction, Never>()
+
     /// Sends when the user scrolls anywhere in the system, at most once every
     /// `scrollWheelMinimumSecondsBetweenReports`. Marks Clicky drew on the screen point at page
     /// content, so they fade when that content moves. Scroll events come from the same listen-only
@@ -53,6 +58,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     private var dictationChordStateMachine = ClickyDictationChordStateMachine()
     private var dictationChordWakeUpWorkItem: DispatchWorkItem?
+
+    /// Recognises the clean tap of option + command that opens the chat panel. It needs no timer:
+    /// whether the press was short enough is decided from the two timestamps at the release.
+    private var chatPanelTapStateMachine = ClickyChatPanelTapStateMachine()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -130,6 +139,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         publishDictationChordActions(dictationChordStateMachine.handleEscape(at: ClickyTurnMetrics.currentUptimeSeconds))
         dictationChordStateMachine = ClickyDictationChordStateMachine()
         rescheduleDictationChordWakeUp()
+        chatPanelTapStateMachine = ClickyChatPanelTapStateMachine()
 
         if let globalEventTapRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
@@ -160,12 +170,16 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
                 dictationChordStateMachine.handleModifiersChanged(modifiersHeldNow, at: ClickyTurnMetrics.currentUptimeSeconds)
             )
             rescheduleDictationChordWakeUp()
+            // The same for the panel's tap: a press whose release was missed must not fire later.
+            chatPanelTapStateMachine.resetToModifiersHeldNow(modifiersHeldNow)
             return Unmanaged.passUnretained(event)
         }
 
         // A scroll is not a key: it is reported (rarely, see above) and goes no further, so the
         // shortcut and dictation logic below only ever see the key events they always saw.
         if eventType == .scrollWheel {
+            // Option + command + scroll is the screen zoom gesture, not a tap of the two keys.
+            _ = chatPanelTapStateMachine.handleNonModifierKeyDown()
             let currentUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
             if currentUptimeSeconds - lastScrollWheelReportUptimeSeconds >= Self.scrollWheelMinimumSecondsBetweenReports {
                 lastScrollWheelReportUptimeSeconds = currentUptimeSeconds
@@ -190,6 +204,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         feedDictationChord(eventType: eventType, eventKeyCode: eventKeyCode, event: event)
+        feedChatPanelTap(eventType: eventType, event: event)
 
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
             for: eventType,
@@ -212,6 +227,30 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    // MARK: - Chat panel tap (option + command)
+
+    /// Hands one tap event to the chat panel's tap recogniser: the modifier changes, and every key
+    /// press (Escape included, so option + command + Escape never opens the panel). A key press
+    /// anywhere cancels a tap in progress; the keys themselves are never swallowed.
+    private func feedChatPanelTap(eventType: CGEventType, event: CGEvent) {
+        let chatPanelTapActions: [ClickyChatPanelTapAction]
+        switch eventType {
+        case .flagsChanged:
+            let modifiersHeldNow = ClickyDictationModifierSet(cgEventFlagsRawValue: event.flags.rawValue)
+            chatPanelTapActions = chatPanelTapStateMachine.handleModifiersChanged(
+                modifiersHeldNow,
+                at: ClickyTurnMetrics.currentUptimeSeconds
+            )
+        case .keyDown:
+            chatPanelTapActions = chatPanelTapStateMachine.handleNonModifierKeyDown()
+        default:
+            return
+        }
+        for chatPanelTapAction in chatPanelTapActions {
+            chatPanelTapActionPublisher.send(chatPanelTapAction)
+        }
     }
 
     // MARK: - Dictation chord (fn + option)

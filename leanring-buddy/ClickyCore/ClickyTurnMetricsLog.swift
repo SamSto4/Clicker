@@ -18,6 +18,13 @@ nonisolated enum ClickyTurnStep: String {
     case speechPlayback
 }
 
+/// How the user's words reached Clicky: spoken through push-to-talk, or typed in the chat panel.
+/// A typed turn has no speech and no key release, so its speech and key-release fields stay empty.
+nonisolated enum ClickyTurnInputMode: String, Codable {
+    case spoken
+    case typed
+}
+
 /// What is known about one turn: durations, sizes and counts, never any content.
 ///
 /// Privacy rule: this type holds only numbers, flags, enums and a sanitized model name. There is
@@ -26,6 +33,7 @@ nonisolated enum ClickyTurnStep: String {
 nonisolated struct ClickyTurnMetrics: Equatable {
     let turnStartedAt: Date
     var modelName: String
+    var inputMode: ClickyTurnInputMode = .spoken
     var outcome: ClickyTurnOutcome = .completed
     /// The step that was running when a failed or cancelled turn stopped. Nil for completed turns.
     var unfinishedStep: ClickyTurnStep?
@@ -116,6 +124,7 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         var jsonObject: [String: Any] = [
             "timestamp": ISO8601DateFormatter().string(from: turnStartedAt),
             "model": Self.sanitizedModelName(modelName),
+            "inputMode": inputMode.rawValue,
             "outcome": outcome.rawValue
         ]
 
@@ -189,6 +198,7 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         summaryLine += " notes \(countText(noteCount))"
         summaryLine += " point \(usedPointing.map { $0 ? "yes" : "no" } ?? "-")"
         summaryLine += " | \(Self.sanitizedModelName(modelName)), \(countText(screenCount)) screen(s), \(countText(totalImageBytes)) image bytes"
+        summaryLine += ", \(inputMode.rawValue)"
         return summaryLine
     }
 }

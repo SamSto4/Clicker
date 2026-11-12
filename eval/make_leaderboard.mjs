@@ -47,6 +47,15 @@ export function writeLeaderboard(loopFolder) {
     return `| ${summary.round} | ${summary.label ?? fileName} | ${scenarioCount} | **${formatScore(visual.score)}** | ${formatScore(visual.split_scores?.visible)} | ${formatScore(visual.split_scores?.holdout)} | ${kindScore("mark")} | ${kindScore("second_screen")} | ${kindScore("callouts")} | ${kindScore("card")} | ${kindScore("absent")} | ${kindScore("edit")} | ${kindScore("control")} | ${visual.details?.tags_dropped_by_the_app_parser_total ?? "-"} | ${summary.calls_used?.total ?? "-"} |`;
   });
 
+  // Round 14: context (old screens versus the screen now) is tracked separately as well.
+  const contextRows = summaries.filter(({ summary }) => summary.context).map(({ fileName, summary }) => {
+    const context = summary.context;
+    const scenarioCount = (context.details?.scenarios_scored ?? 0) + (context.details?.scenarios_errored ?? 0);
+    const kindScore = (kind) => formatScore(context.details?.by_kind?.[kind]?.score);
+    const rate = (block) => (block?.rate_percent === null || block?.rate_percent === undefined ? "-" : `${block.rate_percent}%`);
+    return `| ${summary.round} | ${summary.label ?? fileName} | ${scenarioCount} | **${formatScore(context.score)}** | ${formatScore(context.split_scores?.visible)} | ${formatScore(context.split_scores?.holdout)} | ${rate(context.details?.old_screen_bleed)} | ${rate(context.details?.meta_remark)} | ${kindScore("switch-new-topic")} | ${kindScore("switch-ambiguous-this")} | ${kindScore("follow-up-across-switch")} | ${kindScore("same-screen-follow-up")} | ${kindScore("pointing-after-switch")} | ${summary.calls_used?.total ?? "-"} |`;
+  });
+
   const markdown = [
     "# Clicky improvement loop leaderboard",
     "",
@@ -78,6 +87,16 @@ export function writeLeaderboard(loopFolder) {
       ...visualRows,
       "",
       "Tags are read by the app's own ClickyDrawTagParser through the eval driver; marks are compared with the fixtures' known element boxes. Rubric in eval/README.md.",
+      "",
+    ]),
+    ...(contextRows.length === 0 ? [] : [
+      "## Context: old screens versus the screen now (round 14; tracked separately, excluded from the weighted total)",
+      "",
+      "| Round | Label | Scenarios | Context | Visible | Holdout | Old-screen bleed | Meta remarks | New topic | Ambiguous this | Follow-up across switch | Same-screen follow-up | Pointing after switch | API calls |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+      ...contextRows,
+      "",
+      "Old-screen bleed = share of switch scenarios whose spoken reply used words that only belong to the earlier exchange; meta remarks = share of all scenarios whose reply apologised for or commented on the switch. Rubric in eval/README.md.",
       "",
     ]),
   ].join("\n");

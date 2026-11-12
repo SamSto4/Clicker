@@ -27,6 +27,8 @@ This README is written so a grader who has never seen the project can run a roun
 
 **Visual** (round 6: drawing on the screen with `[DRAW:...]` and the explanation card with `[CARD:...]` / `[ROW:...]`) is a sixth dimension, also **tracked separately and excluded from the weighted total**. Run it on its own with `--dimensions visual --assembler <driver> --system-blocks` (28 scenarios, 28 calls) and write its summary to its own file (`round6_visual.json`). The summary gains a top-level `visual` block and the leaderboard lists it in its own table. See "Visual (round 6)" below for the rubric, and "Draw, card and row tags on the four weighted dimensions" for how such tags are scored everywhere else.
 
+**Context** (round 14: does Clicky keep an old screen apart from the screen now?) is a seventh dimension, also **tracked separately and excluded from the weighted total**. Run it on its own with `--dimensions context --assembler <driver> --system-blocks` (12 scenarios, 12 calls) and write its summary to its own file. The summary gains a top-level `context` block and the leaderboard lists it in its own table. See "Context (round 14)" below.
+
 ## Run a round (exact commands)
 
 All paths are absolute so the commands work from any directory. `LOOP` is the shared state folder.
@@ -58,7 +60,8 @@ Other options:
 | Option | Meaning |
 |---|---|
 | `--split visible\|holdout\|all` | default `all` |
-| `--dimensions pointing,brevity,coding,notes` | subset to run (totals are then `null` unless all four are covered). `personalization` (round 4B) is an extra value that is never part of the total; run it alone, with `--assembler` |
+| `--dimensions pointing,brevity,coding,notes` | subset to run (totals are then `null` unless all four are covered). `personalization` (round 4B), `visual` (round 6) and `context` (round 14) are extra values that are never part of the total; run each alone, with `--assembler` |
+| `--prompts-directory <dir>` | the folder with `clicky_base_system_prompt.md` and the skill files the driver assembles from (default: the working tree's `leanring-buddy/ClickyPrompts`). Point it at a `git archive` copy of a commit to measure that commit while someone else is editing the working tree |
 | `--only id1,id2` | run specific scenario ids (for debugging) |
 | `--max-calls N` | lower the call cap (can never exceed 80) |
 | `--assembler <driver binary>` | assemble each scenario's system prompt through the app's own `ClickyPromptAssembler` via the eval driver (`eval/assemble_prompt_driver/main.swift`, compiled with `swiftc`, see its header); replaces `--system-prompt-file`. Notes for recall scenarios are seeded into a `mkdtemp` folder, never the real notes folder |
@@ -220,6 +223,55 @@ The summary's `visual.details` carries `by_kind` (with the ids below 80), `by_ca
 
 Limits: the fixtures only have boxes for controls, tabs, rows and one terminal line, so marks on code inside an editor are not tested; a card's content is checked by keywords, not by a judge; whether the handwriting, pen animation and card placement look right on a real display is not tested at all.
 
+## Context (round 14)
+
+Clicky keeps the conversation as text and sends only the current screenshots each turn. After the user switches tab, window or app and asks something new, it sometimes answers about the old screen, or apologises for the switch ("my mistake, it looks like you aren't looking at an article now"). The wanted behaviour: answer about the screen now, never remark on or apologise for the switch, and still use the earlier messages when the new question continues them (for example "and how do i push it?" after moving from VS Code to Terminal).
+
+Scenarios live in `eval/scenarios/visible|holdout/context.json` (6 + 6) and use only the existing fixtures. The history holds no images, so "the old screen" exists only in the assistant text each scenario writes (short, lowercase, ending with a `[POINT:...]` tag). Every scenario has `history` (one or two exchanges), `screens` (the screens now), `userPrompt`, `screenContextOfHistory` and `screenContextNow` (`{ app, windowTitle }`; for a browser the window title is the page title), and `expect`:
+
+- `answerKeywordGroups`: groups of alternatives (spoken forms, since the prompt spells out numbers), about the screen now or, for follow-ups, about the earlier topic;
+- `forbiddenOldTopicPhrases`: words taken from the history text that cannot appear in a correct answer about the screen now (empty for follow-ups, which use the earlier topic on purpose);
+- `targets` (pointing-after-switch only): the element boxes from `fixtures/manifest.json`, scored with the pointing scorer (4 px of slack);
+- `exampleCorrectReply`: a made-up correct reply. `--self-test` scores it and requires 100 and `clean`, which proves the forbidden words cannot appear in it and the keyword groups can be met. The self-test also requires every forbidden phrase to occur in the scenario's own history text (only words the history contains can bleed from it).
+
+The harness passes `screenContextOfHistory` and `screenContextNow` into the driver's prepare input JSON under the same names, for the app change that will read them; the driver ignores them today. For these scenarios `screenContextNow.app` also decides the frontmost app in the "right now" block (the fixture-prefix table calls every `browser_*` fixture Safari, but `browser_main.jpg` shows Chrome).
+
+| kind | what it tests | n (visible + holdout) |
+|---|---|---|
+| `switch-new-topic` | the earlier exchange was about another tab, window or app; the new question is about the screen now | 3 + 2 |
+| `switch-ambiguous-this` | "what's this?" / "explain this" right after a switch: about the screen now, no bleed | 1 + 1 |
+| `follow-up-across-switch` | the new question plainly continues the earlier one across a switch ("and how do i push it?"): must use the earlier messages | 1 + 2 |
+| `same-screen-follow-up` | no switch, same fixture, a follow-up that needs the history (guards against over-correcting) | 0 + 1 |
+| `pointing-after-switch` | the earlier exchange pointed in another app; now "where's the reload button?": the point must land in that element's box | 1 + 0 |
+
+Rubric, 100 points per scenario (`scoreContext`; it scores the spoken text the app's own turn finisher produces, so tags never count as words):
+
+| points | check |
+|---|---|
+| 50 | answer keyword groups (x the share of groups hit) |
+| 30 | no old-topic word and no meta remark. Meta phrases (one shared list, matched on lowercased text with straight apostrophes and hyphens read as spaces): "my mistake", "sorry", "apolog", "no longer", "not looking at", "aren't looking", "anymore", "different screen", "switched", "you've moved", "now you're on". A second list was added after the first baseline run showed replies that the first one misses: self-corrections and comments on what is on screen now, "i was wrong", "my last answer", "was mistaken", "on screen right now", "on your screen right now", "i don't see your", "i can't see your" (`CONTEXT_SWITCH_COMMENTARY_PHRASES`; the summary reports the meta count by the first list alone and by both). Follow-ups also lose these 30 for "not sure what you" |
+| 10 | at most two spoken sentences |
+| 10 | right pointing behaviour: for `pointing-after-switch` the point lands inside the element's box on the right screen; otherwise the reply ends with `[POINT:none]` or a point that is on the screen |
+
+Outcomes, in this precedence: `bled_old_screen` (an old-topic word was spoken), `meta_remark` (a meta phrase was spoken), `missed_follow_up` (follow-up kinds: keyword coverage below 100 percent or "not sure what you"), `missed_current_screen` (not in the original five: a switch answer with no bleed and no meta remark that still misses a keyword group), `wrong_point` (the pointing check failed; for kinds other than `pointing-after-switch` this means a missing or off-screen tag), `clean`. `clean` describes the context behaviour only: an answer that is right but runs to three sentences is `clean` with a score of 90.
+
+The summary's `context.details` carries `by_kind` (with the ids below 80), `outcome_counts`, `check_failure_counts`, `clean_rate_percent`, `old_screen_bleed` (replies that bled out of the eight scenarios where bleed can show: the switch kinds and pointing-after-switch), `meta_remark` (replies that remarked on the switch, out of all scenarios), `follow_ups_that_lost_the_thread`, and latency and token medians. `context.failures` is category-level, from visible scenarios only.
+
+`--rescore-context raw.json --assembler <driver> --summary-out path` re-parses the stored replies of a context run and re-applies the rubric after a scorer change (zero API calls; rewrites the raw file and the summary and marks the summary `rescored_offline`).
+
+Run it (a measurement of a commit that is not the working tree: build the driver and take the prompts from `git archive`):
+
+```bash
+G=<a scratch folder>
+mkdir -p $G/core && git -C /Users/samsto/Clicker archive HEAD leanring-buddy/ClickyCore eval/assemble_prompt_driver leanring-buddy/ClickyPrompts | tar -x -C $G/core
+swiftc -swift-version 5 -O -o $G/driver_head $G/core/eval/assemble_prompt_driver/main.swift $G/core/leanring-buddy/ClickyCore/*.swift
+CLICKY_EVAL_THINKING=between_tools node $EVAL/run_simulations.mjs --dimensions context --system-blocks \
+  --assembler $G/driver_head --prompts-directory $G/core/leanring-buddy/ClickyPrompts \
+  --round N --label NAME --summary-out $LOOP/roundN_context_NAME.json --results-out $EVAL/results/roundN_context_NAME.json
+```
+
+Limits: the history is two or three invented exchanges, not a real long session; the mock screens are clean; keyword groups are generous but a correct answer in unforeseen words is scored as a miss (read the raw replies of `missed_*` outcomes before trusting them); the meta phrases are substrings (a correct answer that happens to contain "switched" would lose points, which the example replies show is not the case for these scenarios); a stale `[POINT]` that repeats the old coordinates is only caught for `pointing-after-switch`.
+
 ## Files
 
 ```
@@ -237,6 +289,7 @@ eval/
   scenarios/visible|holdout/ pointing.json brevity.json coding.json notes.json   (58 scenarios: 30 visible, 28 holdout)
                              visual.json (round 6, 28 scenarios: 16 visible, 12 holdout; tracked separately)
                              personalization.json (round 4B, 30 scenarios: 16 visible, 14 holdout; tracked separately)
+                             context.json (round 14, 12 scenarios: 6 visible, 6 holdout; tracked separately)
   notes_protocol.json        pluggable notes adapter (disabled until the feature exists)
   results/                   raw results (git-ignored, private)
 ```

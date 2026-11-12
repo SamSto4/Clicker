@@ -1,0 +1,255 @@
+[
+ {
+  "id": "ctx_h01",
+  "split": "holdout",
+  "dimension": "context",
+  "category": "switch-new-topic",
+  "kind": "switch-new-topic",
+  "history": [
+   {
+    "user": "what's in the sidebar here?",
+    "assistant": "home, workers and pages, r two storage, domains, analytics, settings and billing. [POINT:none]"
+   }
+  ],
+  "screens": [
+   "xcode_error_optional.jpg"
+  ],
+  "userPrompt": "what's wrong with line nine?",
+  "screenContextOfHistory": {
+   "app": "Google Chrome",
+   "windowTitle": "Workers & Pages - Console"
+  },
+  "screenContextNow": {
+   "app": "Xcode",
+   "windowTitle": "UserProfile.swift"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "optional",
+     "nil",
+     "unwrap"
+    ],
+    [
+     "nickname",
+     "displayname",
+     "display name"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [
+    "workers and pages",
+    "r two",
+    "domains",
+    "analytics",
+    "billing"
+   ],
+   "exampleCorrectReply": "nickname is optional, so it can't go straight into a plain string. unwrap it or give it a default. [POINT:560,243:error line]"
+  }
+ },
+ {
+  "id": "ctx_h02",
+  "split": "holdout",
+  "dimension": "context",
+  "category": "switch-new-topic",
+  "kind": "switch-new-topic",
+  "history": [
+   {
+    "user": "why did my push fail?",
+    "assistant": "the remote has commits you don't have yet. run git pull first, then push again. [POINT:300,226:rejected line]"
+   }
+  ],
+  "screens": [
+   "settings_main.jpg"
+  ],
+  "userPrompt": "how do i let an app record my screen?",
+  "screenContextOfHistory": {
+   "app": "Terminal",
+   "windowTitle": "samsto — zsh — 110x34"
+  },
+  "screenContextNow": {
+   "app": "System Settings",
+   "windowTitle": "Privacy & Security"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "screen and system audio",
+     "screen & system audio",
+     "screen recording",
+     "system audio recording"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [
+    "remote",
+    "commits",
+    "git pull",
+    "rejected"
+   ],
+   "exampleCorrectReply": "click screen and system audio recording in the list, then switch the app on. [POINT:527,514:screen recording]"
+  }
+ },
+ {
+  "id": "ctx_h03",
+  "split": "holdout",
+  "dimension": "context",
+  "category": "switch-ambiguous-this",
+  "kind": "switch-ambiguous-this",
+  "history": [
+   {
+    "user": "which worker was deployed most recently?",
+    "assistant": "clicky-proxy, it went out today at ten twenty-one. [POINT:325,358:clicky-proxy]"
+   }
+  ],
+  "screens": [
+   "vscode_error_ts.jpg"
+  ],
+  "userPrompt": "explain this",
+  "screenContextOfHistory": {
+   "app": "Google Chrome",
+   "windowTitle": "Workers & Pages - Console"
+  },
+  "screenContextNow": {
+   "app": "Visual Studio Code",
+   "windowTitle": "clicker-worker"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "user",
+     "undefined",
+     "possibly",
+     "find",
+     "getusername",
+     "index.ts",
+     "typescript",
+     "error",
+     "problem",
+     "function"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [
+    "clicky-proxy",
+    "ten twenty-one"
+   ],
+   "exampleCorrectReply": "typescript is warning that user might be undefined, because find can come back empty. add a check before using it. [POINT:442,370:error]"
+  }
+ },
+ {
+  "id": "ctx_h04",
+  "split": "holdout",
+  "dimension": "context",
+  "category": "follow-up-across-switch",
+  "kind": "follow-up-across-switch",
+  "history": [
+   {
+    "user": "why does xcode say self is immutable?",
+    "assistant": "VisitCounter is a struct, so recordVisit has to be marked mutating before it can change anything. [POINT:395,208:recordVisit]"
+   }
+  ],
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "what was the fix again?",
+  "screenContextOfHistory": {
+   "app": "Xcode",
+   "windowTitle": "VisitCounter.swift"
+  },
+  "screenContextNow": {
+   "app": "Google Chrome",
+   "windowTitle": "Workers & Pages - Console"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "mutating"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [],
+   "exampleCorrectReply": "mark recordVisit as mutating, since visitCounter is a struct. [POINT:none]"
+  }
+ },
+ {
+  "id": "ctx_h05",
+  "split": "holdout",
+  "dimension": "context",
+  "category": "follow-up-across-switch",
+  "kind": "follow-up-across-switch",
+  "history": [
+   {
+    "user": "why did my script fail?",
+    "assistant": "fetch_prices.py can't import requests because it isn't installed. run pip three install requests, then run the script again. [POINT:300,207:error message]"
+   }
+  ],
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "ok i installed it. how do i run the script again?",
+  "screenContextOfHistory": {
+   "app": "Terminal",
+   "windowTitle": "samsto — zsh — 110x34"
+  },
+  "screenContextNow": {
+   "app": "Google Chrome",
+   "windowTitle": "Workers & Pages - Console"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "python"
+    ],
+    [
+     "fetch_prices",
+     "fetch prices",
+     "fetch underscore prices"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [],
+   "exampleCorrectReply": "run python three fetch_prices.py in the scripts folder. [POINT:none]"
+  }
+ },
+ {
+  "id": "ctx_h06",
+  "split": "holdout",
+  "dimension": "context",
+  "category": "same-screen-follow-up",
+  "kind": "same-screen-follow-up",
+  "history": [
+   {
+    "user": "what's the error on line nine?",
+    "assistant": "nickname is optional, so it can't go into a plain string. you can unwrap it, or give it a default value. [POINT:560,243:error line]"
+   }
+  ],
+  "screens": [
+   "xcode_error_optional.jpg"
+  ],
+  "userPrompt": "ok, how do i do the default one?",
+  "screenContextOfHistory": {
+   "app": "Xcode",
+   "windowTitle": "UserProfile.swift"
+  },
+  "screenContextNow": {
+   "app": "Xcode",
+   "windowTitle": "UserProfile.swift"
+  },
+  "expect": {
+   "answerKeywordGroups": [
+    [
+     "default",
+     "double question",
+     "nil coalescing",
+     "fallback",
+     "coalesc"
+    ],
+    [
+     "nickname",
+     "fullname",
+     "full name",
+     "displayname",
+     "display name"
+    ]
+   ],
+   "forbiddenOldTopicPhrases": [],
+   "exampleCorrectReply": "after nickname, add double question marks and a fallback like fullName, so it's never empty. [POINT:none]"
+  }
+ }
+]
