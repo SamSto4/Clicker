@@ -271,6 +271,35 @@ enum DS {
         /// The same, while dictating: the dictation green.
         static let chatPanelDictatingAccent = Color(hex: "#2FCB9A")
 
+        // The tabs of the panel (round 15): chat, chats, memory, usage and settings.
+
+        /// The tab that is showing: the same soft blue tint as the list row chosen with the arrow keys.
+        static let chatPanelTabSelectedBackground = Color(hex: "#18233F")
+
+        /// The word and icon of the tab that is showing.
+        static let chatPanelTabSelectedText = Color(hex: "#7EB0FF")
+
+        /// The track behind a row of choices ("sonnet | opus", "short | normal | long").
+        static let chatPanelChoiceTrackBackground = Color(hex: "#161918")
+
+        /// The choice that is on.
+        static let chatPanelChoiceSelectedBackground = Color(hex: "#243B6B")
+
+        /// A key of the shortcuts cheat sheet ("ctrl + option") and its edge.
+        static let chatPanelKeycapBackground = Color(hex: "#1F2322")
+        static let chatPanelKeycapBorder = Color(hex: "#3A403D")
+
+        /// The dot and word of a permission that is granted, and of one that is not.
+        static let chatPanelPermissionGrantedText = Color(hex: "#34D399")
+        static let chatPanelPermissionMissingText = Color(hex: "#FFB224")
+
+        /// The switch of a setting: its track when on (blue) and when off, and its knob. The panel
+        /// draws its own switch because the system switch loses its colour in a window that is not
+        /// the active one, which this panel almost always is, and on and off then look alike.
+        static let chatPanelSwitchOnTrack = Color(hex: "#2563EB")
+        static let chatPanelSwitchOffTrack = Color(hex: "#2B302E")
+        static let chatPanelSwitchKnob = Color(hex: "#F2F6FF")
+
         // ── Floating Button Gradient ─────────────────────────────────
 
         /// The floating session button gradient colors (unchanged from original —
@@ -473,6 +502,48 @@ enum DS {
         static let statusBarWidthInPoints: CGFloat = 2.5
         static let statusBarSpacingInPoints: CGFloat = 2
         static let statusPulseSeconds: Double = 0.9
+
+        // The tab bar (round 15)
+        static let tabBarTopPaddingInPoints: CGFloat = 10
+        static let tabBarBottomPaddingInPoints: CGFloat = 4
+        static let tabSpacingInPoints: CGFloat = 2
+        static let tabHeightInPoints: CGFloat = 28
+        static let tabCornerRadiusInPoints: CGFloat = 8
+        static let tabIconFontSizeInPoints: CGFloat = 11
+        static let tabLabelFontSizeInPoints: CGFloat = 12
+        static let tabIconLabelSpacingInPoints: CGFloat = 5
+        /// The space between the tab bar and the field or row under it.
+        static let belowTabBarSpacingInPoints: CGFloat = 8
+
+        // The memory, usage and settings tabs (round 15)
+        static let tabSectionSpacingInPoints: CGFloat = 18
+        static let tabSectionTitleBottomPaddingInPoints: CGFloat = 4
+        static let memoryRowVerticalPaddingInPoints: CGFloat = 7
+        static let memoryRowHorizontalPaddingInPoints: CGFloat = 10
+        static let memoryRowTextMaximumLineCount = 4
+        static let memoryRowActionSpacingInPoints: CGFloat = 4
+        static let usageValueColumnWidthInPoints: CGFloat = 118
+        static let usageRowSpacingInPoints: CGFloat = 7
+        static let usageColumnSpacingInPoints: CGFloat = 12
+        static let usageModelBlockTopPaddingInPoints: CGFloat = 10
+        static let settingsRowVerticalPaddingInPoints: CGFloat = 6
+        static let settingsRowIconWidthInPoints: CGFloat = 16
+        static let switchTrackWidthInPoints: CGFloat = 34
+        static let switchTrackHeightInPoints: CGFloat = 20
+        static let switchKnobInsetInPoints: CGFloat = 2
+        static let choiceFontSizeInPoints: CGFloat = 11
+        static let choiceHorizontalPaddingInPoints: CGFloat = 10
+        static let choiceVerticalPaddingInPoints: CGFloat = 5
+        static let choiceCornerRadiusInPoints: CGFloat = 6
+        static let choiceTrackPaddingInPoints: CGFloat = 2
+        static let keycapFontSizeInPoints: CGFloat = 11
+        static let keycapHorizontalPaddingInPoints: CGFloat = 7
+        static let keycapVerticalPaddingInPoints: CGFloat = 3
+        static let keycapCornerRadiusInPoints: CGFloat = 5
+        static let keycapColumnWidthInPoints: CGFloat = 112
+        static let permissionDotDiameterInPoints: CGFloat = 6
+        /// A setting that cannot be changed now (typed replies while replies are not spoken) is dimmed to this.
+        static let disabledRowOpacity: Double = 0.45
     }
 
     // MARK: - Animation Durations

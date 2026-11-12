@@ -23,6 +23,19 @@ nonisolated enum ClickyDictationCleanupModelResult: Equatable {
     case failed
 }
 
+/// The tokens one cleanup request used, as the model reported them. Numbers only.
+nonisolated struct ClickyDictationCleanupTokenUsage: Equatable, Sendable {
+    let inputTokens: Int
+    let outputTokens: Int
+}
+
+/// What the cleanup client hands back: the model's answer (or why there is none) and, when the
+/// answer came with a usage report, the tokens it used.
+nonisolated struct ClickyDictationCleanupResponse: Equatable, Sendable {
+    let modelResult: ClickyDictationCleanupModelResult
+    let tokenUsage: ClickyDictationCleanupTokenUsage?
+}
+
 /// The request to the Worker's `/chat` route that tidies up one transcript, and the rules that
 /// decide whether to trust the answer.
 ///
@@ -119,6 +132,20 @@ nonisolated enum ClickyDictationCleanup {
         }
         guard !textOfEveryTextBlock.isEmpty else { return nil }
         return textOfEveryTextBlock.joined()
+    }
+
+    /// The token counts of a non-streaming Messages reply, from its top-level `usage` object. Nil
+    /// when the reply has none or the counts are not numbers. They go to the dictation metrics
+    /// as numbers only, so the usage tab can show what dictation cost.
+    static func extractTokenUsage(fromResponseData responseData: Data) -> ClickyDictationCleanupTokenUsage? {
+        guard let responseObject = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              let usageObject = responseObject["usage"] as? [String: Any],
+              let inputTokenCount = (usageObject["input_tokens"] as? NSNumber)?.intValue,
+              let outputTokenCount = (usageObject["output_tokens"] as? NSNumber)?.intValue,
+              inputTokenCount >= 0, outputTokenCount >= 0 else {
+            return nil
+        }
+        return ClickyDictationCleanupTokenUsage(inputTokens: inputTokenCount, outputTokens: outputTokenCount)
     }
 
     // MARK: - Deciding what to insert

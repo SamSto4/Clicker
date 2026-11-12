@@ -421,3 +421,108 @@ nonisolated struct ClickyNoteStore {
         return Calendar.current.date(from: minuteComponents) ?? date
     }
 }
+
+// MARK: - The chat panel's memory tab (round 15)
+
+/// One note as the memory tab lists it: its words, its time, and where it sits in its daily file.
+/// The place is what lets a delete cut exactly that line, even when two notes hold the same words.
+nonisolated struct ClickyNoteEntry: Equatable, Hashable, Sendable {
+    /// The daily file, such as "2026-11-10.md".
+    let sourceFileName: String
+    /// Zero-based index of the line in the file, counting every line.
+    let lineIndexInFile: Int
+    let savedAt: Date
+    /// False for a note typed into the file by hand with no "HH:mm — " in front: its time is then
+    /// only the start of its day and the panel shows the date alone.
+    let hasTimeOfDay: Bool
+    let text: String
+
+    var identifier: String {
+        "\(sourceFileName)#\(lineIndexInFile)"
+    }
+}
+
+nonisolated extension ClickyNoteStore {
+    /// Every note of the daily files in the given folder contents, with its file and line, oldest
+    /// first (files in date order, lines in file order). Files that are not daily files, such as
+    /// profile.md, are ignored, exactly as `loadAllNotes` ignores them.
+    static func noteEntries(fromMarkdownFileContentsByFileName markdownFileContentsByFileName: [String: String]) -> [ClickyNoteEntry] {
+        let timePrefixRegex = makeTimePrefixRegex()
+        var noteEntries: [ClickyNoteEntry] = []
+        for fileName in markdownFileContentsByFileName.keys.sorted() {
+            guard let dayStartDate = dayStartDate(fromFileName: fileName),
+                  let fileContents = markdownFileContentsByFileName[fileName] else {
+                continue
+            }
+            for (lineIndex, fileLine) in ClickyMemoryFileLines.lines(of: fileContents).enumerated() {
+                guard let parsedNote = parseNote(
+                    fromRawLine: fileLine.text,
+                    timePrefixRegex: timePrefixRegex,
+                    dayStartDate: dayStartDate,
+                    fileName: fileName
+                ) else {
+                    continue
+                }
+                noteEntries.append(ClickyNoteEntry(
+                    sourceFileName: fileName,
+                    lineIndexInFile: lineIndex,
+                    savedAt: parsedNote.savedAt,
+                    hasTimeOfDay: parsedNote.savedAt != dayStartDate,
+                    text: parsedNote.text
+                ))
+            }
+        }
+        return noteEntries
+    }
+
+    /// Removes exactly ONE note: the line at `lineIndexInFile` of the daily file `fileName`, which
+    /// must still read as a note with the words `expectedNoteText`. The spoken "forget" removes
+    /// every line of a day with the same words; this removes only the line the user pointed at.
+    ///
+    /// It writes the way the spoken forget does (the whole file, atomically, then the in-memory
+    /// copy is refreshed), but every other byte stays as it was. When the note was the only one of
+    /// its day, the file stays with its heading and no notes: nothing deletes a daily file, so
+    /// anything the user wrote by hand around the notes is kept, and a file with no notes reads
+    /// as no notes.
+    ///
+    /// If the file changed since the panel read it (the line moved or holds other words), or
+    /// `fileName` is not a daily file, nothing is written and the result is `.noMatch`.
+    func removeNote(inFileNamed fileName: String, atLineIndex lineIndexInFile: Int, expectingNoteText expectedNoteText: String) -> ClickyMemoryRemovalResult {
+        // Only a plain daily file name: never a path, never profile.md or another file.
+        guard fileName == (fileName as NSString).lastPathComponent,
+              let dayStartDate = Self.dayStartDate(fromFileName: fileName) else {
+            return .noMatch
+        }
+        let dayFileURL = notesDirectoryURL.appendingPathComponent(fileName)
+        guard FileManager.default.fileExists(atPath: dayFileURL.path) else {
+            return .noMatch
+        }
+        let fileContents: String
+        do {
+            fileContents = try String(contentsOf: dayFileURL, encoding: .utf8)
+        } catch {
+            return .failed(errorDescription: error.localizedDescription)
+        }
+
+        let fileLines = ClickyMemoryFileLines.lines(of: fileContents)
+        guard fileLines.indices.contains(lineIndexInFile),
+              let noteOnThatLine = Self.parseNote(
+                fromRawLine: fileLines[lineIndexInFile].text,
+                timePrefixRegex: Self.makeTimePrefixRegex(),
+                dayStartDate: dayStartDate,
+                fileName: fileName
+              ),
+              noteOnThatLine.text == expectedNoteText else {
+            return .noMatch
+        }
+
+        let fileContentsWithoutTheNote = ClickyMemoryFileLines.fileContents(from: fileLines, removingLineAt: lineIndexInFile)
+        do {
+            try fileContentsWithoutTheNote.write(to: dayFileURL, atomically: true, encoding: .utf8)
+        } catch {
+            return .failed(errorDescription: error.localizedDescription)
+        }
+        ClickyMemoryFileSnapshotCache.shared.refresh(directory: notesDirectoryURL)
+        return .removed(removedTexts: [expectedNoteText])
+    }
+}

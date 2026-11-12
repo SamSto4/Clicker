@@ -102,6 +102,13 @@ final class ClickyChatPanelController {
         return NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main ?? NSScreen.screens.first
     }
 
+    /// The geometry the panel is placed with (the screen's frame, notch and menu bar). Replaced
+    /// only by the offscreen check that runs this very controller (see `ClickyChatPanelController`
+    /// in the round 15 live-size render), so the window can be placed where nobody sees it.
+    var screenGeometryProvider: (NSScreen) -> ClickyStatusPillScreenGeometry = { screen in
+        ClickyStatusPillController.screenGeometry(for: screen)
+    }
+
     /// Escape was pressed in the panel. The manager decides: stop the running turn, or close.
     /// Without a handler Escape simply closes the panel.
     var escapePressedHandler: (() -> Void)?
@@ -111,6 +118,16 @@ final class ClickyChatPanelController {
     private var contentHeightCancellable: AnyCancellable?
     private var applicationFrontmostBeforeOpening: NSRunningApplication?
     private var shownOnScreen: NSScreen?
+
+    /// The frame the window was last asked to have: where its resize is heading, which is not
+    /// where the window is while the 0.16 s animation is still running. A new height is compared
+    /// with this and not with the window's current frame. Comparing with the current frame
+    /// dropped a request that came while an earlier one was still starting to move: the usage tab
+    /// first shows "reading the logs…" (a short panel), and its data arrived a few milliseconds
+    /// later and asked for the height the window still had, so the grow was thrown away as "no
+    /// change" and the window finished shrinking to the short height, with the tab's content
+    /// hanging out of it.
+    private var lastRequestedPanelFrame: NSRect?
 
     /// Counts every open and close. The work that takes the window off the screen after the fade
     /// carries the number it was scheduled with and does nothing if the panel opened again.
@@ -130,7 +147,10 @@ final class ClickyChatPanelController {
         }
     }
 
-    func open() {
+    /// Opens the panel. `takingKeyboard` is false when it opens only to show a reply that is not
+    /// spoken ("speak replies" is off): it is then ordered to the front without becoming the key
+    /// window, so the app the user is typing in keeps the keyboard.
+    func open(takingKeyboard: Bool = true) {
         guard !isOpen else { return }
         guard let screen = screenProvider() else { return }
 
@@ -145,17 +165,20 @@ final class ClickyChatPanelController {
             ? nil
             : frontmostApplication
 
-        let screenGeometry = ClickyStatusPillController.screenGeometry(for: screen)
+        let screenGeometry = screenGeometryProvider(screen)
         viewModel.hangsFromNotch = screenGeometry.hasNotch
-        viewModel.panelWillOpen()
+        viewModel.panelWillOpen(requestsKeyboardFocus: takingKeyboard)
 
         let panel = existingOrNewPanel()
         let finalFrame = placement(forContentHeightInPoints: viewModel.desiredPanelHeightInPoints, on: screen).frame
 
         // It drops in from just above its final place while it fades in.
         panel.alphaValue = 0
+        lastRequestedPanelFrame = finalFrame
         panel.setFrame(finalFrame.offsetBy(dx: 0, dy: DS.ChatPanel.dropDistanceInPoints), display: false)
-        panel.makeKeyAndOrderFront(nil)
+        if takingKeyboard {
+            panel.makeKeyAndOrderFront(nil)
+        }
         // Clicky is almost never the active app, so the panel is also ordered in explicitly.
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { animationContext in
@@ -176,7 +199,9 @@ final class ClickyChatPanelController {
                 self?.followContentHeight(desiredHeightInPoints, animated: true)
             }
 
-        viewModel.requestInputFocus()
+        if takingKeyboard {
+            viewModel.requestInputFocus()
+        }
         openStateChangedHandler?(true)
     }
 
@@ -250,7 +275,7 @@ final class ClickyChatPanelController {
     private func placement(forContentHeightInPoints contentHeightInPoints: CGFloat, on screen: NSScreen) -> ClickyChatPanelPlacement {
         ClickyChatPanelLayout.placement(
             forContentHeightInPoints: Double(contentHeightInPoints),
-            screenGeometry: ClickyStatusPillController.screenGeometry(for: screen),
+            screenGeometry: screenGeometryProvider(screen),
             metrics: Self.layoutMetrics
         )
     }
@@ -258,7 +283,8 @@ final class ClickyChatPanelController {
     private func followContentHeight(_ desiredHeightInPoints: CGFloat, animated: Bool) {
         guard isOpen, let panel, let shownOnScreen else { return }
         let newFrame = placement(forContentHeightInPoints: desiredHeightInPoints, on: shownOnScreen).frame
-        guard newFrame != panel.frame else { return }
+        guard newFrame != lastRequestedPanelFrame else { return }
+        lastRequestedPanelFrame = newFrame
         if animated && panel.isVisible {
             NSAnimationContext.runAnimationGroup { animationContext in
                 animationContext.duration = DS.ChatPanel.resizeSeconds

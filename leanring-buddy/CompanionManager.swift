@@ -12,6 +12,7 @@ import Combine
 import Foundation
 import PostHog
 import ScreenCaptureKit
+import Speech
 import SwiftUI
 
 enum CompanionVoiceState {
@@ -30,6 +31,10 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
     @Published private(set) var hasScreenContentPermission = false
+    /// Whether speech recognition is allowed. Read with the same `SFSpeechRecognizer` status call
+    /// `BuddyDictationManager` uses; shown in the chat panel's settings tab (the menu bar panel
+    /// does not show it) and not part of `allPermissionsGranted`.
+    @Published private(set) var hasSpeechRecognitionPermission = false
 
     /// Screen location (global AppKit coords) of a detected UI element the
     /// buddy should fly to and point at. Parsed from Claude's response;
@@ -148,13 +153,14 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var dictationOverlayState: ClickyDictationOverlayState = .hidden
 
     /// The "dictation" switch in the panel. On by default. Persisted to UserDefaults.
-    @Published var isDictationEnabled: Bool = UserDefaults.standard.object(forKey: "isDictationEnabled") == nil
-        ? true
-        : UserDefaults.standard.bool(forKey: "isDictationEnabled")
+    @Published var isDictationEnabled: Bool = ClickyPanelSettingsDefaults.isEnabled(
+        storedValue: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.isDictationEnabledKey),
+        defaultValue: ClickyPanelSettingsDefaults.defaultIsDictationEnabled
+    )
 
     func setDictationEnabled(_ enabled: Bool) {
         isDictationEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isDictationEnabled")
+        UserDefaults.standard.set(enabled, forKey: ClickyPanelSettingsDefaults.isDictationEnabledKey)
         dictationController.isDictationEnabled = enabled
         // Switching it off in the middle of a dictation ends that dictation too.
         if !enabled {
@@ -170,13 +176,14 @@ final class CompanionManager: ObservableObject {
     let statusPillController = ClickyStatusPillController()
 
     /// The "Status pill" switch in the panel. On by default. Persisted to UserDefaults.
-    @Published var isStatusPillEnabled: Bool = UserDefaults.standard.object(forKey: "isStatusPillEnabled") == nil
-        ? true
-        : UserDefaults.standard.bool(forKey: "isStatusPillEnabled")
+    @Published var isStatusPillEnabled: Bool = ClickyPanelSettingsDefaults.isEnabled(
+        storedValue: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.isStatusPillEnabledKey),
+        defaultValue: ClickyPanelSettingsDefaults.defaultIsStatusPillEnabled
+    )
 
     func setStatusPillEnabled(_ enabled: Bool) {
         isStatusPillEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isStatusPillEnabled")
+        UserDefaults.standard.set(enabled, forKey: ClickyPanelSettingsDefaults.isStatusPillEnabledKey)
         // Switching it off hides a pill that is showing; switching it on shows one at once if
         // Clicky is busy right now.
         refreshStatusPill()
@@ -359,24 +366,65 @@ final class CompanionManager: ObservableObject {
     private var askShortcutPressWasIgnoredBecauseDictationIsActive = false
 
     /// The Claude model used for voice responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-5-5"
+    @Published var selectedModel: String = ClickyPanelSettingsDefaults.selectedModelIdentifier(
+        storedValue: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.selectedModelKey)
+    )
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
+        UserDefaults.standard.set(model, forKey: ClickyPanelSettingsDefaults.selectedModelKey)
         claudeAPI.model = model
+    }
+
+    // MARK: - Voice options (round 15; changed in the chat panel's settings tab)
+
+    /// "Speak replies": with it off, voice turns still work but the reply is not spoken; it shows
+    /// as text in the chat panel, which opens for it without taking the keyboard. On by default.
+    @Published var isSpeakingRepliesEnabled: Bool = ClickyPanelSettingsDefaults.isEnabled(
+        storedValue: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.isSpeakingRepliesEnabledKey),
+        defaultValue: ClickyPanelSettingsDefaults.defaultIsSpeakingRepliesEnabled
+    )
+
+    func setSpeakingRepliesEnabled(_ enabled: Bool) {
+        isSpeakingRepliesEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: ClickyPanelSettingsDefaults.isSpeakingRepliesEnabledKey)
+    }
+
+    /// "Speak typed replies": when on (and "speak replies" is on), typed turns are spoken as well.
+    /// Off by default.
+    @Published var isSpeakingTypedRepliesEnabled: Bool = ClickyPanelSettingsDefaults.isEnabled(
+        storedValue: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.isSpeakingTypedRepliesEnabledKey),
+        defaultValue: ClickyPanelSettingsDefaults.defaultIsSpeakingTypedRepliesEnabled
+    )
+
+    func setSpeakingTypedRepliesEnabled(_ enabled: Bool) {
+        isSpeakingTypedRepliesEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: ClickyPanelSettingsDefaults.isSpeakingTypedRepliesEnabledKey)
+    }
+
+    /// "Drawings stay": short, normal or long, which scales how long Clicky's drawing stays after
+    /// a reply (marks 12 s, card 20 s, scene 25 s at normal).
+    @Published var drawingLifetimeChoice: ClickyDrawingLifetimeChoice = ClickyPanelSettingsDefaults.drawingLifetimeChoice(
+        storedValue: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.drawingLifetimeScaleKey)
+    )
+
+    func setDrawingLifetimeChoice(_ choice: ClickyDrawingLifetimeChoice) {
+        drawingLifetimeChoice = choice
+        UserDefaults.standard.set(choice.rawValue, forKey: ClickyPanelSettingsDefaults.drawingLifetimeScaleKey)
+        overlayWindowManager.drawingOverlayController.drawingLifetimes = ClickyDrawingLifetimes.lifetimes(for: choice)
     }
 
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
-        ? true
-        : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+    @Published var isClickyCursorEnabled: Bool = ClickyPanelSettingsDefaults.isEnabled(
+        storedValue: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.isClickyCursorEnabledKey),
+        defaultValue: ClickyPanelSettingsDefaults.defaultIsClickyCursorEnabled
+    )
 
     func setClickyCursorEnabled(_ enabled: Bool) {
         isClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
+        UserDefaults.standard.set(enabled, forKey: ClickyPanelSettingsDefaults.isClickyCursorEnabledKey)
         transientHideTask?.cancel()
         transientHideTask = nil
 
@@ -421,6 +469,7 @@ final class CompanionManager: ObservableObject {
         bindDictation()
         bindStatusPill()
         bindChatPanel()
+        overlayWindowManager.drawingOverlayController.drawingLifetimes = ClickyDrawingLifetimes.lifetimes(for: drawingLifetimeChoice)
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
         _ = claudeAPI
@@ -697,13 +746,18 @@ final class CompanionManager: ObservableObject {
     /// (Clicker and Safari, one of them kept) and a sample typed exchange followed by a second
     /// typed message whose reply is still streaming in, so the panel can be checked without typing.
     /// With CLICKY_PANEL_SELF_TEST_IMAGE=<png path> it also saves a picture of only Clicky's own
-    /// windows (the panel is made visible to that capture for the picture alone), and a second one
-    /// of the chat list next to it (the same name with "-chats" before the extension).
+    /// windows (the panel is made visible to that capture for the picture alone), and then one of
+    /// each other tab next to it (the same name with "-chats", "-memory", "-usage" and "-settings"
+    /// before the extension).
     ///
     /// The chats live in a temporary folder (`CLICKY_CHAT_STORE_DIRECTORY` when given, else a new
     /// folder in the temporary directory; see `ClickyChatSession.makeStoreForCurrentRun`), never
-    /// in the real chats folder. Nothing is sent to the network and no model is asked.
-    /// It does nothing in normal use.
+    /// in the real chats folder. The memory tab reads sample facts and notes, and the usage tab
+    /// sample metrics lines, from temporary folders too (`CLICKY_NOTES_DIRECTORY` and
+    /// `CLICKY_METRICS_DIRECTORY` when given, else new folders in the temporary directory; see
+    /// `ClickyPanelDataLocations.forRun`, which honours them only in a self test), so the user's
+    /// real notes folder and logs are never read or written by it. Nothing is sent to the network
+    /// and no model is asked. It does nothing in normal use.
     private func runPanelSelfTestIfRequested() {
         guard ProcessInfo.processInfo.environment[ClickyChatStore.panelSelfTestEnvironmentVariable] == "1" else { return }
         Task { @MainActor in
@@ -739,6 +793,11 @@ final class CompanionManager: ObservableObject {
             // The sample typed exchange, in the active chat.
             recordSampleChat("how do i undo in xcode", "press command z to undo the last change. command shift z redoes it.", inputMode: .typed, minutesAgo: 1, project: clickerProject)
 
+            // Sample facts, notes and metrics lines for the memory and usage tabs, written into the
+            // temporary folders only (never into a real folder, and never over files that are there).
+            let writtenSampleData = ClickyPanelSelfTestSamples.writeSamples(into: panelDataLocations)
+            print("💬 panel self test: sample memory written=\(writtenSampleData.wroteNotes) sample metrics written=\(writtenSampleData.wroteMetrics) realFolders=\(panelDataLocations.touchesARealFolder)")
+
             let selfTestImagePathFromEnvironment = ProcessInfo.processInfo.environment["CLICKY_PANEL_SELF_TEST_IMAGE"]
             chatPanelController.screenProvider = { mainDisplayScreen }
             chatPanelController.setVisibleInScreenCapturesForSelfTest(selfTestImagePathFromEnvironment != nil)
@@ -761,8 +820,29 @@ final class CompanionManager: ObservableObject {
                 await saveSelfTestPicture(toPath: selfTestImagePath, description: "chat")
                 chatPanelViewModel.showChatList()
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                let chatListImagePath = (selfTestImagePath as NSString).deletingPathExtension + "-chats." + (selfTestImagePath as NSString).pathExtension
-                await saveSelfTestPicture(toPath: chatListImagePath, description: "chat list")
+                func pictureFilePath(forTabNamed tabName: String) -> String {
+                    (selfTestImagePath as NSString).deletingPathExtension + "-" + tabName + "." + (selfTestImagePath as NSString).pathExtension
+                }
+                await saveSelfTestPicture(toPath: pictureFilePath(forTabNamed: "chats"), description: "chat list")
+
+                // The memory tab, with its second note asking "delete this?" so the inline
+                // confirmation is in the picture too. Nothing is deleted.
+                chatPanelViewModel.selectTab(.memory)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if let noteToConfirm = chatPanelViewModel.memoryContents?.notes.dropFirst().first {
+                    chatPanelViewModel.askToConfirmDeletingMemoryRow(rowIdentifier: noteToConfirm.identifier)
+                }
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                await saveSelfTestPicture(toPath: pictureFilePath(forTabNamed: "memory"), description: "memory")
+                chatPanelViewModel.cancelMemoryDeleteConfirmation()
+
+                chatPanelViewModel.selectTab(.usage)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                await saveSelfTestPicture(toPath: pictureFilePath(forTabNamed: "usage"), description: "usage")
+
+                chatPanelViewModel.selectTab(.settings)
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                await saveSelfTestPicture(toPath: pictureFilePath(forTabNamed: "settings"), description: "settings")
             } else {
                 // No picture was asked for: leave the panel up long enough to be looked at.
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
@@ -809,6 +889,8 @@ final class CompanionManager: ObservableObject {
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
+
+        hasSpeechRecognitionPermission = SFSpeechRecognizer.authorizationStatus() == .authorized
 
         // Debug: log permission state on changes
         if previouslyHadAccessibility != hasAccessibilityPermission
@@ -1040,6 +1122,111 @@ final class CompanionManager: ObservableObject {
         chatPanelController.openStateChangedHandler = { [weak self] _ in
             // The pill hides while the panel is open and the panel shows the same words inline.
             self?.refreshStatusPill()
+        }
+
+        // The memory, usage and settings tabs (round 15).
+        chatPanelViewModel.panelDataLocations = panelDataLocations
+        chatPanelViewModel.panelSettingChangedHandler = { [weak self] panelSettingChange in
+            self?.applyPanelSettingChange(panelSettingChange)
+        }
+        chatPanelViewModel.openPermissionSettingsHandler = { [weak self] permissionKind in
+            self?.openSystemSettings(for: permissionKind)
+        }
+        chatPanelViewModel.openNotesFolderHandler = { [weak self] notesDirectoryURL in
+            self?.openNotesFolderInFinder(notesDirectoryURL)
+        }
+        // The settings tab and the menu bar panel's switches show the same state. Whatever
+        // changes it, in either place, reaches the tab here. The mirror compares before it
+        // publishes, so the frequent changes of unrelated state cost nothing.
+        mirrorAppStateIntoChatPanelSettings()
+        chatPanelSettingsMirrorCancellable = objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                // After the hop the properties hold their new values.
+                self?.mirrorAppStateIntoChatPanelSettings()
+            }
+    }
+
+    // MARK: - Chat panel settings tab (round 15)
+
+    /// Where the memory and usage tabs read: the user's real folders, except in a panel self test,
+    /// which gets temporary ones (see `ClickyPanelDataLocations.forRun`).
+    private let panelDataLocations = ClickyPanelDataLocations.forRun(
+        environment: ProcessInfo.processInfo.environment,
+        temporaryDirectoryURL: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+        uniqueFolderNameSuffix: UUID().uuidString
+    )
+
+    private var chatPanelSettingsMirrorCancellable: AnyCancellable?
+
+    private func mirrorAppStateIntoChatPanelSettings() {
+        chatPanelViewModel.mirrorPanelSettings(ClickyPanelSettingsSnapshot(
+            selectedModelIdentifier: selectedModel,
+            isClickyCursorEnabled: isClickyCursorEnabled,
+            isDictationEnabled: isDictationEnabled,
+            isStatusPillEnabled: isStatusPillEnabled,
+            isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
+            isSpeakingTypedRepliesEnabled: isSpeakingTypedRepliesEnabled,
+            drawingLifetimeChoice: drawingLifetimeChoice
+        ))
+        // The first three are the checks the menu bar panel already shows; the speech recognition
+        // one is the status call `BuddyDictationManager` already uses.
+        chatPanelViewModel.mirrorPermissionStatuses([
+            ClickyPermissionStatus(kind: .microphone, isGranted: hasMicrophonePermission),
+            ClickyPermissionStatus(kind: .speechRecognition, isGranted: hasSpeechRecognitionPermission),
+            ClickyPermissionStatus(kind: .screenRecording, isGranted: hasScreenRecordingPermission),
+            ClickyPermissionStatus(kind: .accessibility, isGranted: hasAccessibilityPermission),
+        ])
+    }
+
+    /// A change made in the settings tab goes through the same setters the menu bar panel's
+    /// controls call, so it is stored in the same `UserDefaults` key and applied the same way.
+    private func applyPanelSettingChange(_ panelSettingChange: ClickyPanelSettingChange) {
+        switch panelSettingChange {
+        case .selectedModel(let modelIdentifier):
+            setSelectedModel(modelIdentifier)
+        case .clickyCursorEnabled(let isEnabled):
+            setClickyCursorEnabled(isEnabled)
+        case .dictationEnabled(let isEnabled):
+            setDictationEnabled(isEnabled)
+        case .statusPillEnabled(let isEnabled):
+            setStatusPillEnabled(isEnabled)
+        case .speakingRepliesEnabled(let isEnabled):
+            setSpeakingRepliesEnabled(isEnabled)
+        case .speakingTypedRepliesEnabled(let isEnabled):
+            setSpeakingTypedRepliesEnabled(isEnabled)
+        case .drawingLifetime(let drawingLifetimeChoice):
+            setDrawingLifetimeChoice(drawingLifetimeChoice)
+        }
+    }
+
+    /// "Open settings" on a permission: the same System Settings panes the menu bar panel opens.
+    private func openSystemSettings(for permissionKind: ClickyPermissionKind) {
+        switch permissionKind {
+        case .microphone:
+            openSystemSettingsPane(named: "Privacy_Microphone")
+        case .speechRecognition:
+            openSystemSettingsPane(named: "Privacy_SpeechRecognition")
+        case .screenRecording:
+            WindowPositionManager.openScreenRecordingSettings()
+        case .accessibility:
+            WindowPositionManager.openAccessibilitySettings()
+        }
+    }
+
+    private func openSystemSettingsPane(named privacyPaneName: String) {
+        guard let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(privacyPaneName)") else { return }
+        NSWorkspace.shared.open(settingsURL)
+    }
+
+    /// "Open notes folder": shows the folder in Finder. The folder is made first if nothing has
+    /// been saved yet, so the button always opens something. The disk work is off the main thread.
+    private func openNotesFolderInFinder(_ notesDirectoryURL: URL) {
+        Task.detached(priority: .userInitiated) {
+            try? FileManager.default.createDirectory(at: notesDirectoryURL, withIntermediateDirectories: true)
+            await MainActor.run {
+                _ = NSWorkspace.shared.open(notesDirectoryURL)
+            }
         }
     }
 
@@ -1408,13 +1595,40 @@ final class CompanionManager: ObservableObject {
         // earlier screen cannot bleed into the new question (Sam's choice, 12 Nov 2026); see
         // `ClickyChatBoundary.idleBoundaryAlsoClearsConversationHistory`.
         let isTypedTurn = inputMode == .typed
+        // Whether this reply is read aloud, decided once for the whole turn from the two voice
+        // options of the settings tab (see `ClickyReplySpeechDecision`). With the defaults a voice
+        // turn is spoken and a typed one is not, exactly as before the options existed.
+        let shouldSpeakThisReply = ClickyReplySpeechDecision.shouldSpeakReply(
+            inputMode: inputMode,
+            isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
+            isSpeakingTypedRepliesEnabled: isSpeakingTypedRepliesEnabled
+        )
+        // A reply that is not spoken is read in the chat panel as it streams in. That is always so
+        // for a typed turn, and for a voice turn when "speak replies" is off.
+        let showsStreamingReplyInPanel = isTypedTurn || !shouldSpeakThisReply
+        let replyIsOnlyShownAsText = ClickyReplySpeechDecision.shouldShowReplyAsTextInPanel(
+            inputMode: inputMode,
+            isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
+            isSpeakingTypedRepliesEnabled: isSpeakingTypedRepliesEnabled
+        )
         let messageStartedAtDate = Date()
         let messageStartsNewChat = chatSession.messageWouldStartNewChat(at: messageStartedAtDate)
         if messageStartsNewChat && ClickyChatBoundary.idleBoundaryAlsoClearsConversationHistory {
             conversationHistory.removeAll()
         }
+        // A voice reply that is not spoken has nowhere else to be read, so the panel opens for it.
+        // It is ordered to the front without becoming the key window: the app the user is in
+        // keeps the keyboard.
+        if replyIsOnlyShownAsText && !chatPanelController.isOpen {
+            chatPanelController.open(takingKeyboard: false)
+        }
         // The message shows in the panel at once (when it is open), before the reply.
-        chatPanelViewModel.beginPendingExchange(turnIdentifier: turnIdentifier, userText: transcript, inputMode: inputMode)
+        chatPanelViewModel.beginPendingExchange(
+            turnIdentifier: turnIdentifier,
+            userText: transcript,
+            inputMode: inputMode,
+            replyIsOnlyShownAsText: replyIsOnlyShownAsText
+        )
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -1649,16 +1863,18 @@ final class CompanionManager: ObservableObject {
                         // the early speech fetch once the first reply tag has opened (the words
                         // before it are final). Nothing is played from here.
                         replyTextArrivalClock.markReplyTextArrived()
-                        // A typed turn shows the reply in the panel as it arrives, with every tag
-                        // (even a half-written one) already removed, and is never spoken, so the
-                        // early speech fetch below is not started for it.
-                        if isTypedTurn {
+                        // A reply that is read in the panel (a typed turn, or a voice turn while
+                        // "speak replies" is off) shows as it arrives, with every tag (even a
+                        // half-written one) already removed.
+                        if showsStreamingReplyInPanel {
                             chatPanelViewModel.updateStreamingReply(
                                 ClickyReplyTagParser.parse(accumulatedReplyText).spokenText,
                                 turnIdentifier: turnIdentifier
                             )
-                            return
                         }
+                        // A reply that is not spoken has no early speech fetch: nothing is sent to
+                        // the speech service for it.
+                        guard shouldSpeakThisReply else { return }
                         // A draw, card or 3D scene reply has tags between its sentences ([DRAW,
                         // [CARD, [ROW, [SCENE, [PART), so the words before its closing tag are not the whole spoken
                         // answer and audio fetched for them would always be thrown away. The
@@ -1858,12 +2074,13 @@ final class CompanionManager: ObservableObject {
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
-                if isTypedTurn {
-                    // A typed reply is read in the panel, never spoken: no text to speech, no
-                    // "speaking" state. Pointing (above) is unchanged, and with no audio to pace
-                    // against the marks follow each other at the steady beat the schedule already
-                    // has for that. The text-to-speech step this turn was marked as being at is
-                    // passed in an instant.
+                if !shouldSpeakThisReply {
+                    // A reply that is not spoken (a typed one, unless "speak typed replies" is on,
+                    // or any reply while "speak replies" is off) is read in the panel: no text to
+                    // speech, no "speaking" state. Pointing (above) is unchanged, and with no audio
+                    // to pace against the marks follow each other at the steady beat the schedule
+                    // already has for that. The text-to-speech step this turn was marked as being
+                    // at is passed in an instant.
                     drawingOverlayController.performDrawCommands(
                         parsedDrawReply.commands,
                         displayPlacementsInScreenshotOrder: drawingDisplayPlacementsInScreenshotOrder,
@@ -1957,7 +2174,10 @@ final class CompanionManager: ObservableObject {
                         failingStep: turnStepInProgress,
                         error: error,
                         spokenReplyTextThatCouldNotBeSpoken: nil,
-                        typedTurnIdentifier: isTypedTurn ? turnIdentifier : nil
+                        // A failure is shown as text in the panel when the reply would have been
+                        // read there too (a typed turn, or "speak replies" off), and spoken
+                        // otherwise.
+                        typedTurnIdentifier: showsStreamingReplyInPanel ? turnIdentifier : nil
                     )
                 }
             }

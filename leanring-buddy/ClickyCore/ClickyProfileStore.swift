@@ -431,3 +431,91 @@ nonisolated struct ClickyProfileStore {
         return singleSpacedText.trimmingCharacters(in: CharacterSet(charactersIn: ".!?,;: "))
     }
 }
+
+// MARK: - The chat panel's memory tab (round 15)
+
+/// One fact as the memory tab lists it: its text and where it sits in the file. The place is what
+/// lets a delete cut exactly that line, even when the file holds the same words twice.
+nonisolated struct ClickyProfileFactEntry: Equatable, Hashable, Sendable {
+    /// Zero-based index of the line in the file, counting every line (headings and blank lines
+    /// too), with the line breaks `Character.isNewline` knows (so "\r\n" is one break).
+    let lineIndexInFile: Int
+    let factText: String
+
+    /// Stable while the file does not change; used to find the row that asked to be deleted.
+    var identifier: String {
+        "profile#\(lineIndexInFile)"
+    }
+}
+
+nonisolated extension ClickyProfileStore {
+    /// Every fact of the file with its line, in file order (so the newest is last), read the same
+    /// tolerant way as `loadFactTexts`: headings, comments, blank lines and labels are not facts.
+    static func factEntries(fromFileContents fileContents: String) -> [ClickyProfileFactEntry] {
+        ClickyMemoryFileLines.lines(of: fileContents).enumerated().compactMap { lineIndex, fileLine in
+            guard let factText = Self.factText(fromRawLine: fileLine.text) else {
+                return nil
+            }
+            return ClickyProfileFactEntry(lineIndexInFile: lineIndex, factText: factText)
+        }
+    }
+
+    /// The facts with their lines. `preferringCachedFile` is true for the panel's first, instant
+    /// read (see `ClickyMemoryFileSnapshotCache`); a missing or unreadable file gives no facts.
+    func loadFactEntries(preferringCachedFile: Bool = false) -> [ClickyProfileFactEntry] {
+        guard let fileContents = readFileContentsText(preferringCachedFile: preferringCachedFile) else {
+            return []
+        }
+        return Self.factEntries(fromFileContents: fileContents)
+    }
+
+    /// Removes exactly ONE fact: the line at `lineIndexInFile`, which must still hold
+    /// `expectedFactText`.
+    ///
+    /// Every other byte of the file stays as it was (hand-written lines, headings, comments, blank
+    /// lines, line endings, trailing spaces, a missing final newline), because only that line and
+    /// its own line break are cut from the text and the rest is written back unchanged. This is
+    /// not `removeFacts(withExactTexts:)`, which removes every fact with the same words and rewrites
+    /// the file through `writeFileLines` (which joins lines with "\n" and drops trailing blank lines).
+    ///
+    /// If the file changed since the panel read it (the line moved or holds other words) nothing
+    /// is written and the result is `.noMatch`; the panel then reads the file again. The write is
+    /// atomic and the in-memory copy is refreshed afterwards.
+    func removeFact(atLineIndex lineIndexInFile: Int, expectingFactText expectedFactText: String) -> ClickyMemoryRemovalResult {
+        guard FileManager.default.fileExists(atPath: profileFileURL.path) else {
+            return .noMatch
+        }
+        let fileContents: String
+        do {
+            fileContents = try String(contentsOf: profileFileURL, encoding: .utf8)
+        } catch {
+            return .failed(errorDescription: error.localizedDescription)
+        }
+
+        let fileLines = ClickyMemoryFileLines.lines(of: fileContents)
+        guard fileLines.indices.contains(lineIndexInFile),
+              Self.factText(fromRawLine: fileLines[lineIndexInFile].text) == expectedFactText else {
+            return .noMatch
+        }
+
+        let fileContentsWithoutTheFact = ClickyMemoryFileLines.fileContents(from: fileLines, removingLineAt: lineIndexInFile)
+        do {
+            try fileContentsWithoutTheFact.write(to: profileFileURL, atomically: true, encoding: .utf8)
+        } catch {
+            return .failed(errorDescription: error.localizedDescription)
+        }
+        ClickyMemoryFileSnapshotCache.shared.refresh(directory: profileDirectoryURL)
+        return .removed(removedTexts: [expectedFactText])
+    }
+
+    private func readFileContentsText(preferringCachedFile: Bool) -> String? {
+        if preferringCachedFile,
+           let cachedMarkdownFileContentsByFileName = ClickyMemoryFileSnapshotCache.shared.cachedMarkdownFileContentsByFileName(inDirectory: profileDirectoryURL) {
+            return cachedMarkdownFileContentsByFileName[Self.profileFileName]
+        }
+        guard FileManager.default.fileExists(atPath: profileFileURL.path) else {
+            return nil
+        }
+        return try? String(contentsOf: profileFileURL, encoding: .utf8)
+    }
+}
