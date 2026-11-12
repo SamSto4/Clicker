@@ -249,6 +249,27 @@ final class ClickyChatPanelController {
     /// capture is the point.
     func setVisibleInScreenCapturesForSelfTest(_ isVisibleInScreenCaptures: Bool) {
         existingOrNewPanel().sharingType = isVisibleInScreenCaptures ? .readOnly : .none
+        isTakingSelfTestPictures = isVisibleInScreenCaptures
+    }
+
+    /// Only while the self test takes its pictures:
+    /// - every height request is printed, so a picture of a window with the wrong height can be
+    ///   told apart from a window caught mid-resize;
+    /// - a click outside the panel does not close it. In round 16 a click in another app (the
+    ///   person at the Mac switching to their terminal) closed the panel halfway through, and
+    ///   the remaining pictures showed no panel at all.
+    /// A normal run never sets it, so it prints nothing and closes on an outside click as always.
+    private var isTakingSelfTestPictures = false
+
+    /// The window's height now, and the height it should end at for the content's current
+    /// height. The self test waits for the two to agree before it takes a picture.
+    var currentPanelHeightForSelfTest: CGFloat? {
+        panel?.frame.height
+    }
+
+    var settledPanelHeightForSelfTest: CGFloat? {
+        guard let shownOnScreen else { return nil }
+        return placement(forContentHeightInPoints: viewModel.desiredPanelHeightInPoints, on: shownOnScreen).frame.height
     }
 
     // MARK: - Window
@@ -283,6 +304,11 @@ final class ClickyChatPanelController {
     private func followContentHeight(_ desiredHeightInPoints: CGFloat, animated: Bool) {
         guard isOpen, let panel, let shownOnScreen else { return }
         let newFrame = placement(forContentHeightInPoints: desiredHeightInPoints, on: shownOnScreen).frame
+        if isTakingSelfTestPictures {
+            let previouslyRequestedHeight = lastRequestedPanelFrame.map { Int($0.height) } ?? -1
+            let unchangedMarker = newFrame == lastRequestedPanelFrame ? " (unchanged)" : ""
+            print("💬 panel size: content asks \(Int(desiredHeightInPoints)), window to \(Int(newFrame.height)), last asked \(previouslyRequestedHeight), now \(Int(panel.frame.height))\(unchangedMarker)")
+        }
         guard newFrame != lastRequestedPanelFrame else { return }
         lastRequestedPanelFrame = newFrame
         if animated && panel.isVisible {
@@ -353,6 +379,7 @@ final class ClickyChatPanelController {
             Task { @MainActor [weak self] in
                 guard let self, self.isOpen, let panel = self.panel else { return }
                 guard !panel.frame.contains(NSEvent.mouseLocation) else { return }
+                guard !self.isTakingSelfTestPictures else { return }
                 self.close()
             }
         }

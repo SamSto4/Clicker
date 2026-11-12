@@ -416,11 +416,12 @@ final class ClickyChatPanelViewModel: ObservableObject {
         memoryLoadGeneration += 1
         let loadGeneration = memoryLoadGeneration
         let notesDirectoryURL = panelDataLocations.notesDirectoryURL
+        let memoriesDirectoryURL = panelDataLocations.memoriesDirectoryURL
         Task.detached(priority: .utility) { [weak self] in
-            if let contentsFromCache = ClickyMemoryPanelLoader.contentsFromCacheWithoutReadingDisk(notesDirectoryURL: notesDirectoryURL) {
+            if let contentsFromCache = ClickyMemoryPanelLoader.contentsFromCacheWithoutReadingDisk(notesDirectoryURL: notesDirectoryURL, memoriesDirectoryURL: memoriesDirectoryURL) {
                 await self?.applyLoadedMemoryContents(contentsFromCache, loadGeneration: loadGeneration)
             }
-            let contentsFromDisk = ClickyMemoryPanelLoader.contentsAfterRefreshingFromDisk(notesDirectoryURL: notesDirectoryURL)
+            let contentsFromDisk = ClickyMemoryPanelLoader.contentsAfterRefreshingFromDisk(notesDirectoryURL: notesDirectoryURL, memoriesDirectoryURL: memoriesDirectoryURL)
             await self?.applyLoadedMemoryContents(contentsFromDisk, loadGeneration: loadGeneration)
         }
     }
@@ -456,6 +457,18 @@ final class ClickyChatPanelViewModel: ObservableObject {
         }
     }
 
+    /// The second click, on the confirmation: exactly this memory (by its id) is removed from the
+    /// memories file. Every other memory stays.
+    func confirmDeletingMemory(_ memory: ClickyMemory) {
+        guard memoryRowAwaitingDeleteConfirmation == memory.rowIdentifier,
+              let memoriesDirectoryURL = panelDataLocations.memoriesDirectoryURL else {
+            return
+        }
+        removeMemoryRowInBackground(rowIdentifier: memory.rowIdentifier) { _ in
+            ClickyMemoryPanelLoader.removeMemory(memory, memoriesDirectoryURL: memoriesDirectoryURL)
+        }
+    }
+
     /// The row goes from the list at once, the removal and a fresh read run in the background, and
     /// what the disk says then replaces the list (so a delete that could not be done brings the row back).
     private func removeMemoryRowInBackground(
@@ -470,9 +483,10 @@ final class ClickyChatPanelViewModel: ObservableObject {
         memoryLoadGeneration += 1
         let loadGeneration = memoryLoadGeneration
         let notesDirectoryURL = panelDataLocations.notesDirectoryURL
+        let memoriesDirectoryURL = panelDataLocations.memoriesDirectoryURL
         Task.detached(priority: .userInitiated) { [weak self] in
             let removalResult = removal(notesDirectoryURL)
-            let contentsFromDisk = ClickyMemoryPanelLoader.contentsAfterRefreshingFromDisk(notesDirectoryURL: notesDirectoryURL)
+            let contentsFromDisk = ClickyMemoryPanelLoader.contentsAfterRefreshingFromDisk(notesDirectoryURL: notesDirectoryURL, memoriesDirectoryURL: memoriesDirectoryURL)
             await self?.finishMemoryRowRemoval(removalResult: removalResult, contentsFromDisk: contentsFromDisk, loadGeneration: loadGeneration)
         }
     }
