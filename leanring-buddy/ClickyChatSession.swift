@@ -91,14 +91,16 @@ final class ClickyChatSession: ObservableObject {
         replyHistoryText: String,
         messageStartedAt: Date,
         replyFinishedAt: Date = Date(),
-        projectForNewChat: ClickyChatProject
+        projectForNewChat: ClickyChatProject,
+        screenOfExchange: ClickyScreenDescription? = nil
     ) {
         let redactedExchange = ClickyChatRedaction.redactedExchange(
             userText: userText,
             inputMode: inputMode,
             replyDisplayText: replyDisplayText,
             replyHistoryText: replyHistoryText,
-            timestamp: replyFinishedAt
+            timestamp: replyFinishedAt,
+            screenOfExchange: screenOfExchange
         )
         let chatToWrite = collection.recordExchange(
             redactedExchange,

@@ -16,6 +16,13 @@ nonisolated struct ClickyChatExchange: Codable, Equatable {
     /// loads these, so the model sees the same history text it would have seen at the time.
     let replyHistoryText: String
     let timestamp: Date
+    /// The app and window title the user was on when they sent the message (the title already
+    /// cleaned and checked by `ClickyChatRedaction.redactedScreen`). nil for a chat file written
+    /// before screens were recorded, and for a turn where the app was unknown. It is a `var` with
+    /// a default so such an old file still decodes (a missing key reads as nil) and every caller
+    /// that does not pass it compiles unchanged. Continuing a chat uses it to tell whether the
+    /// screen changed since the last exchange.
+    var screenOfExchange: ClickyScreenDescription? = nil
 }
 
 /// Where the user was when a chat started. The key groups chats; the display name is what the
@@ -200,20 +207,33 @@ nonisolated enum ClickyChatRedaction {
         ClickySecretDetector.textLooksLikeASecret(text) ? redactedTextPlaceholder : text
     }
 
+    /// The screen a chat file may hold. A window title is text another program chose and can hold
+    /// a secret ("Notes — wifi password is hunter2"), and chat files are a save path, so a title
+    /// that looks like a secret is dropped and only the app name is kept.
+    static func redactedScreen(_ screenDescription: ClickyScreenDescription?) -> ClickyScreenDescription? {
+        guard let screenDescription else { return nil }
+        guard let windowTitle = screenDescription.windowTitle, ClickySecretDetector.textLooksLikeASecret(windowTitle) else {
+            return screenDescription
+        }
+        return ClickyScreenDescription(applicationName: screenDescription.applicationName, windowTitle: nil)
+    }
+
     /// An exchange with every text passed through the secret check.
     static func redactedExchange(
         userText: String,
         inputMode: ClickyTurnInputMode,
         replyDisplayText: String,
         replyHistoryText: String,
-        timestamp: Date
+        timestamp: Date,
+        screenOfExchange: ClickyScreenDescription? = nil
     ) -> ClickyChatExchange {
         ClickyChatExchange(
             userText: redacted(userText),
             inputMode: inputMode,
             replyDisplayText: redacted(replyDisplayText),
             replyHistoryText: redacted(replyHistoryText),
-            timestamp: timestamp
+            timestamp: timestamp,
+            screenOfExchange: redactedScreen(screenOfExchange)
         )
     }
 }

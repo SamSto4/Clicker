@@ -82,8 +82,11 @@ final class CompanionManager: ObservableObject {
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
-    private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+    /// Each entry is the user's transcript and Claude's response, plus the screen (app and window
+    /// title) the user was on for that exchange, so a later turn can tell when the screen changed
+    /// and tell the model the earlier messages were about another one. The screen is nil when it
+    /// is not known (a continued chat saved before screens were recorded).
+    private var conversationHistory: [ClickyConversationHistoryEntry] = []
 
     /// Long-term memory across app restarts, served by memory_server.py on this Mac.
     /// If that server isn't running, Clicker works as before without it.
@@ -1454,6 +1457,14 @@ final class CompanionManager: ObservableObject {
                     return ClickyChatProjectContextReader.resolveProject(for: projectContext)
                 }
             }
+            // The title of the window the user is looking at, read on every turn (unlike the
+            // project above), off the main thread because the Accessibility answer can take up to
+            // its short timeout. It starts here so it runs alongside the screenshot and is
+            // normally ready by the time the prompt is assembled. It reads only the title.
+            let frontmostProcessIdentifierForWindowTitle = frontmostApplicationAtTurnStart?.processIdentifier
+            let frontmostWindowTitleTask = Task.detached(priority: .userInitiated) {
+                ClickyChatProjectContextReader.readFrontmostWindowTitle(processIdentifier: frontmostProcessIdentifierForWindowTitle)
+            }
             // Set once the finished exchange has been handed to the chat, so the "turn ended"
             // cleanup below does not take the message off the panel before the chat holds it.
             var exchangeWasHandedToChat = false
@@ -1554,8 +1565,16 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                // The window title read that started with the turn. It ran alongside the screenshot,
+                // so this wait is normally zero; it is at most the Accessibility timeout for an app
+                // that is not answering. It is waited for before the prompt assembly is timed, so
+                // the assembly's own number stays the assembly alone.
+                let frontmostWindowTitle = await frontmostWindowTitleTask.value
+
                 // Assemble this turn's system prompt: base prompt, matching app skills, the
-                // "right now" block, the user's profile, and any saved notes relevant to the question.
+                // "right now" block (with the window title), the note about a changed screen (only
+                // when this screen is not the one of the last exchange), the user's profile, and
+                // any saved notes relevant to the question.
                 turnStepInProgress = .promptAssembly
                 let promptAssemblyStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                 let noteStore = ClickyNoteStore(notesDirectoryURL: ClickyNoteStore.defaultNotesDirectoryURL)
@@ -1567,15 +1586,23 @@ final class CompanionManager: ObservableObject {
                 let drawingMarksOnScreen = drawingOverlayController.drawingMarksForPrompt(
                     displayFramesInScreenshotOrder: screenCaptures.map(\.displayFrame)
                 )
+                // The last exchange's screen is nil when the history is empty (a new chat, or
+                // cleared after ten quiet minutes) or was recorded before screens were kept, and
+                // then no note is added.
+                let turnContext = ClickyTurnContext(
+                    userTranscript: transcript,
+                    frontmostApplicationBundleIdentifier: frontmostApplicationAtTurnStart?.bundleIdentifier,
+                    frontmostApplicationName: frontmostApplicationAtTurnStart?.localizedName,
+                    screenCount: screenCaptures.count,
+                    currentDate: Date(),
+                    drawingMarksOnScreen: drawingMarksOnScreen,
+                    frontmostWindowTitle: frontmostWindowTitle,
+                    screenOfLastExchange: conversationHistory.last?.screenOfExchange
+                )
+                // Recorded with this turn's exchange below, so the next turn can compare with it.
+                let screenOfThisTurn = turnContext.screenNow
                 let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
-                    for: ClickyTurnContext(
-                        userTranscript: transcript,
-                        frontmostApplicationBundleIdentifier: frontmostApplicationAtTurnStart?.bundleIdentifier,
-                        frontmostApplicationName: frontmostApplicationAtTurnStart?.localizedName,
-                        screenCount: screenCaptures.count,
-                        currentDate: Date(),
-                        drawingMarksOnScreen: drawingMarksOnScreen
-                    ),
+                    for: turnContext,
                     promptsDirectoryURL: ClickyPromptAssembler.promptsDirectoryURL(in: .main),
                     noteStore: noteStore,
                     profileStore: profileStore
@@ -1789,7 +1816,8 @@ final class CompanionManager: ObservableObject {
                 )
                 conversationHistory.append((
                     userTranscript: transcript,
-                    assistantResponse: assistantHistoryText
+                    assistantResponse: assistantHistoryText,
+                    screenOfExchange: screenOfThisTurn
                 ))
 
                 // Keep only the last 10 exchanges to avoid unbounded context growth
@@ -1810,7 +1838,8 @@ final class CompanionManager: ObservableObject {
                         replyDisplayText: spokenText,
                         replyHistoryText: assistantHistoryText,
                         messageStartedAt: messageStartedAtDate,
-                        projectForNewChat: projectForNewChat
+                        projectForNewChat: projectForNewChat,
+                        screenOfExchange: screenOfThisTurn
                     )
                     self.chatPanelViewModel.finishPendingExchange(turnIdentifier: turnIdentifier)
                 }
