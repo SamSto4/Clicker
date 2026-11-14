@@ -309,7 +309,9 @@ class ClaudeAPI {
         toolSession: ClickyTurnToolSession,
         cacheFirstUserMessageFromRequest: Int? = nil,
         shouldStopAfterRequest: (ClickyToolLoopRoundSummary) -> Bool = { _ in false },
-        onProgress: @MainActor @Sendable (ToolLoopProgress) -> Void
+        // Escaping because the calls that run together (round 19, E) report progress from inside a
+        // task group's closure, which outlives this call's frame as far as the compiler can tell.
+        onProgress: @escaping @MainActor @Sendable (ToolLoopProgress) -> Void
     ) async throws -> ClickyToolLoopResult {
         let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(
             staticText: staticSystemPrompt,
