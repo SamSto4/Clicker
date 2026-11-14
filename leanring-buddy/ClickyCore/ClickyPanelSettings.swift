@@ -92,8 +92,14 @@ nonisolated struct ClickyPanelModelOption: Equatable, Sendable {
     let modelIdentifier: String
 
     static let sonnet = ClickyPanelModelOption(title: "sonnet", modelIdentifier: "claude-sonnet-5-5")
-    static let opus = ClickyPanelModelOption(title: "opus", modelIdentifier: "claude-opus-4-6")
+    /// Opus 5.5 since 12 Nov 2026 (it was the older `claude-opus-4-6`, which has no price in the
+    /// usage table and, like every model but Sonnet 5.5, rejected the thinking setting Clicky sent).
+    static let opus = ClickyPanelModelOption(title: "opus", modelIdentifier: "claude-opus-5-5")
     static let all = [sonnet, opus]
+
+    /// Model identifiers an earlier version stored that now mean another option. A stored
+    /// `claude-opus-4-6` (someone who picked "opus" before) reads as today's opus.
+    static let replacedModelIdentifiers = ["claude-opus-4-6": opus.modelIdentifier]
 }
 
 /// The `UserDefaults` keys and the default of every setting. Each function takes the stored value
@@ -130,7 +136,7 @@ nonisolated enum ClickyPanelSettingsDefaults {
         guard let storedModelIdentifier = storedValue as? String, !storedModelIdentifier.isEmpty else {
             return defaultModelIdentifier
         }
-        return storedModelIdentifier
+        return ClickyPanelModelOption.replacedModelIdentifiers[storedModelIdentifier] ?? storedModelIdentifier
     }
 
     /// The stored word ("short", "normal" or "long"). A missing or unknown value is "normal".

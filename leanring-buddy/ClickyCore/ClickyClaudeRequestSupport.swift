@@ -59,11 +59,29 @@ nonisolated enum ClickyClaudeRequestSettings {
     /// tokens at the default effort against 39 at "low", with the same answer quality.
     static let lowEffortOutputConfiguration: [String: String] = ["effort": "low"]
 
-    /// Adds both settings to a request body. Both request kinds (streaming and non-streaming) go
-    /// through here, so neither can be sent without them.
+    /// The only model that accepts `{"type": "between_tools"}`. Every other model answers HTTP 400
+    /// "thinking.type.between_tools is not supported for this model": measured through the Worker on
+    /// 12 Nov 2026 for `claude-opus-4-6`, `claude-opus-5-5` and `claude-haiku-5-5`. Before that the
+    /// field was added for every model, so choosing "opus" in the panel made every reply fail.
+    static let modelAcceptingThinkingOffConfiguration = "claude-sonnet-5-5"
+
+    /// Whether a request for this model may carry `thinkingOffConfiguration`.
+    static func modelAcceptsThinkingOffConfiguration(_ modelIdentifier: String?) -> Bool {
+        modelIdentifier == modelAcceptingThinkingOffConfiguration
+    }
+
+    /// Adds the settings to a request body. Both request kinds (streaming and non-streaming) go
+    /// through here, so neither can be sent without them. Low effort goes on every request; thinking
+    /// off only on a request for Sonnet 5.5 (read from the body's own `model` field), because the
+    /// other models reject the field. Without it the Opus models think adaptively, which at low
+    /// effort is short or skipped on simple questions (a three-word answer took 1.8 to 2.0 seconds).
     static func addingSpokenReplySettings(to requestBody: [String: Any]) -> [String: Any] {
         var requestBodyWithSettings = requestBody
-        requestBodyWithSettings[thinkingFieldName] = thinkingOffConfiguration
+        if modelAcceptsThinkingOffConfiguration(requestBody["model"] as? String) {
+            requestBodyWithSettings[thinkingFieldName] = thinkingOffConfiguration
+        } else {
+            requestBodyWithSettings.removeValue(forKey: thinkingFieldName)
+        }
         requestBodyWithSettings[outputConfigurationFieldName] = lowEffortOutputConfiguration
         return requestBodyWithSettings
     }

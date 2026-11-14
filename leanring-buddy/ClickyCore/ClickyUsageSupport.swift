@@ -34,7 +34,8 @@ nonisolated struct ClickyModelPrice: Equatable, Sendable {
 /// Clicky sends (the dictation cleanup is a few hundred tokens).
 ///
 /// A model that is not in this table has no price here, and the usage tab says "price unknown"
-/// for it instead of guessing one. Today that includes the panel's Opus choice, `claude-opus-4-6`.
+/// for it instead of guessing one, for example `claude-opus-4-6` in logs from before 12 Nov 2026,
+/// when the panel's Opus choice moved to `claude-opus-5-5`.
 ///
 /// The numbers are `Decimal`, never `Double`, so a price such as $0.125 and a sum of many small
 /// costs stay exact.
