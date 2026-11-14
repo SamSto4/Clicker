@@ -12,9 +12,26 @@
  * Every request must carry the shared app token in the X-Clicky-App-Token
  * header. Without it, anyone who finds this Worker's URL could spend the
  * API credit behind these keys.
+ *
+ * A daily spending cap (src/dailyCap.ts) refuses `/chat` and `/tts` requests
+ * past 600 chat requests or 60,000 speech characters per UTC day with HTTP
+ * 429. It is checked after the app token, so a request without the token
+ * never counts.
  */
 
-interface Env {
+import {
+  ClickyDailyCap,
+  dailyCapAllowsRequest,
+  dailyCapReachedResponse,
+  textToSpeechCharacterCount,
+  type DailyCapEnvironment,
+} from "./dailyCap";
+
+// The daily cap's counter class must be exported from the Worker's main
+// module so the Durable Object binding in wrangler.toml can find it.
+export { ClickyDailyCap };
+
+interface Env extends DailyCapEnvironment {
   ANTHROPIC_API_KEY: string;
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
@@ -94,6 +111,10 @@ export default {
 };
 
 async function handleChat(request: Request, env: Env): Promise<Response> {
+  if (!(await dailyCapAllowsRequest(env, "chatRequests", 1))) {
+    return dailyCapReachedResponse();
+  }
+
   const body = await request.text();
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -153,6 +174,11 @@ async function handleTranscribeToken(env: Env): Promise<Response> {
 
 async function handleTTS(request: Request, env: Env): Promise<Response> {
   const body = await request.text();
+
+  if (!(await dailyCapAllowsRequest(env, "textToSpeechCharacters", textToSpeechCharacterCount(body)))) {
+    return dailyCapReachedResponse();
+  }
+
   const voiceId = env.ELEVENLABS_VOICE_ID;
 
   const response = await fetch(

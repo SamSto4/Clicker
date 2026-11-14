@@ -49,10 +49,16 @@ Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`,
 
 Every Worker request must carry `X-Clicky-App-Token` matching `CLICKY_APP_TOKEN`, or the Worker answers 401 (and refuses everything if the secret is unset). The app reads the Worker URL and token from the git-ignored `leanring-buddy/ClickyWorkerSecrets.plist` (template: `ClickyWorkerSecrets.example.plist` at the repo root).
 
+**Daily spending cap** (Sam's decision of 14 Nov 2026; `worker/src/dailyCap.ts`): at most 600 `/chat` requests and 60,000 text-to-speech characters (the length of the `/tts` body's `text`) per UTC day. Every `/chat` request counts, including each step of a tool loop, the dictation cleanup and the memory compaction, so 600 requests are fewer than 600 questions. The check runs after the app token check (a request without the token never counts). A request is allowed while today's count plus its own amount stays within the cap; a refused request is not counted; the counts start again at 00:00 UTC. A request past the cap gets HTTP 429 with `content-type: application/json`, the header `X-Clicky-Cap: daily` and exactly the body `{"error":{"type":"clicky_daily_cap","message":"daily cap reached"}}`, which the app turns into "i've hit today's spending cap." (`ClickyTurnFailureMessage`; over HTTP/2 the header arrives lower-case, so the app reads headers case-insensitively and checks the body first). `/transcribe-token` is not counted.
+- The counts live in one Durable Object (`ClickyDailyCap`, binding `CLICKY_DAILY_CAP`, SQLite storage, the only backend the Workers Free plan allows; migration `v1` in `wrangler.toml`), reached with its classic `fetch` handler because RPC needs a newer compatibility date than the proxy's `2024-01-01`. It keeps one storage key, today's counters, replaced when the day changes. Workers KV was the first idea, but its free plan allows 1,000 writes a day, which the counting alone would use up; a Durable Object gets 100,000 requests and 100,000 rows written a day free, and it handles one request at a time, so two requests can never both take the last place. Each counted request costs one Durable Object request, one row read and one row written.
+- It fails open: without the binding, or when the counter cannot be reached or answers an error, the request goes through and the Worker logs "[daily cap] counter unavailable". The cap is a safety net against runaway loops (a TV that keeps follow-up listening going, a tool loop gone wrong); a monthly limit in the Anthropic Console is the backstop.
+- The limits can be changed without a code change with the plain text vars `CLICKY_DAILY_CHAT_REQUEST_CAP` and `CLICKY_DAILY_TTS_CHARACTER_CAP` (a whole number of zero or more; anything else means the default). They are deliberately not in `wrangler.toml`: `npx wrangler deploy --var CLICKY_DAILY_CHAT_REQUEST_CAP:2000` raises the cap for that deploy (an eval day, when the tester's live runs alone can use several hundred requests), and the next plain deploy goes back to 600.
+- Checks: `node worker/test/dailyCap.check.ts` (Node 23.6 or newer runs TypeScript directly; no network, account or keys; 53 checks of the decision, the settings, the 429 answer, the counter object against in-memory storage, the day change and failing open). End to end it was run in `wrangler dev` (local workerd and local Durable Object storage) with fake keys and caps of 2 requests and 20 characters: the third chat request and the speech past 20 characters got the 429 with the body and header, requests without the token got 401 and were not counted, and the counts survived a restart.
+
 Speech-to-text in this fork uses Apple Speech (`VoiceTranscriptionProvider` = `apple` in Info.plist), which runs on the Mac and needs no API key, so `ASSEMBLYAI_API_KEY` is optional. Set it back to `assemblyai` (and add that Worker secret) to use AssemblyAI streaming.
 
 In this fork, PostHog analytics, the FormSpark email submission and the Sparkle update feed are switched off.
-Worker vars: `ELEVENLABS_VOICE_ID`
+Worker vars: `ELEVENLABS_VOICE_ID`; optional `CLICKY_DAILY_CHAT_REQUEST_CAP` and `CLICKY_DAILY_TTS_CHARACTER_CAP` (see "Daily spending cap" above)
 
 ### Key Architecture Decisions
 
@@ -379,7 +385,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyPrompts/skill_*.md` | ~230 words each | Per-app skills (general coding, Xcode, VS Code family, terminals). Plain resource files, not compiled. |
 | `ClickyWorkerConfiguration.swift` | ~65 | Reads the Worker base URL and app token from the git-ignored `ClickyWorkerSecrets.plist` and adds the `X-Clicky-App-Token` header to Worker requests. |
 | `ClickerMemoryClient.swift` | ~150 | Long-term memory client. Talks to `memory_server.py` (K.I.T-Agent repo) on `http://127.0.0.1:8765`: fetches saved facts + a related past session for the system prompt, sends the user's own transcript to `/learn`, and saves a session summary after 10 idle minutes or on quit. Fails soft when the server isn't running. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~210 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). The app token check, then the daily spending cap for `/chat` and `/tts`. |
+| `worker/src/dailyCap.ts` | ~260 | The daily spending cap: the pure decision (600 chat requests, 60,000 speech characters per UTC day), the limits from the optional vars, the 429 answer, the Worker-side check that fails open, and the counter Durable Object `ClickyDailyCap`. No imports, so Node can run it. |
+| `worker/test/dailyCap.check.ts` | ~265 | Offline checks of the daily cap (`node worker/test/dailyCap.check.ts`): the decision, the settings, the 429 answer, the counter object against in-memory storage, the day change, failing open. |
 
 ## Build & Run
 
@@ -407,11 +415,14 @@ npx wrangler secret put ASSEMBLYAI_API_KEY
 npx wrangler secret put ELEVENLABS_API_KEY
 npx wrangler secret put CLICKY_APP_TOKEN   # any long random string, e.g. from: openssl rand -hex 32
 
-# Deploy
+# Deploy (the first deploy with the daily cap also creates its Durable Object, migration v1)
 npx wrangler deploy
 
 # Local dev (create worker/.dev.vars with your keys)
 npx wrangler dev
+
+# Offline checks of the daily spending cap (Node 23.6 or newer)
+node test/dailyCap.check.ts
 ```
 
 ## Code Style & Conventions
