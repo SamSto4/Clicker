@@ -97,7 +97,7 @@ struct ClickyChatPanelUsageContentView: View {
                     columnTitle("today")
                     columnTitle("this month")
                 }
-                if modelNames.isEmpty {
+                if modelNames.isEmpty && !usageSummary.thisMonth.memoryCompaction.hasAnything {
                     GridRow {
                         Text("no model use logged yet.")
                             .font(.system(size: DS.ChatPanel.messageFontSizeInPoints))
@@ -112,6 +112,7 @@ struct ClickyChatPanelUsageContentView: View {
                         monthUsage: usageSummary.thisMonth.modelUsages.first { $0.modelName == modelName }
                     )
                 }
+                memoriesRows(usageSummary)
             }
         }
     }
@@ -143,6 +144,41 @@ struct ClickyChatPanelUsageContentView: View {
             monthText: costText(monthUsage),
             isDetail: true
         )
+    }
+
+    /// The "memories" row (round 16): what compacting finished chats into memory lines used, costed
+    /// at the price of the model that does it (Haiku). Its tokens are not in any model's rows above.
+    @ViewBuilder
+    private func memoriesRows(_ usageSummary: ClickyUsageSummary) -> some View {
+        let today = usageSummary.today.memoryCompaction
+        let thisMonth = usageSummary.thisMonth.memoryCompaction
+        if thisMonth.hasAnything || today.hasAnything {
+            GridRow {
+                Text("memories")
+                    .font(.system(size: DS.ChatPanel.rowTitleFontSizeInPoints, weight: .medium))
+                    .foregroundColor(DS.Colors.chatPanelPrimaryText)
+                    .padding(.top, DS.ChatPanel.usageModelBlockTopPaddingInPoints)
+                    .gridCellColumns(3)
+            }
+            figureRow(
+                "chats compacted · memories kept",
+                todayText: "\(today.compactionCount) · \(today.memoriesKeptCount)",
+                monthText: "\(thisMonth.compactionCount) · \(thisMonth.memoriesKeptCount)",
+                isDetail: true
+            )
+            figureRow(
+                "tokens in · out",
+                todayText: "\(ClickyUsageText.compactTokenCountText(today.inputTokens)) · \(ClickyUsageText.compactTokenCountText(today.outputTokens))",
+                monthText: "\(ClickyUsageText.compactTokenCountText(thisMonth.inputTokens)) · \(ClickyUsageText.compactTokenCountText(thisMonth.outputTokens))",
+                isDetail: true
+            )
+            figureRow(
+                "estimated cost (\(ClickyMemoryCompaction.modelName))",
+                todayText: ClickyUsageText.estimatedCostText(dollars: today.estimatedCostInDollars),
+                monthText: ClickyUsageText.estimatedCostText(dollars: thisMonth.estimatedCostInDollars),
+                isDetail: true
+            )
+        }
     }
 
     private func tokensInAndOutText(_ modelUsage: ClickyModelUsage?) -> String {

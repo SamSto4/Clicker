@@ -2,9 +2,10 @@
 //  ClickyChatPanelMemoryView.swift
 //  leanring-buddy
 //
-//  The "memory" tab of the chat panel: the facts in the profile and the daily notes, each with a
-//  delete that asks "delete this?" in place (never an alert), and a button that opens the notes
-//  folder in Finder. The panel gives this view its scrolling and its height; the view only lists.
+//  The "memory" tab of the chat panel: the facts in the profile, the memories Clicky kept from
+//  earlier chats (round 16) and the daily notes, each with a delete that asks "delete this?" in
+//  place (never an alert), and a button that opens the notes folder in Finder. The panel gives
+//  this view its scrolling and its height; the view only lists.
 //
 //  Reading and deleting happen in the view model, on background tasks, never on the main thread.
 //  This tab adds no way to save anything.
@@ -22,6 +23,7 @@ struct ClickyChatPanelMemoryContentView: View {
         VStack(alignment: .leading, spacing: DS.ChatPanel.tabSectionSpacingInPoints) {
             if let memoryContents = viewModel.memoryContents {
                 profileSection(memoryContents)
+                memoriesSection(memoryContents)
                 notesSection(memoryContents)
             } else {
                 Text("reading your notes folder…")
@@ -54,6 +56,31 @@ struct ClickyChatPanelMemoryContentView: View {
                         detailText: nil,
                         text: profileFactEntry.factText,
                         confirmDeleteAction: { viewModel.confirmDeletingProfileFact(profileFactEntry) }
+                    )
+                }
+            }
+        }
+    }
+
+    /// The memories Clicky kept from earlier chats, newest first, each with the day of its chat. Between
+    /// the profile and the notes, the order they have in the prompt.
+    private func memoriesSection(_ memoryContents: ClickyMemoryPanelContents) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionTitle("MEMORIES · \(memoryContents.memories.count)")
+            if memoryContents.memories.isEmpty {
+                emptyHint("no memories yet. clicky keeps up to three short lines when a chat ends.")
+            } else {
+                ForEach(memoryContents.memories, id: \.rowIdentifier) { memory in
+                    ClickyMemoryRowView(
+                        viewModel: viewModel,
+                        rowIdentifier: memory.rowIdentifier,
+                        detailText: ClickyMemoryPanelText.noteDateText(
+                            savedAt: memory.createdAt,
+                            hasTimeOfDay: false,
+                            now: now
+                        ),
+                        text: memory.text,
+                        confirmDeleteAction: { viewModel.confirmDeletingMemory(memory) }
                     )
                 }
             }
@@ -99,7 +126,7 @@ struct ClickyChatPanelMemoryContentView: View {
             .buttonStyle(ClickyChatTextButtonStyle())
             .accessibilityLabel("open the notes folder in finder")
 
-            Text("profile.md and the daily notes are plain files in that folder, so you can also edit them by hand.")
+            Text("profile.md and the daily notes are plain files in that folder, so you can also edit them by hand. memories are kept on this mac in library/application support/clicky/memories, outside icloud.")
                 .font(.system(size: DS.ChatPanel.footnoteFontSizeInPoints))
                 .foregroundColor(DS.Colors.chatPanelTertiaryText)
                 .padding(.horizontal, DS.ChatPanel.textActionHorizontalPaddingInPoints)

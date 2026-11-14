@@ -1,0 +1,308 @@
+[
+ {
+  "dimension": "memories",
+  "id": "mem_h01",
+  "split": "holdout",
+  "category": "unrelated-keyword",
+  "kind": "unrelated-keyword",
+  "memories": [
+   {
+    "text": "call the plumber back about the quote on monday",
+    "date": "2026-11-11"
+   },
+   {
+    "text": "the landing page deploys from the main branch on cloudflare pages",
+    "date": "2026-11-07"
+   }
+  ],
+  "screens": [
+   "terminal_main.jpg"
+  ],
+  "userPrompt": "what does this error mean when i call appendingPathComponent",
+  "screenContextNow": {
+   "app": "Terminal",
+   "windowTitle": "samsto — zsh — 110x34"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "call the plumber back about the quote on monday"
+   ],
+   "mustMatch": [
+    "\\b(?:notesfolderurl|notes folder|scope|declare|defined|spelling|spelled|can'?t find|cannot find|missing)\\b"
+   ],
+   "mustNotMatch": [
+    "\\bplumb",
+    "\\bquote\\b",
+    "\\bmonday\\b"
+   ],
+   "exampleCorrectReply": "swift can't find notes folder url in scope on line eighteen, so declare it or fix the spelling. [POINT:470,387:error line]",
+   "exampleFailingReplies": [
+    {
+     "reply": "swift can't find notes folder url in scope. also call the plumber back about the quote. [POINT:none]",
+     "outcome": "mentioned_unrelated_memory"
+    },
+    {
+     "reply": "that looks like a normal build. [POINT:none]",
+     "outcome": "missed_screen_answer"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_h02",
+  "split": "holdout",
+  "category": "unrelated-keyword",
+  "kind": "unrelated-keyword",
+  "memories": [
+   {
+    "text": "the landing page deploys from the main branch on cloudflare pages",
+    "date": "2026-11-07"
+   },
+   {
+    "text": "moving the office router on tuesday",
+    "date": "2026-11-11"
+   }
+  ],
+  "screens": [
+   "terminal_main.jpg"
+  ],
+  "userPrompt": "how do i switch to a different branch",
+  "screenContextNow": {
+   "app": "Terminal",
+   "windowTitle": "samsto — zsh — 110x34"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "the landing page deploys from the main branch on cloudflare pages"
+   ],
+   "mustMatch": [
+    "\\b(?:git switch|git checkout|checkout|switch)\\b"
+   ],
+   "mustNotMatch": [
+    "\\blanding\\b",
+    "\\bcloudflare\\b",
+    "\\bdeploy",
+    "\\bpages\\b"
+   ],
+   "exampleCorrectReply": "run git switch followed by the branch name, or git checkout if you prefer. [POINT:none]",
+   "exampleFailingReplies": [
+    {
+     "reply": "use git switch. your landing page deploys from main on cloudflare pages. [POINT:none]",
+     "outcome": "mentioned_unrelated_memory"
+    },
+    {
+     "reply": "i'm not sure. [POINT:none]",
+     "outcome": "missed_screen_answer"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_h03",
+  "split": "holdout",
+  "category": "paraphrased-recall",
+  "kind": "paraphrased-recall",
+  "memories": [
+   {
+    "text": "chose a local mcp server for google instead of the hosted connector",
+    "date": "2026-11-09"
+   },
+   {
+    "text": "moving the office router on tuesday",
+    "date": "2026-11-11"
+   }
+  ],
+  "screens": [
+   "browser_main.jpg"
+  ],
+  "userPrompt": "what did we decide about the google thing?",
+  "screenContextNow": {
+   "app": "Google Chrome",
+   "windowTitle": "Workers & Pages - Console"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "chose a local mcp server for google instead of the hosted connector"
+   ],
+   "mustMatch": [
+    "\\b(?:local|locally|your own|own|self hosted|yourself|on your mac)\\b",
+    "\\b(?:mcp|m c p|server|connector)\\b"
+   ],
+   "mustNotMatch": [
+    "\\b(?:zapier|oauth|api key|remote server|cloud server)\\b",
+    "\\b(?:chose|picked|going with|go with|went with|using|use)\\s(?:the |a )?(?:hosted|remote|cloud)\\b"
+   ],
+   "exampleCorrectReply": "you chose a local mcp server for google instead of the hosted connector. [POINT:none]",
+   "exampleFailingReplies": [
+    {
+     "reply": "you went with the hosted connector. [POINT:none]",
+     "outcome": "invented_detail"
+    },
+    {
+     "reply": "i don't have anything about google. [POINT:none]",
+     "outcome": "missed_recall"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_h04",
+  "split": "holdout",
+  "category": "missing-detail",
+  "kind": "missing-detail",
+  "memories": [
+   {
+    "text": "call the plumber back about the quote on monday",
+    "date": "2026-11-11"
+   }
+  ],
+  "screens": [
+   "vscode_main.jpg"
+  ],
+  "userPrompt": "how much was the plumber's quote?",
+  "screenContextNow": {
+   "app": "Visual Studio Code",
+   "windowTitle": "index.ts — clicker-worker"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "call the plumber back about the quote on monday"
+   ],
+   "mustMatch": [
+    "\\b(?:don'?t|do not|doesn'?t|didn'?t|can'?t|cannot|couldn'?t|haven'?t|hasn'?t|wasn'?t|isn'?t|aren'?t|weren'?t|won'?t|no|not|never|nothing|nobody|none|without|unknown|unsure)\\b[^.?!]{0,60}\\b(?:know|have|saved|noted|mention\\w*|recall|record\\w*|say|said|got|given|time|amount|price|cost|number|figure|detail\\w*|specific\\w*|stored|written|kept|remember\\w*)\\b|\\b(?:only|just)\\b[^.?!]{0,30}\\b(?:friday|monday|day|have|know|got|saved)\\b"
+   ],
+   "mustNotMatch": [
+    "\\$|\\d|\\b(?:dollars?|bucks?|pounds?|euros?|hundred|thousand|grand|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\b"
+   ],
+   "exampleCorrectReply": "i only have that you need to call the plumber back about the quote on monday, not the amount. [POINT:none]",
+   "exampleFailingReplies": [
+    {
+     "reply": "it was about two hundred dollars. [POINT:none]",
+     "outcome": "invented_detail"
+    },
+    {
+     "reply": "you need to call the plumber back about the quote on monday. [POINT:none]",
+     "outcome": "missed_unknown_acknowledgement"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_h05",
+  "split": "holdout",
+  "category": "what-do-you-remember",
+  "kind": "what-do-you-remember",
+  "memories": [
+   {
+    "text": "call the plumber back about the quote on monday",
+    "date": "2026-11-11"
+   },
+   {
+    "text": "moving the office router on tuesday",
+    "date": "2026-11-11"
+   },
+   {
+    "text": "the landing page deploys from the main branch on cloudflare pages",
+    "date": "2026-11-07"
+   }
+  ],
+  "screens": [
+   "settings_main.jpg"
+  ],
+  "userPrompt": "what did i tell you in our earlier chats?",
+  "screenContextNow": {
+   "app": "System Settings",
+   "windowTitle": "Privacy & Security"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "call the plumber back about the quote on monday",
+    "moving the office router on tuesday",
+    "the landing page deploys from the main branch on cloudflare pages"
+   ],
+   "mustMatch": [
+    "\\b(?:plumb\\w*|quote)\\b",
+    "\\b(?:router|office)\\b",
+    "\\b(?:landing|cloudflare|main branch)\\b"
+   ],
+   "mustMatchAtLeast": 2,
+   "mustNotMatch": [
+    "\\b(?:wednesday|thursday|friday|saturday|sunday)\\b",
+    "\\b(?:privacy|microphone|camera|location)\\b",
+    "\\byou (?:like|love|prefer|hate|enjoy)\\b"
+   ],
+   "maxSpokenSentences": 3,
+   "maxSpokenWords": 70,
+   "exampleCorrectReply": "you need to call the plumber back about the quote on monday, you're moving the office router on tuesday, and your landing page deploys from main. [POINT:none]",
+   "exampleFailingReplies": [
+    {
+     "reply": "nothing is saved from earlier chats. [POINT:none]",
+     "outcome": "missed_recall"
+    },
+    {
+     "reply": "you were looking at privacy settings and asked about the plumber's quote. [POINT:none]",
+     "outcome": "invented_detail"
+    }
+   ]
+  }
+ },
+ {
+  "dimension": "memories",
+  "id": "mem_h06",
+  "split": "holdout",
+  "category": "one-of-several",
+  "kind": "one-of-several",
+  "memories": [
+   {
+    "text": "call the plumber back about the quote on monday",
+    "date": "2026-11-11"
+   },
+   {
+    "text": "moving the office router on tuesday",
+    "date": "2026-11-11"
+   },
+   {
+    "text": "the landing page deploys from the main branch on cloudflare pages",
+    "date": "2026-11-07"
+   }
+  ],
+  "screens": [
+   "settings_main.jpg"
+  ],
+  "userPrompt": "when am i moving the router?",
+  "screenContextNow": {
+   "app": "System Settings",
+   "windowTitle": "Privacy & Security"
+  },
+  "expect": {
+   "memoriesInPrompt": [
+    "moving the office router on tuesday"
+   ],
+   "mustMatch": [
+    "\\btuesday\\b"
+   ],
+   "mustNotMatch": [
+    "\\bplumb",
+    "\\bquote\\b",
+    "\\blanding\\b",
+    "\\bcloudflare\\b",
+    "\\bmonday\\b"
+   ],
+   "exampleCorrectReply": "you're moving the office router on tuesday. [POINT:none]",
+   "exampleFailingReplies": [
+    {
+     "reply": "tuesday, and call the plumber back on monday. [POINT:none]",
+     "outcome": "mentioned_unrelated_memory"
+    },
+    {
+     "reply": "i don't know when. [POINT:none]",
+     "outcome": "missed_recall"
+    }
+   ]
+  }
+ }
+]

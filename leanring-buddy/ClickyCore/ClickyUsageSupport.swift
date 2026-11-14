@@ -4,9 +4,10 @@ import Foundation
 // (`turn_metrics.jsonl` and `dictation_metrics.jsonl`) and works out, for today and for this month,
 // how many questions were asked, how fast they were answered, and how many tokens they used with an
 // estimated price. Everything here is pure except `ClickyUsageLogReader`, which only reads files.
+// Round 16 adds a third log, `memory_compaction_metrics.jsonl`, for the "memories" row.
 //
-// Both logs hold numbers and fixed identifiers only (no transcript, reply or note text), so
-// nothing read here can show the user's words.
+// All the logs hold numbers and fixed identifiers only (no transcript, reply, note or memory
+// text), so nothing read here can show the user's words.
 
 // MARK: - Prices
 
@@ -145,6 +146,17 @@ nonisolated struct ClickyUsageDictationRecord: Equatable, Sendable {
     }
 }
 
+/// One line of `memory_compaction_metrics.jsonl` (round 16).
+nonisolated struct ClickyUsageMemoryCompactionRecord: Equatable, Sendable {
+    let timestamp: Date
+    /// The outcome identifier (`completed`, `failed`, `skipped`).
+    let outcome: String?
+    let memoriesKept: Int
+    /// The tokens of the request. Nil when no request was made or the answer had no usage report.
+    let inputTokens: Int?
+    let outputTokens: Int?
+}
+
 /// Reads one line of a log. A line that is not a JSON object, or has no readable timestamp, gives
 /// nil and is skipped: a log cut short in the middle of its last line, or edited by hand, must
 /// never stop the usage tab.
@@ -152,6 +164,9 @@ nonisolated enum ClickyUsageLogParser {
     static func parseTurnRecord(fromLine logLine: String) -> ClickyUsageTurnRecord? {
         guard let jsonObject = jsonObject(fromLine: logLine),
               (jsonObject["event"] as? String) != "dictation",
+              // Round 16: a memory compaction line has its own file, but if one ever lands here it is
+              // not a question.
+              (jsonObject["event"] as? String) != "memoryCompaction",
               let timestamp = timestamp(from: jsonObject["timestamp"]) else {
             return nil
         }
@@ -185,6 +200,21 @@ nonisolated enum ClickyUsageLogParser {
             cleanupOutcome: jsonObject["cleanupOutcome"] as? String,
             cleanupInputTokens: nonNegativeInteger(jsonObject["cleanupInputTokens"]),
             cleanupOutputTokens: nonNegativeInteger(jsonObject["cleanupOutputTokens"])
+        )
+    }
+
+    static func parseMemoryCompactionRecord(fromLine logLine: String) -> ClickyUsageMemoryCompactionRecord? {
+        guard let jsonObject = jsonObject(fromLine: logLine),
+              (jsonObject["event"] as? String) == "memoryCompaction",
+              let timestamp = timestamp(from: jsonObject["timestamp"]) else {
+            return nil
+        }
+        return ClickyUsageMemoryCompactionRecord(
+            timestamp: timestamp,
+            outcome: jsonObject["outcome"] as? String,
+            memoriesKept: nonNegativeInteger(jsonObject["memoriesKept"]) ?? 0,
+            inputTokens: nonNegativeInteger(jsonObject["inputTokens"]),
+            outputTokens: nonNegativeInteger(jsonObject["outputTokens"])
         )
     }
 
@@ -256,6 +286,31 @@ nonisolated struct ClickyModelUsage: Equatable, Sendable {
     }
 }
 
+/// What the memory compaction used in one period (round 16): chats compacted, memories kept and
+/// the tokens of the requests, costed at the price of the model that makes them (Haiku).
+nonisolated struct ClickyMemoryCompactionUsage: Equatable, Sendable {
+    /// Attempts that finished: the model answered and the lines were stored (possibly none).
+    var compactionCount = 0
+    var memoriesKeptCount = 0
+    var inputTokens = 0
+    var outputTokens = 0
+
+    var hasAnything: Bool {
+        compactionCount > 0 || inputTokens > 0 || outputTokens > 0
+    }
+
+    /// Nil only if the model were missing from the price table.
+    var estimatedCostInDollars: Decimal? {
+        ClickyModelPriceTable.estimatedCostInDollars(
+            modelName: ClickyMemoryCompaction.modelName,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            cacheWriteTokens: 0,
+            cacheReadTokens: 0
+        )
+    }
+}
+
 /// Everything the usage tab shows for one period (today, or this month).
 nonisolated struct ClickyUsagePeriodSummary: Equatable, Sendable {
     /// Every turn counts as a question asked, whether it finished, failed or was cancelled.
@@ -280,6 +335,9 @@ nonisolated struct ClickyUsagePeriodSummary: Equatable, Sendable {
     var modelUsages: [ClickyModelUsage] = []
     /// Dictations whose cleanup request probably used tokens that were never logged (older lines).
     var dictationsWithUnknownTokenCountsCount = 0
+    /// The memory compaction's own row (round 16). Its tokens are not in `modelUsages`, so they are
+    /// never counted twice.
+    var memoryCompaction = ClickyMemoryCompactionUsage()
 
     /// The sum of the estimated costs of the models that have a price, in US dollars. Models
     /// without a price are not in it (`modelUsagesWithoutPriceCount` says how many).
@@ -324,6 +382,7 @@ nonisolated enum ClickyUsageAggregator {
     static func summarize(
         turnLogLines: [String],
         dictationLogLines: [String],
+        memoryCompactionLogLines: [String] = [],
         now: Date,
         calendar: Calendar = .current
     ) -> ClickyUsageSummary {
@@ -347,17 +406,25 @@ nonisolated enum ClickyUsageAggregator {
             }
         }
 
+        // Lines of the memory compaction log that cannot be read are skipped without a word: the log
+        // only feeds one row.
+        let memoryCompactionRecords = memoryCompactionLogLines.compactMap { memoryCompactionLogLine in
+            ClickyUsageLogParser.parseMemoryCompactionRecord(fromLine: memoryCompactionLogLine)
+        }
+
         let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? calendar.startOfDay(for: now)
         let oldestTurnLineDate = turnRecords.map(\.timestamp).min()
         let oldestDictationLineDate = dictationRecords.map(\.timestamp).min()
         return ClickyUsageSummary(
             today: periodSummary(
                 turnRecords: turnRecords.filter { calendar.isDate($0.timestamp, inSameDayAs: now) },
-                dictationRecords: dictationRecords.filter { calendar.isDate($0.timestamp, inSameDayAs: now) }
+                dictationRecords: dictationRecords.filter { calendar.isDate($0.timestamp, inSameDayAs: now) },
+                memoryCompactionRecords: memoryCompactionRecords.filter { calendar.isDate($0.timestamp, inSameDayAs: now) }
             ),
             thisMonth: periodSummary(
                 turnRecords: turnRecords.filter { calendar.isDate($0.timestamp, equalTo: now, toGranularity: .month) },
-                dictationRecords: dictationRecords.filter { calendar.isDate($0.timestamp, equalTo: now, toGranularity: .month) }
+                dictationRecords: dictationRecords.filter { calendar.isDate($0.timestamp, equalTo: now, toGranularity: .month) },
+                memoryCompactionRecords: memoryCompactionRecords.filter { calendar.isDate($0.timestamp, equalTo: now, toGranularity: .month) }
             ),
             startOfMonth: startOfMonth,
             oldestTurnLineDate: oldestTurnLineDate,
@@ -379,7 +446,8 @@ nonisolated enum ClickyUsageAggregator {
 
     static func periodSummary(
         turnRecords: [ClickyUsageTurnRecord],
-        dictationRecords: [ClickyUsageDictationRecord]
+        dictationRecords: [ClickyUsageDictationRecord],
+        memoryCompactionRecords: [ClickyUsageMemoryCompactionRecord] = []
     ) -> ClickyUsagePeriodSummary {
         var periodSummary = ClickyUsagePeriodSummary()
         var tokenTotalsByModelName: [String: ClickyModelUsage] = [:]
@@ -454,6 +522,16 @@ nonisolated enum ClickyUsageAggregator {
             }
         }
 
+        for memoryCompactionRecord in memoryCompactionRecords {
+            if memoryCompactionRecord.outcome == ClickyMemoryCompactionMetricsOutcome.completed.rawValue {
+                periodSummary.memoryCompaction.compactionCount += 1
+                periodSummary.memoryCompaction.memoriesKeptCount += memoryCompactionRecord.memoriesKept
+            }
+            // A request whose answer could not be stored still used tokens, so they count either way.
+            periodSummary.memoryCompaction.inputTokens += memoryCompactionRecord.inputTokens ?? 0
+            periodSummary.memoryCompaction.outputTokens += memoryCompactionRecord.outputTokens ?? 0
+        }
+
         periodSummary.medianMillisecondsFromKeyReleaseToFirstSpokenWord = median(of: millisecondsToFirstSpokenWord)
         periodSummary.spokenTurnsMeasuredCount = millisecondsToFirstSpokenWord.count
         periodSummary.medianMillisecondsToFirstReplyTextOfTypedTurns = median(of: millisecondsToFirstReplyTextOfTypedTurns)
@@ -497,6 +575,10 @@ nonisolated enum ClickyUsageLogReader {
         ClickyDictationMetricsLog.defaultLogFileURL.lastPathComponent
     }
 
+    static var memoryCompactionLogFileName: String {
+        ClickyMemoryCompactionMetricsLog.defaultLogFileURL.lastPathComponent
+    }
+
     static func lines(inFileAt logFileURL: URL) -> [String] {
         guard let logFileData = try? Data(contentsOf: logFileURL) else {
             return []
@@ -514,6 +596,7 @@ nonisolated enum ClickyUsageLogReader {
         ClickyUsageAggregator.summarize(
             turnLogLines: lines(inFileAt: metricsDirectoryURL.appendingPathComponent(turnLogFileName)),
             dictationLogLines: lines(inFileAt: metricsDirectoryURL.appendingPathComponent(dictationLogFileName)),
+            memoryCompactionLogLines: lines(inFileAt: metricsDirectoryURL.appendingPathComponent(memoryCompactionLogFileName)),
             now: now,
             calendar: calendar
         )

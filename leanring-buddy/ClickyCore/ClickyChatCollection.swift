@@ -87,9 +87,16 @@ nonisolated struct ClickyChatCollection: Equatable {
         var chatAfterRecording: ClickyChat
         if !messageWouldStartNewChat(at: messageStartedAt), let activeChat {
             chatAfterRecording = activeChat
+            // A chat from before memories existed has no count. Its exchanges so far count as
+            // covered, so continuing it compacts only what is new and never the old part.
+            if chatAfterRecording.memoryCompactedExchangeCount == nil {
+                chatAfterRecording.memoryCompactedExchangeCount = chatAfterRecording.exchanges.count
+            }
             chatAfterRecording.append(exchange)
         } else {
             chatAfterRecording = ClickyChat(createdAt: messageStartedAt, project: projectForNewChat)
+            // A chat that starts now knows its count from the start: nothing is covered yet.
+            chatAfterRecording.memoryCompactedExchangeCount = 0
             chatAfterRecording.append(exchange)
         }
         replaceOrInsert(chatAfterRecording)
@@ -106,6 +113,38 @@ nonisolated struct ClickyChatCollection: Equatable {
         chatToChange.isKept.toggle()
         replaceOrInsert(chatToChange)
         return chatToChange
+    }
+
+    // MARK: - Memory compaction (round 16)
+
+    /// The chats whose compaction into memories is due: they have ended and hold exchanges that no
+    /// compaction has covered yet. Oldest first, so a backlog is worked through in order.
+    ///
+    /// A chat has ended when it is not the active chat, or when it is the active chat but has been
+    /// quiet for ten minutes (the point at which the next message would open a new one). When the
+    /// app is quitting, the active chat counts as ended too. A chat from before memories existed
+    /// (no count) is never due.
+    func chatsEndedAndAwaitingMemoryCompaction(at now: Date, treatingActiveChatAsEnded: Bool) -> [ClickyChat] {
+        let activeChatHasEnded = treatingActiveChatAsEnded || messageWouldStartNewChat(at: now)
+        return chats
+            .filter { chat in
+                guard ClickyMemoryCompactionPlanner.chatIsAwaitingCompaction(chat) else { return false }
+                return chat.id != activeChatID || activeChatHasEnded
+            }
+            .sorted { $0.updatedAt < $1.updatedAt }
+    }
+
+    /// Records that the compaction covered the first `coveredExchangeCount` exchanges of the chat.
+    /// The count only moves forward, and never past the chat's own exchanges. The chat's
+    /// `updatedAt` is not touched, so the chat list does not reorder. Returns the chat to write to
+    /// disk, or nil when there is no such chat (it was deleted meanwhile).
+    @discardableResult
+    mutating func markMemoryCompacted(chatID: UUID, coveredExchangeCount: Int) -> ClickyChat? {
+        guard var chatToMark = chat(withID: chatID) else { return nil }
+        let countBefore = chatToMark.memoryCompactedExchangeCount ?? 0
+        chatToMark.memoryCompactedExchangeCount = min(max(countBefore, coveredExchangeCount), chatToMark.exchanges.count)
+        replaceOrInsert(chatToMark)
+        return chatToMark
     }
 
     /// Takes the chat out of memory. If it was the active chat, the next message starts a new one.

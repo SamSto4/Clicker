@@ -46,6 +46,13 @@ nonisolated struct ClickyChat: Codable, Equatable, Identifiable {
     /// The first message, cut short. Never made by a model call.
     var title: String
     var exchanges: [ClickyChatExchange]
+    /// How many of the first `exchanges` the memory compaction has covered (compacted into memory
+    /// lines, or skipped as too short to bother). Round 16. `Int?` with a default of nil so a chat
+    /// file written before memories existed still decodes (a missing key reads as nil); nil means
+    /// "unknown" and such a chat is never compacted (see `ClickyMemoryCompactionPlanner`). A chat
+    /// that starts after this round gets 0 when its first exchange is recorded. It only ever moves
+    /// forward, and only when a compaction succeeds, so a failed one leaves the chat pending.
+    var memoryCompactedExchangeCount: Int? = nil
 
     init(
         id: UUID = UUID(),

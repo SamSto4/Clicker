@@ -205,6 +205,34 @@ final class CompanionManager: ObservableObject {
     /// The panel's window. Created the first time the panel opens, and then kept.
     private(set) lazy var chatPanelController = ClickyChatPanelController(viewModel: chatPanelViewModel)
 
+    /// The memories Clicky kept from earlier chats (round 16): one small file in
+    /// ~/Library/Application Support/Clicky/Memories, or a temporary folder in a panel self test.
+    /// The folder comes from `panelDataLocations`, the same one the memory tab lists and deletes
+    /// from, so the prompt, the compaction and the tab always agree and a self test never reaches
+    /// the real file.
+    private var memoryStoreForThisRun: ClickyMemoryStore? {
+        panelDataLocations.memoriesDirectoryURL.map { ClickyMemoryStore(memoriesDirectoryURL: $0) }
+    }
+
+    /// Compacts a chat into zero to three memory lines when it ends (ten quiet minutes, a new chat,
+    /// quitting). Off in the panel self test (which promises no model and no network) and when no
+    /// memories folder is known.
+    private lazy var memoryCompactionController: ClickyMemoryCompactionController = {
+        let memoryCompactionClient = ClickyMemoryCompactionClient(
+            workerBaseURL: ClickyWorkerConfiguration.workerBaseURL,
+            appTokenHeaderName: ClickyWorkerConfiguration.appTokenHeaderName,
+            appToken: ClickyWorkerConfiguration.workerAppToken
+        )
+        let isPanelSelfTestRun = ProcessInfo.processInfo.environment[ClickyChatStore.panelSelfTestEnvironmentVariable] == "1"
+        return ClickyMemoryCompactionController(
+            chatSession: chatSession,
+            memoryStore: memoryStoreForThisRun ?? ClickyMemoryStore(memoriesDirectoryURL: ClickyMemoryStore.defaultMemoriesDirectoryURL),
+            client: memoryCompactionClient,
+            promptsDirectoryURL: ClickyPromptAssembler.promptsDirectoryURL(in: .main),
+            isEnabled: !isPanelSelfTestRun && memoryStoreForThisRun != nil
+        )
+    }()
+
     private var chatPanelTapCancellable: AnyCancellable?
     /// Waits for the spoken answer to end so the pill can stop saying "speaking". The audio
     /// player publishes nothing when it finishes, so this asks it now and then, the same way
@@ -484,6 +512,9 @@ final class CompanionManager: ObservableObject {
         // their ninety days now and every six hours.
         chatSession.reloadChatsFromDiskInBackground()
         chatSession.startRetentionSchedule()
+        // A chat whose compaction into memories never finished (offline, or the app quit first) is
+        // picked up again shortly after launch.
+        memoryCompactionController.scheduleRetryAfterLaunch()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -611,6 +642,9 @@ final class CompanionManager: ObservableObject {
         chatPanelTapCancellable?.cancel()
         chatPanelController.close()
         chatSession.stopRetentionSchedule()
+        // Best effort: compact the chat that was in use (a short request with a short limit; if it
+        // does not finish, the next launch retries it).
+        memoryCompactionController.compactBeforeQuitting()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
@@ -796,7 +830,8 @@ final class CompanionManager: ObservableObject {
             // Sample facts, notes and metrics lines for the memory and usage tabs, written into the
             // temporary folders only (never into a real folder, and never over files that are there).
             let writtenSampleData = ClickyPanelSelfTestSamples.writeSamples(into: panelDataLocations)
-            print("💬 panel self test: sample memory written=\(writtenSampleData.wroteNotes) sample metrics written=\(writtenSampleData.wroteMetrics) realFolders=\(panelDataLocations.touchesARealFolder)")
+            let wroteSampleMemories = ClickyPanelSelfTestSamples.writeSampleMemories(into: panelDataLocations)
+            print("💬 panel self test: sample memory written=\(writtenSampleData.wroteNotes) sample metrics written=\(writtenSampleData.wroteMetrics) sample memories written=\(wroteSampleMemories) realFolders=\(panelDataLocations.touchesARealFolder)")
 
             let selfTestImagePathFromEnvironment = ProcessInfo.processInfo.environment["CLICKY_PANEL_SELF_TEST_IMAGE"]
             chatPanelController.screenProvider = { mainDisplayScreen }
@@ -858,6 +893,7 @@ final class CompanionManager: ObservableObject {
     /// Saves a picture of only Clicky's own windows on the main display (so only the panel and the
     /// overlay, never the user's apps) for the panel self test.
     private func saveSelfTestPicture(toPath pictureFilePath: String, description: String) async {
+        await waitForChatPanelHeightToSettle(beforePictureNamed: description)
         do {
             if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
                 try ownWindowsPNGData.write(to: URL(fileURLWithPath: pictureFilePath))
@@ -868,6 +904,27 @@ final class CompanionManager: ObservableObject {
         } catch {
             print("💬 panel self test: capture failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Waits, at most two seconds, until the panel's window has the height its content asks for,
+    /// and prints how long that took or that it never got there. A picture taken mid-resize shows
+    /// a window only part of the way to its height (round 16 caught a usage picture like that), and
+    /// a window that never gets there is a real bug that the printed heights then explain.
+    private func waitForChatPanelHeightToSettle(beforePictureNamed pictureDescription: String) async {
+        let waitStartedUptimeSeconds = ProcessInfo.processInfo.systemUptime
+        while ProcessInfo.processInfo.systemUptime - waitStartedUptimeSeconds < 2 {
+            if let currentPanelHeight = chatPanelController.currentPanelHeightForSelfTest,
+               let settledPanelHeight = chatPanelController.settledPanelHeightForSelfTest,
+               abs(currentPanelHeight - settledPanelHeight) < 1 {
+                let waitedMilliseconds = Int((ProcessInfo.processInfo.systemUptime - waitStartedUptimeSeconds) * 1_000)
+                print("💬 panel self test: \(pictureDescription) window is \(Int(currentPanelHeight)) points, settled after \(waitedMilliseconds) ms")
+                return
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let currentPanelHeight = Int(chatPanelController.currentPanelHeightForSelfTest ?? -1)
+        let settledPanelHeight = Int(chatPanelController.settledPanelHeightForSelfTest ?? -1)
+        print("💬 panel self test: \(pictureDescription) window did not settle: \(currentPanelHeight) points, should be \(settledPanelHeight)")
     }
 
     func refreshAllPermissions() {
@@ -1298,6 +1355,8 @@ final class CompanionManager: ObservableObject {
     private func handleUserChoseNewChat() {
         stopCurrentTurnBecauseTheChatChanged()
         conversationHistory.removeAll()
+        // The chat the user was in has ended: compact it into memories.
+        memoryCompactionController.userStartedANewChat()
     }
 
     /// "Continue": the chat's last exchanges become the conversation history the model sees, with
@@ -1819,7 +1878,8 @@ final class CompanionManager: ObservableObject {
                     for: turnContext,
                     promptsDirectoryURL: ClickyPromptAssembler.promptsDirectoryURL(in: .main),
                     noteStore: noteStore,
-                    profileStore: profileStore
+                    profileStore: profileStore,
+                    memoryStore: memoryStoreForThisRun
                 )
                 turnMetrics.promptAssemblyMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
                     sinceUptimeSeconds: promptAssemblyStartedUptimeSeconds
@@ -2058,6 +2118,10 @@ final class CompanionManager: ObservableObject {
                         screenOfExchange: screenOfThisTurn
                     )
                     self.chatPanelViewModel.finishPendingExchange(turnIdentifier: turnIdentifier)
+                    // Restarts the ten-minute countdown after which this chat is compacted into
+                    // memories; when this exchange opened a new chat, the one before it has ended.
+                    // It runs in the background and never holds up the answer.
+                    self.memoryCompactionController.exchangeWasRecorded(startedANewChat: messageStartsNewChat)
                 }
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")

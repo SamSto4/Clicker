@@ -369,7 +369,9 @@ nonisolated struct ClickyNoteStore {
     // MARK: - Retrieval helpers
 
     /// Lowercased words that could carry meaning, with stopwords and very short words removed.
-    private static func matchTokens(in text: String) -> [String] {
+    /// Not private since round 16: the memory selection (`ClickyMemorySelection`) matches a
+    /// question to saved memories with exactly these words and this prefix rule.
+    static func matchTokens(in text: String) -> [String] {
         text
             .lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -378,7 +380,7 @@ nonisolated struct ClickyNoteStore {
             }
     }
 
-    private static func matchPrefix(_ token: String) -> String {
+    static func matchPrefix(_ token: String) -> String {
         String(token.prefix(matchTokenPrefixLength))
     }
 
