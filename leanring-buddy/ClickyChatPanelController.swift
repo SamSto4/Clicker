@@ -96,6 +96,12 @@ final class ClickyChatPanelController {
     /// can hide while the panel is up and come back after.
     var openStateChangedHandler: ((Bool) -> Void)?
 
+    /// True while the "ask clicky…" text field has the keyboard (round 18). Follow-up listening does
+    /// not open while the user is typing, so the microphone and the keyboard are never both in use.
+    var isChatTextFieldFirstResponder: Bool {
+        isOpen && panel?.firstResponder is ClickyChatNSTextView
+    }
+
     /// Which screen the panel opens on: the one under the mouse. Replaced in the self test.
     var screenProvider: () -> NSScreen? = {
         let mouseLocation = NSEvent.mouseLocation

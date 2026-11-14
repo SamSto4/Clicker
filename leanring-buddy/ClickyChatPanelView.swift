@@ -511,7 +511,7 @@ struct ClickyChatPanelView: View {
         let chatToShow = viewModel.displayedChat
         let showsPendingExchange = viewModel.screen == .activeChat && viewModel.pendingUserMessageText != nil
 
-        if (chatToShow?.exchanges.isEmpty ?? true) && !showsPendingExchange && viewModel.turnErrorText == nil && viewModel.changeCard == nil {
+        if (chatToShow?.exchanges.isEmpty ?? true) && !showsPendingExchange && viewModel.turnErrorText == nil && viewModel.changeCard == nil && viewModel.timerAlertText == nil {
             emptyChatHint
         }
 
@@ -545,6 +545,21 @@ struct ClickyChatPanelView: View {
         // announced it is.
         if viewModel.screen == .activeChat, let changeCard = viewModel.changeCard {
             ClickyChatChangeCardView(viewModel: viewModel, card: changeCard)
+        }
+
+        // A timer that has just ended (round 18).
+        if viewModel.screen == .activeChat, let timerAlertText = viewModel.timerAlertText {
+            HStack(spacing: 6) {
+                Image(systemName: "timer")
+                    .font(.system(size: DS.ChatPanel.iconFontSizeInPoints, weight: .medium))
+                    .foregroundColor(DS.Colors.chatPanelAskingAccent)
+                Text(timerAlertText)
+                    .font(.system(size: DS.ChatPanel.timerAlertLineFontSizeInPoints, weight: .medium))
+                    .foregroundColor(DS.Colors.chatPanelSecondaryText)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, DS.ChatPanel.timerAlertLineVerticalPaddingInPoints)
+            .accessibilityElement(children: .combine)
         }
     }
 

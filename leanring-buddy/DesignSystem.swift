@@ -568,6 +568,17 @@ enum DS {
         static let changeCardKeyHintFontSizeInPoints: CGFloat = 10
         // The folder rows of the settings tab's "files" section (round 17)
         static let folderRowVerticalPaddingInPoints: CGFloat = 6
+
+        // The "actions" section of the settings tab and the timer alert line (round 18)
+        /// A one-line text field (assistant name, "call me"): its width, corner and padding.
+        static let settingsTextFieldWidthInPoints: CGFloat = 150
+        static let settingsTextFieldCornerRadiusInPoints: CGFloat = 6
+        static let settingsTextFieldHorizontalPaddingInPoints: CGFloat = 8
+        static let settingsTextFieldVerticalPaddingInPoints: CGFloat = 5
+        static let settingsTextFieldFontSizeInPoints: CGFloat = 12
+        /// The line that says a timer has ended, under the messages of the chat tab.
+        static let timerAlertLineFontSizeInPoints: CGFloat = 12
+        static let timerAlertLineVerticalPaddingInPoints: CGFloat = 4
     }
 
     // MARK: - Animation Durations

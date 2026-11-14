@@ -26,6 +26,16 @@ nonisolated struct ClickyTurnContext {
     /// The changes proposed earlier that still wait for the user's answer, as
     /// `ClickyChangeHistoryText.changeDescription` writes them. Empty when none waits.
     var pendingChangeDescriptions: [String] = []
+    /// Round 18: whether the action tools are on. With them on the "right now" block gets the time
+    /// and the prompt gets the actions paragraph (and the timers section while a timer runs).
+    /// With them off none of that is added and the prompt is exactly what it was.
+    var actionsAreEnabled = false
+    /// The time zone the time line and the timer end times are written in.
+    var timeZone: TimeZone = .current
+    /// The timers that are running now (round 18), shown while actions are on.
+    var runningTimers: [ClickyTimer] = []
+    /// The persona setting (round 18). The default adds nothing to the prompt.
+    var persona = ClickyPersona.default
 
     /// The screen of this turn, worked out the same way for the prompt, for the comparison with
     /// the last exchange and for the record kept with this turn's exchange.
@@ -208,6 +218,23 @@ nonisolated enum ClickyPromptAssembler {
             sectionTexts.append(profileSectionText(for: includedProfileFactTexts))
         }
 
+        // Round 18: right after the profile, before the memories: what the model may do with its
+        // action tools, the timers that run (only while one does), and the persona (only when it is
+        // not the default). All per-turn text; the cached base prompt is untouched.
+        if context.actionsAreEnabled {
+            sectionTexts.append(ClickyActionsPromptSection.paragraphText)
+            if let timersSectionText = ClickyTimerBoard.promptSectionText(
+                for: context.runningTimers.filter { $0.endsAt > context.currentDate },
+                at: context.currentDate,
+                timeZone: context.timeZone
+            ) {
+                sectionTexts.append(timersSectionText)
+            }
+        }
+        if let personaSectionText = ClickyPersonaPromptSection.sectionText(for: context.persona) {
+            sectionTexts.append(personaSectionText)
+        }
+
         // After the profile and before the notes, under a heading of its own (distinct from the
         // notes heading, which the base prompt gives rules for). Absent when nothing was selected.
         if let memoriesSectionText = ClickyMemoryPromptSection.sectionText(for: includedMemories) {
@@ -223,6 +250,10 @@ nonisolated enum ClickyPromptAssembler {
             if let pendingChangesText = ClickyFileEditingPromptSection.pendingChangesText(for: context.pendingChangeDescriptions) {
                 sectionTexts.append(pendingChangesText)
             }
+        } else if context.actionsAreEnabled,
+                  let pendingChangesText = ClickyFileEditingPromptSection.pendingChangesText(for: context.pendingChangeDescriptions) {
+            // Round 18: with no folder set, a waiting link or shortcut is named the same way.
+            sectionTexts.append(pendingChangesText)
         }
 
         if !includedNotes.isEmpty {
@@ -248,6 +279,11 @@ nonisolated enum ClickyPromptAssembler {
             "- today is \(todayText).",
             "- the frontmost app is \(frontmostApplicationDescription).",
         ]
+        // Round 18: the time, only while actions are on, so the model can work out "in 20 minutes" or
+        // "tomorrow at 9" for a timer or a reminder. Directly after the date.
+        if context.actionsAreEnabled {
+            rightNowLineTexts.insert(ClickyActionsPromptSection.timeLine(for: context.currentDate, timeZone: context.timeZone), at: 2)
+        }
         // The title is shown on screen but chosen by someone else (a web page, a document), so it
         // is cleaned and quoted. Left out when the app has no title or it could not be read.
         if let cleanedWindowTitle = ClickyWindowTitleText.cleanedWindowTitle(from: context.frontmostWindowTitle) {

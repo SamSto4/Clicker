@@ -44,12 +44,35 @@ nonisolated struct ClickyFileChange: Equatable {
 nonisolated struct ClickyPendingChangeSet: Equatable {
     let identifier: UUID
     let changes: [ClickyFileChange]
+    /// Round 18: links and shortcuts that wait next to the file changes. A set may hold only
+    /// actions (no changes) or only changes (the round 17 set, `actions` empty).
+    let actions: [ClickyPendingAction]
     let proposedAt: Date
 
-    init(identifier: UUID = UUID(), changes: [ClickyFileChange], proposedAt: Date) {
+    init(identifier: UUID = UUID(), changes: [ClickyFileChange], actions: [ClickyPendingAction] = [], proposedAt: Date) {
         self.identifier = identifier
         self.changes = changes
+        self.actions = actions
         self.proposedAt = proposedAt
+    }
+
+    var isEmpty: Bool {
+        changes.isEmpty && actions.isEmpty
+    }
+
+    /// The same set (same identifier and time) without the changes inside a folder, or without the
+    /// actions. Used when a folder is removed or actions are switched off while the set waits.
+    func removingChanges(insideFolderPath folderPath: String) -> ClickyPendingChangeSet {
+        ClickyPendingChangeSet(
+            identifier: identifier,
+            changes: changes.filter { $0.allowedFolderURL.path != folderPath },
+            actions: actions,
+            proposedAt: proposedAt
+        )
+    }
+
+    func removingActions() -> ClickyPendingChangeSet {
+        ClickyPendingChangeSet(identifier: identifier, changes: changes, actions: [], proposedAt: proposedAt)
     }
 
     func expiresAt() -> Date {
@@ -152,6 +175,13 @@ nonisolated struct ClickyChangeCardContent: Equatable {
     let sections: [ClickyChangeCardSection]
     /// The lines that did not fit in the card's limit ("+N more lines").
     let hiddenLineCount: Int
+    /// Round 18: one row per waiting link or shortcut, after the file changes.
+    var actionRows: [ClickyChangeCardActionRow] = []
+
+    /// How many things the card asks about: the file changes and the actions.
+    var itemCount: Int {
+        sections.count + actionRows.count
+    }
 
     static let maximumLinesPerChange = 40
     static let maximumLinesInCard = 40
@@ -162,7 +192,7 @@ nonisolated struct ClickyChangeCardContent: Equatable {
 
     /// At most `maximumLinesInCard` diff lines are shown across all the changes, in order. A change
     /// that is not reached still gets its title, so the card names every file.
-    static func make(for changes: [ClickyFileChange]) -> ClickyChangeCardContent {
+    static func make(for changes: [ClickyFileChange], actions: [ClickyPendingAction] = []) -> ClickyChangeCardContent {
         var remainingLineBudget = maximumLinesInCard
         var hiddenLineCount = 0
         var sections: [ClickyChangeCardSection] = []
@@ -178,7 +208,7 @@ nonisolated struct ClickyChangeCardContent: Equatable {
                 diffLines: linesToShow
             ))
         }
-        return ClickyChangeCardContent(sections: sections, hiddenLineCount: hiddenLineCount)
+        return ClickyChangeCardContent(sections: sections, hiddenLineCount: hiddenLineCount, actionRows: actions.map { ClickyChangeCardActionRow.make(for: $0) })
     }
 
     private static func noteText(for change: ClickyFileChange) -> String? {

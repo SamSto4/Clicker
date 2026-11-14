@@ -3,9 +3,11 @@
 //  leanring-buddy
 //
 //  The "settings" tab of the chat panel: the same settings as the menu bar panel (model, show
-//  clicky, dictation, status pill) bound to the same state, three voice options ("speak
-//  replies", "speak typed replies", "drawings stay"), a cheat sheet of the shortcuts, and the
-//  status of the four permissions with an "open settings" button each.
+//  clicky, dictation, status pill) bound to the same state, the voice options ("speak replies",
+//  "speak typed replies", "drawings stay", and since round 18 "follow-up listening"), the "actions"
+//  switch with the persona (name, style, "call me"), the folders Clicky may edit, a cheat sheet of
+//  the shortcuts, and the status of the permissions (reminders joined in round 18) with an "open
+//  settings" button each.
 //
 //  The view holds no state of its own. It shows what the view model mirrors from the app, and
 //  every change goes back through the view model to `CompanionManager`, which stores it in the
@@ -26,6 +28,7 @@ struct ClickyChatPanelSettingsContentView: View {
         VStack(alignment: .leading, spacing: DS.ChatPanel.tabSectionSpacingInPoints) {
             generalSection
             voiceSection
+            actionsSection
             filesSection
             shortcutsSection
             permissionsSection
@@ -90,6 +93,54 @@ struct ClickyChatPanelSettingsContentView: View {
                     choices: ClickyDrawingLifetimeChoice.allCases.map { (title: $0.title, value: $0) },
                     selectedValue: settings.drawingLifetimeChoice,
                     onSelect: { viewModel.applyPanelSettingChange(.drawingLifetime($0)) }
+                )
+            }
+
+            settingRow(
+                symbolName: "ear",
+                title: "follow-up listening",
+                hint: "after a spoken reply, listens \(Int(ClickyFollowUpListeningConstants.noSpeechGiveUpSeconds)) seconds for more"
+            ) {
+                settingSwitch(isOn: settings.isFollowUpListeningEnabled) { viewModel.applyPanelSettingChange(.followUpListeningEnabled($0)) }
+            }
+        }
+    }
+
+    // MARK: - Actions and persona (round 18)
+
+    /// The switch for everything Clicky can do for the user (open apps, links and files, timers,
+    /// reminders, shortcuts), and how it sounds: its name, its style and what it calls the user.
+    private var actionsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionTitle("ACTIONS")
+
+            settingRow(
+                symbolName: "bolt",
+                title: "actions",
+                hint: "open apps, links and files, timers, reminders and shortcuts when you ask"
+            ) {
+                settingSwitch(isOn: settings.isActionsEnabled) { viewModel.applyPanelSettingChange(.actionsEnabled($0)) }
+            }
+
+            settingRow(symbolName: "person.text.rectangle", title: "assistant name", hint: "empty means clicky") {
+                ClickyChatSettingsTextField(
+                    placeholderText: "clicky",
+                    committedText: settings.personaAssistantName,
+                    onCommit: { viewModel.applyPanelSettingChange(.personaAssistantName($0)) }
+                )
+            }
+            settingRow(symbolName: "theatermasks", title: "style", hint: settings.personaStyle.promptText == nil ? "how clicky is today" : nil) {
+                ClickyChatChoiceRow(
+                    choices: ClickyPersonaStyle.allCases.map { (title: $0.title, value: $0) },
+                    selectedValue: settings.personaStyle,
+                    onSelect: { viewModel.applyPanelSettingChange(.personaStyle($0)) }
+                )
+            }
+            settingRow(symbolName: "quote.bubble", title: "call me", hint: "now and then, not in every sentence") {
+                ClickyChatSettingsTextField(
+                    placeholderText: "nothing",
+                    committedText: settings.personaUserAddress,
+                    onCommit: { viewModel.applyPanelSettingChange(.personaUserAddress($0)) }
                 )
             }
         }
@@ -444,5 +495,60 @@ private struct ClickyEditableFolderRowView: View {
             .buttonStyle(ClickyChatTextButtonStyle(isDestructive: true))
             .accessibilityLabel("remove this folder")
         }
+    }
+}
+
+
+// MARK: - A one-line text field
+
+/// A single-line field for a short value. It commits on Return and when it loses the keyboard, and
+/// shows what the app stored (cleaned) when it is not being edited. The panel is a key-capable
+/// window that never activates Clicky, so typing reaches the field once it has been clicked, like
+/// the "ask clicky" field. Hover shows the text cursor and a brighter edge.
+struct ClickyChatSettingsTextField: View {
+    let placeholderText: String
+    let committedText: String
+    let onCommit: (String) -> Void
+
+    @State private var draftText = ""
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField(placeholderText, text: $draftText)
+            .textFieldStyle(.plain)
+            .font(.system(size: DS.ChatPanel.settingsTextFieldFontSizeInPoints))
+            .foregroundColor(DS.Colors.chatPanelPrimaryText)
+            .focused($isFocused)
+            .onSubmit { commitDraft() }
+            .padding(.horizontal, DS.ChatPanel.settingsTextFieldHorizontalPaddingInPoints)
+            .padding(.vertical, DS.ChatPanel.settingsTextFieldVerticalPaddingInPoints)
+            .frame(width: DS.ChatPanel.settingsTextFieldWidthInPoints)
+            .background(
+                RoundedRectangle(cornerRadius: DS.ChatPanel.settingsTextFieldCornerRadiusInPoints, style: .continuous)
+                    .fill(DS.Colors.chatPanelChoiceTrackBackground)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.ChatPanel.settingsTextFieldCornerRadiusInPoints, style: .continuous)
+                    .stroke(isFocused ? DS.Colors.chatPanelAskingAccent : (isHovered ? DS.Colors.chatPanelTertiaryText : DS.Colors.chatPanelDivider), lineWidth: 1)
+            )
+            .onHover { isHovered = $0 }
+            .animation(.easeOut(duration: DS.Animation.fast), value: isHovered)
+            .onAppear { draftText = committedText }
+            .onChange(of: committedText) { _, newCommittedText in
+                // What the app stored (cleaned) replaces the draft, unless the user is typing.
+                if !isFocused { draftText = newCommittedText }
+            }
+            .onChange(of: isFocused) { _, isNowFocused in
+                if !isNowFocused { commitDraft() }
+            }
+            .accessibilityLabel(placeholderText)
+    }
+
+    private func commitDraft() {
+        guard draftText != committedText else { return }
+        onCommit(draftText)
+        // Shown again as the app cleaned it: brackets and quotes taken out, cut to 24 characters.
+        draftText = ClickyPersona.cleanedName(draftText)
     }
 }

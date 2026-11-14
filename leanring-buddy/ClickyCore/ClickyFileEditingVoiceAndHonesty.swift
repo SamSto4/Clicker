@@ -67,6 +67,12 @@ nonisolated enum ClickyChangeSpokenSentences {
     static let ranOutOfSteps = "i ran out of steps on that one. ask me again, a bit narrower."
     /// A reply that was cut at the output limit or declined while it held a tool call.
     static let replyWasCutOff = "that reply got cut off before it was done. nothing was changed. try again."
+    /// Round 18: "undo that" when the newest thing is a confirmed shortcut or link.
+    static let shortcutCannotBeUndone = "the shortcut can't be undone."
+    static let openedLinkCannotBeUndone = "an opened link can't be undone."
+    /// Round 18: reminders that "undo that" removed.
+    static let remindersRemoved = "undone."
+    static let couldNotRemoveReminders = "i couldn't remove that reminder."
 }
 
 /// What happened to a change when the user answered (or tried to), as the one sentence that is said
@@ -86,6 +92,15 @@ nonisolated enum ClickyChangeAnswer: Equatable {
     case undoRefusedBecauseFileChanged
     case undoFailed
     case nothingToUndo
+    /// Round 18: the set was applied (its file changes written, its other actions run) but an action of
+    /// it failed. The sentence says which one; "done." is only said when nothing failed.
+    case appliedButAnActionFailed(sentence: String)
+    /// Round 18: "undo that" put the files of a set back, but the set also ran a shortcut.
+    case undoneButTheShortcutCannotBe
+    /// Round 18: "undo that" when the newest thing is a shortcut that ran.
+    case actionCannotBeUndone
+    /// Round 18: "undo that" when the newest thing is a link that was opened.
+    case openedLinkCannotBeUndone
 
     var sentence: String {
         switch self {
@@ -100,17 +115,22 @@ nonisolated enum ClickyChangeAnswer: Equatable {
         case .undoRefusedBecauseFileChanged: return ClickyChangeSpokenSentences.undoRefusedBecauseFileChanged
         case .undoFailed: return ClickyChangeSpokenSentences.couldNotUndo
         case .nothingToUndo: return ClickyChangeSpokenSentences.nothingToUndo
+        case .appliedButAnActionFailed(let failureSentence): return failureSentence
+        case .undoneButTheShortcutCannotBe: return ClickyChangeSpokenSentences.undone + " " + ClickyChangeSpokenSentences.shortcutCannotBeUndone
+        case .actionCannotBeUndone: return ClickyChangeSpokenSentences.shortcutCannotBeUndone
+        case .openedLinkCannotBeUndone: return ClickyChangeSpokenSentences.openedLinkCannotBeUndone
         }
     }
 
     /// The outcome a metrics line records for it (nil for the undo answers, which are not one).
     var metricsOutcome: ClickyChangeOutcome? {
         switch self {
-        case .applied: return .applied
+        case .applied, .appliedButAnActionFailed: return .applied
         case .discarded: return .cancelled
         case .expired: return .expired
         case .refusedBecauseFileChanged, .refusedBecauseOfUnsavedEdits: return .refusedChanged
-        case .failedToApply, .undone, .undoExpired, .undoRefusedBecauseFileChanged, .undoFailed, .nothingToUndo: return nil
+        case .failedToApply, .undone, .undoExpired, .undoRefusedBecauseFileChanged, .undoFailed, .nothingToUndo,
+             .undoneButTheShortcutCannotBe, .actionCannotBeUndone, .openedLinkCannotBeUndone: return nil
         }
     }
 }
@@ -153,7 +173,16 @@ nonisolated enum ClickyFileEditingHonesty {
     /// - With nothing queued: a sentence that claims a file was changed is replaced by "i didn't
     ///   change anything." A bare "done" counts as such a claim only when the turn used the file
     ///   tools, so a memory confirmation ("saved.") in an ordinary turn is left alone.
-    static func honestSpokenText(_ spokenText: String, queuedChangeCount: Int, usedFileTools: Bool) -> String {
+    ///
+    /// `readySentence` is what takes the place of a claim while a change waits. Round 18 passes "it's
+    /// ready. press return or say yes to go ahead." for a set that also holds a link or a shortcut;
+    /// the default is round 17's sentence, so every round 17 call is unchanged.
+    static func honestSpokenText(
+        _ spokenText: String,
+        queuedChangeCount: Int,
+        usedFileTools: Bool,
+        readySentence: String = readyToApplySentence
+    ) -> String {
         let sentences = splitIntoSentences(removingChangeHistoryLines(from: spokenText))
 
         if queuedChangeCount > 0 {
@@ -168,7 +197,7 @@ nonisolated enum ClickyFileEditingHonesty {
             for sentence in sentences {
                 if claimsDoneWhileOnlyQueued(sentence) {
                     if !hasInsertedReadySentence {
-                        keptSentences.append(readyToApplySentence)
+                        keptSentences.append(readySentence)
                         hasInsertedReadySentence = true
                     }
                 } else {
@@ -176,7 +205,7 @@ nonisolated enum ClickyFileEditingHonesty {
                 }
             }
             if !hasInsertedReadySentence {
-                keptSentences.append(readyToApplySentence)
+                keptSentences.append(readySentence)
             }
             return keptSentences.joined(separator: " ")
         }
@@ -197,11 +226,11 @@ nonisolated enum ClickyFileEditingHonesty {
     }
 
     /// Takes the app's own history lines ("[proposed: edit Foo.swift: ...]", "[applied: ...]", "[not
-    /// applied: ...]") out of words the model wrote. They are in its conversation history so it knows
+    /// applied: ...]", and since round 18 "[done: opened safari]") out of words the model wrote. They are in its conversation history so it knows
     /// what is pending, which can teach it to write one itself; one must never be read aloud.
     static func removingChangeHistoryLines(from text: String) -> String {
         var remainingText = text
-        for lineStart in ["[proposed:", "[applied:", "[not applied:"] {
+        for lineStart in ["[proposed:", "[applied:", "[not applied:", "[done:"] {
             while let startRange = remainingText.range(of: lineStart, options: [.caseInsensitive]) {
                 let endIndex = remainingText[startRange.upperBound...].firstIndex(of: "]").map { remainingText.index(after: $0) } ?? remainingText.endIndex
                 remainingText.removeSubrange(startRange.lowerBound..<endIndex)
