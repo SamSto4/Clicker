@@ -20,6 +20,17 @@
 // Build and run (from the repo root):
 //   swiftc -O -o /tmp/actions_runner eval/actions_runner/main.swift leanring-buddy/ClickyCore/*.swift
 //   /tmp/actions_runner leanring-buddy/ClickyPrompts eval/fixtures eval/scenarios/actions.json <results.json> [--runs N] [--only id,id] [--list scenarios|reserveScenarios] [--actions-off]
+//       [--cache-after-first-tool-call] [--cache-first-request] [--skip-final-request] [--quick-commands] [--parallel-actions]
+//
+// Round 19 (Jarvis tuning) adds five flags, each off by default so the round 18 numbers can be
+// reproduced. They switch on the app's own round 19 code, one candidate each:
+// `--cache-after-first-tool-call` puts a cache breakpoint on the turn's user message from request 2 on
+// (what the app does); `--cache-first-request` puts it there from request 1 on (the default-on choice the
+// brief weighed, for comparison); `--skip-final-request` ends the turn after one simple action done at
+// once and speaks the fixed confirmation instead of asking for words; `--quick-commands` runs the
+// transcript through the quick-command parser first and, when it matches, records a turn with 0
+// requests (the action runs on the fake, nothing is sent); `--parallel-actions` runs the at-once action
+// calls of one reply together. The summary of the result file gains a `flags` object.
 //
 // `--list reserveScenarios` runs the optional scenario list some files carry next to `scenarios`.
 // `--actions-off` runs the same scenarios with the "actions" setting off: no action tools in the request
@@ -37,7 +48,7 @@ import Foundation
 
 let commandLineArguments = CommandLine.arguments
 guard commandLineArguments.count >= 5 else {
-    print("usage: actions_runner <promptsDirectory> <fixturesDirectory> <scenarios.json> <results.json> [--runs N] [--only id,id] [--list scenarios|reserveScenarios] [--actions-off]")
+    print("usage: actions_runner <promptsDirectory> <fixturesDirectory> <scenarios.json> <results.json> [--runs N] [--only id,id] [--list scenarios|reserveScenarios] [--actions-off] [--cache-after-first-tool-call] [--cache-first-request] [--skip-final-request] [--quick-commands] [--parallel-actions]")
     exit(2)
 }
 let promptsDirectoryURL = URL(fileURLWithPath: commandLineArguments[1], isDirectory: true)
@@ -48,6 +59,22 @@ var runCountPerScenario = 1
 var onlyScenarioIdentifiers: Set<String>? = nil
 var scenarioListKey = "scenarios"
 let actionsAreSwitchedOffForTheRun = commandLineArguments.contains("--actions-off")
+// Round 19: the five tuning flags (see the header).
+let cacheBreakpointAfterFirstToolCallIsOn = commandLineArguments.contains("--cache-after-first-tool-call")
+let cacheBreakpointFromFirstRequestIsOn = commandLineArguments.contains("--cache-first-request")
+let skippingTheFinalRequestIsOn = commandLineArguments.contains("--skip-final-request")
+let quickCommandsAreOn = commandLineArguments.contains("--quick-commands")
+let parallelActionsAreOn = commandLineArguments.contains("--parallel-actions")
+/// The request number from which the turn's user message carries a cache breakpoint, or nil for never.
+let cacheFirstUserMessageFromRequest: Int? = cacheBreakpointFromFirstRequestIsOn ? 1 : (cacheBreakpointAfterFirstToolCallIsOn ? 2 : nil)
+let runFlags: [String: Any] = [
+    "actionsOff": actionsAreSwitchedOffForTheRun,
+    "cacheAfterFirstToolCall": cacheBreakpointAfterFirstToolCallIsOn,
+    "cacheFirstRequest": cacheBreakpointFromFirstRequestIsOn,
+    "skipFinalRequest": skippingTheFinalRequestIsOn,
+    "quickCommands": quickCommandsAreOn,
+    "parallelActions": parallelActionsAreOn,
+]
 var argumentIndex = 5
 while argumentIndex < commandLineArguments.count {
     if commandLineArguments[argumentIndex] == "--runs", argumentIndex + 1 < commandLineArguments.count {
@@ -388,6 +415,20 @@ func sendOneRequest(requestBody: [String: Any]) async throws -> ClickyStreamedMe
 
 // MARK: - One run of one scenario
 
+/// The tool calls of a run, written from the loop's closures. Calls that run together in a group
+/// (round 19, `--parallel-actions`) are written from other threads, so the log is behind a lock; their
+/// lines come in the order they finished.
+final class ToolCallLogBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedEntries: [[String: Any]] = []
+    func append(_ entry: [String: Any]) {
+        lock.withLock { storedEntries.append(entry) }
+    }
+    var entries: [[String: Any]] {
+        lock.withLock { storedEntries }
+    }
+}
+
 struct ScenarioRunRecord {
     var fields: [String: Any] = [:]
     var failures: [String] = []
@@ -617,61 +658,143 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
         currentUserContentBlocks: ClickyClaudeChatRequestBuilder.currentUserContentBlocks(images: [(data: screenshotData, label: screenLabel)], userPrompt: scenario.userPrompt)
     )
     var toolCallLog: [[String: Any]] = []
+    let toolCallLogBox = ToolCallLogBox()
+    let scenarioPersona = turnContext.persona
+    // Round 19 (A): the fixed confirmation, when the loop ends after one simple action done at once.
+    var fixedConfirmationOfTheSkippedFinalRequest: String?
 
     let turnStart = Date()
+
+    // Round 19 (B), with --quick-commands: the app's own parser first. A match is carried out on the
+    // fake through a fresh action session, exactly as `CompanionManager.runQuickCommandOrAskTheModel`
+    // does, and the turn sends no request; a failed action falls back to the model turn below.
+    var quickCommandSession: ClickyActionToolTurnSession?
+    var quickCommandSentence: String?
+    if quickCommandsAreOn, !actionsAreSwitchedOffForTheRun,
+       let quickCommand = ClickyQuickCommandParser.parse(
+           transcript: scenario.userPrompt,
+           installedApplications: await fakeExecutor.installedApplications(),
+           runningTimers: fakeExecutor.runningTimers,
+           assistantName: scenarioPersona.assistantName
+       ) {
+        let freshSession = ClickyActionToolTurnSession(executor: fakeExecutor, pathPolicy: pathPolicy, currentDate: { evalNow }, timeZone: evalTimeZone)
+        let toolCall = quickCommand.toolCall
+        let toolResult = await freshSession.execute(toolName: toolCall.toolName, input: toolCall.input)
+        if !toolResult.isError, let recordedKind = freshSession.actionKinds.first {
+            quickCommandSession = freshSession
+            quickCommandSentence = ClickyFixedConfirmationText.sentence(forKind: recordedKind, resultText: toolResult.text, persona: scenarioPersona) ?? "done."
+            toolCallLog.append(["tool": toolCall.toolName, "input": toolCall.input, "isError": false, "result": String(toolResult.text.prefix(240)), "quickCommand": true])
+        }
+    }
+
     let loopResult: ClickyToolLoopResult
-    do {
-        loopResult = try await ClickyToolLoop.run(
-            baseMessages: baseMessages,
-            buildRequestBody: { messagesSoFar in
-                ClickyClaudeChatRequestBuilder.streamingRequestBody(model: "claude-sonnet-5-5", systemPromptValue: systemBlocks, messages: messagesSoFar, tools: tools)
-            },
-            executeToolCall: { toolName, toolInput in
-                let toolResult = await toolSession.execute(toolName: toolName, input: toolInput)
-                toolCallLog.append(["tool": toolName, "input": toolInput, "isError": toolResult.isError, "result": String(toolResult.text.prefix(240))])
-                return toolResult
-            },
-            sendRequest: { requestBody, _ in
-                try await sendOneRequest(requestBody: requestBody)
-            }
+    if quickCommandSession != nil {
+        // No request at all: an empty "reply" stands in for the loop's result.
+        loopResult = ClickyToolLoopResult(
+            finalMessage: ClickyStreamedMessage(contentBlocks: [], stopReason: nil, tokenUsage: ClickyClaudeTokenUsage(), streamErrorMessage: nil, toolUseBlocks: []),
+            requestCount: 0,
+            toolRoundTripCount: 0,
+            requestStats: [],
+            totalTokenUsage: ClickyClaudeTokenUsage(),
+            endedBecauseOfRequestLimit: false,
+            endedBecauseTheReplyWasCutOrDeclined: false
         )
-    } catch let failure as WorkerRequestFailure {
-        record.failures.append("request failed: \(failure.description)")
-        // A lost connection says nothing about the model; the report counts these apart and they are re-run.
-        record.fields["lostToNetwork"] = failure.description.hasPrefix("network:") || failure.description.contains("timed out")
-        record.fields["toolCalls"] = toolCallLog
-        return record
-    } catch {
-        record.failures.append("loop failed: \(error)")
-        return record
+    } else {
+        do {
+            loopResult = try await ClickyToolLoop.run(
+                baseMessages: baseMessages,
+                buildRequestBody: { messagesSoFar in
+                    ClickyClaudeChatRequestBuilder.streamingRequestBody(model: "claude-sonnet-5-5", systemPromptValue: systemBlocks, messages: messagesSoFar, tools: tools)
+                },
+                executeToolCall: { toolName, toolInput in
+                    let toolResult = await toolSession.execute(toolName: toolName, input: toolInput)
+                    toolCallLogBox.append(["tool": toolName, "input": toolInput, "isError": toolResult.isError, "result": String(toolResult.text.prefix(240))])
+                    return toolResult
+                },
+                sendRequest: { requestBody, _ in
+                    try await sendOneRequest(requestBody: requestBody)
+                },
+                cacheFirstUserMessageFromRequest: cacheFirstUserMessageFromRequest,
+                shouldStopAfterRequest: { roundSummary in
+                    // The app's own gate and sentence (`CompanionManager` does the same), only with the flag.
+                    guard skippingTheFinalRequestIsOn,
+                          let actionSession,
+                          ClickyFinalRequestSkipDecision.shouldSkip(
+                              replyMessage: roundSummary.replyMessage,
+                              requestNumber: roundSummary.requestNumber,
+                              toolResults: roundSummary.toolResults,
+                              actionSession: actionSession,
+                              fileToolCallCount: fileSession?.toolCallCount ?? 0,
+                              transcript: scenario.userPrompt,
+                              assistantName: scenarioPersona.assistantName
+                          ),
+                          let recordedKind = actionSession.actionKinds.first,
+                          let toolResult = roundSummary.toolResults.first,
+                          let fixedSentence = ClickyFixedConfirmationText.sentence(forKind: recordedKind, resultText: toolResult.text, persona: scenarioPersona) else {
+                        return false
+                    }
+                    fixedConfirmationOfTheSkippedFinalRequest = fixedSentence
+                    return true
+                },
+                // Round 19 (E), only with --parallel-actions: the app's own rule for which calls run together.
+                leadingToolCallsThatMayRunTogether: { toolUseBlocks in
+                    guard parallelActionsAreOn, let actionSession else { return 0 }
+                    return ClickyParallelToolCalls.leadingCallsThatMayRunTogether(toolUseBlocks, openedItemPlacesLeft: actionSession.openedItemPlacesLeft)
+                },
+                executeToolCallInGroup: { @Sendable toolName, toolInputData in
+                    let toolInput = ((try? JSONSerialization.jsonObject(with: toolInputData)) as? [String: Any]) ?? [:]
+                    let toolResult = await toolSession.execute(toolName: toolName, input: toolInput)
+                    toolCallLogBox.append(["tool": toolName, "input": toolInput, "isError": toolResult.isError, "result": String(toolResult.text.prefix(240)), "inGroup": true])
+                    return toolResult
+                }
+            )
+            toolCallLog += toolCallLogBox.entries
+        } catch let failure as WorkerRequestFailure {
+            toolCallLog += toolCallLogBox.entries
+            record.failures.append("request failed: \(failure.description)")
+            // A lost connection says nothing about the model; the report counts these apart and they are re-run.
+            record.fields["lostToNetwork"] = failure.description.hasPrefix("network:") || failure.description.contains("timed out")
+            record.fields["toolCalls"] = toolCallLog
+            return record
+        } catch {
+            record.failures.append("loop failed: \(error)")
+            return record
+        }
     }
     let turnMilliseconds = Int(Date().timeIntervalSince(turnStart) * 1000)
+    // What is scored: the quick command's own session when one ran, else the turn's.
+    let scoredActionSession = quickCommandSession ?? actionSession
+    let scoredToolCallCount = quickCommandSession != nil ? 1 : toolSession.toolCallCount
 
-    // What the user would hear: tags removed, then the honesty rule (as CompanionManager does).
-    let rawReplyText = loopResult.replyTextToFinish
+    // What the user would hear: tags removed, then the honesty rule (as CompanionManager does). A turn
+    // that skipped its final request says the fixed confirmation.
+    let rawReplyText = quickCommandSentence ?? (loopResult.endedBecauseTheFinalRequestWasSkipped ? (fixedConfirmationOfTheSkippedFinalRequest ?? "") : loopResult.replyTextToFinish)
     let parsedSpokenText = ClickyReplyTagParser.parse(rawReplyText).spokenText
-    let queuedActions = actionSession?.queuedActions ?? []
+    let queuedActions = scoredActionSession?.queuedActions ?? []
     let honestyFacts = ClickyActionHonestyFacts(
         queuedFileChangeCount: fileSession?.queuedChanges.count ?? 0,
         queuedLinkCount: queuedActions.filter(\.isLink).count,
         queuedShortcutCount: queuedActions.filter(\.isShortcut).count,
         usedFileTools: (fileSession?.toolCallCount ?? 0) > 0,
-        anActionToolWasCalled: (actionSession?.toolCallCount ?? 0) > 0,
-        succeededCategories: actionSession?.succeededCategories ?? [],
+        anActionToolWasCalled: (scoredActionSession?.toolCallCount ?? 0) > 0,
+        succeededCategories: scoredActionSession?.succeededCategories ?? [],
         fileEditingIsOn: fileSession != nil,
         actionsAreOn: !actionsAreSwitchedOffForTheRun
     )
     let honestText = ClickyActionHonesty.honestSpokenText(parsedSpokenText, facts: honestyFacts)
 
     record.fields["requestCount"] = loopResult.requestCount
+    record.fields["skippedFinalRequest"] = loopResult.endedBecauseTheFinalRequestWasSkipped
+    record.fields["parallelToolCalls"] = loopResult.parallelToolCallCount
+    record.fields["localFastPath"] = quickCommandSession != nil
     record.fields["toolRoundTrips"] = loopResult.toolRoundTripCount
-    record.fields["toolCallCount"] = toolSession.toolCallCount
+    record.fields["toolCallCount"] = scoredToolCallCount
     record.fields["toolCalls"] = toolCallLog
     record.fields["executorCalls"] = fakeExecutor.calls.map { "\($0.kind) \($0.detail)" }
     record.fields["createdReminders"] = fakeExecutor.createdReminders.map { "\($0.title) | due \($0.due.map { "\($0.year)-\(String(format: "%02d", $0.month))-\(String(format: "%02d", $0.day))T\(String(format: "%02d", $0.hour)):\(String(format: "%02d", $0.minute))" } ?? "none")" }
     record.fields["runningTimersAfter"] = fakeExecutor.runningTimers.map { $0.shortDescription }
     record.fields["queuedActions"] = queuedActions.map { ClickyActionHistoryText.description(for: $0) }
-    record.fields["actionKinds"] = actionSession?.actionKinds.map(\.rawValue) ?? []
+    record.fields["actionKinds"] = scoredActionSession?.actionKinds.map(\.rawValue) ?? []
     record.fields["perRequestMilliseconds"] = loopResult.requestStats.map(\.milliseconds)
     record.fields["perRequestInputTokens"] = loopResult.requestStats.map { $0.inputTokens ?? 0 }
     record.fields["perRequestCacheReadTokens"] = loopResult.requestStats.map { $0.cacheReadInputTokens ?? 0 }
@@ -765,8 +888,8 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
     for forbiddenText in expectation["forbiddenTextInCalls"] as? [String] ?? [] where allInputText.contains(forbiddenText.lowercased()) {
         addSafetyFailure("S3", "a call carried \"\(forbiddenText)\"")
     }
-    if let maximumToolCalls = expectation["maxToolCalls"] as? Int, toolSession.toolCallCount > maximumToolCalls {
-        addQualityFailure("used \(toolSession.toolCallCount) tool calls, at most \(maximumToolCalls) expected")
+    if let maximumToolCalls = expectation["maxToolCalls"] as? Int, scoredToolCallCount > maximumToolCalls {
+        addQualityFailure("used \(scoredToolCallCount) tool calls, at most \(maximumToolCalls) expected")
     }
 
     // What waits for the user. A scenario that names nothing queued must queue nothing.
@@ -939,6 +1062,7 @@ for scenario in allScenarios {
 
 let sortedTurnMilliseconds = turnMillisecondsList.sorted()
 let medianTurnMilliseconds = sortedTurnMilliseconds.isEmpty ? 0 : sortedTurnMilliseconds[sortedTurnMilliseconds.count / 2]
+print("flags: \(runFlags.keys.sorted().filter { runFlags[$0] as? Bool == true }.joined(separator: " "))")
 print("\n\(passedRunCount) of \(totalRunCount) runs passed (\(runsLostToTheNetworkCount) lost to the network, \(safetyFailureCount) safety failures) | median turn \(medianTurnMilliseconds) ms | about \(String(format: "$%.3f", totalDollars)) in all")
 // The persona scenario passes when the form of address appears in at least one of its runs.
 for (scenarioIdentifier, counts) in softWordRunCounts.sorted(by: { $0.key < $1.key }) {
@@ -952,6 +1076,7 @@ let resultsObject: [String: Any] = [
     "medianTurnMilliseconds": medianTurnMilliseconds,
     "estimatedDollars": totalDollars,
     "actionsOff": actionsAreSwitchedOffForTheRun,
+    "flags": runFlags,
     "softWordRuns": softWordRunCounts.mapValues { ["withWords": $0.withWords, "runs": $0.runs] },
     "records": allRecords,
 ]

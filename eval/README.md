@@ -370,6 +370,38 @@ It type-checks against ClickyCore. It was **not run** while round 18 was built (
 
 Added by the tester (round 18 phase B): "now" moved to 2026-11-11 10:42, the date and time every fixture's menu bar shows (they say "Tue"; in 2026 that day is a Wednesday and the prompt says so). The runner takes `--list reserveScenarios` (a second scenario list some files carry) and `--actions-off` (no action tools, no time line and no actions paragraph in the request: the app with the "actions" setting off, for comparing latency and cost). A scenario can give a `fakeWorld` (`installedApps`, `shortcuts`, `reminders` with due times, `launchFailures`), and the expectation keys gained `anyOf` calls, `{equals}`/`{regex}`/`{notContains}`/`{absent}` input checks, `executorMustNotCallMatching`, `maxExecutorCalls`, `createdReminderCount`, `timersRunningAfter`, `rawReplyMustNotContain` and a `reply` block; every run also checks three global invariants (no shortcut runs, links opened at once pass an independent copy of the link rule, spoken claims are backed by the fake's record) and tags each failure `SAFETY` or `QUALITY`. `file_editing_runner` takes `--with-actions` (the ten action tools and the actions paragraph next to the file tools, against a fake executor) as a regression check. `make_action_injection_fixture.swift` writes `fixtures/browser_action_injection.jpg` (a page that tells an assistant to open a data-carrying link and run a shortcut); it touches no other fixture and not `manifest.json`.
 
+## Jarvis tuning (round 19)
+
+`actions_runner` gained five flags, each **off by default** so a run with none of them reproduces the round 18 numbers. Each switches on the app's own round 19 code (compiled in from ClickyCore), one candidate of the brief each:
+
+| flag | what it turns on |
+|---|---|
+| `--cache-after-first-tool-call` | a cache breakpoint on the last block of the turn's user message (the one with the screenshot) from request 2 on: what the app does (D) |
+| `--cache-first-request` | the same from request 1 on: the default-on choice the brief weighed, for comparison (overrides the flag above) |
+| `--skip-final-request` | after one simple action done at once (`ClickyFinalRequestSkipDecision`), the turn ends and the fixed confirmation (`ClickyFixedConfirmationText`) is the spoken text (A) |
+| `--quick-commands` | the transcript goes through `ClickyQuickCommandParser` first; a match is carried out on the fake through a fresh action session and the run records 0 requests, $0 and `localFastPath: true`; an action that fails falls back to the model turn, as in the app (B) |
+| `--parallel-actions` | calls of one reply that only open something at once run together (`ClickyParallelToolCalls`, amendment 4: never timers) and their results go back in order (E) |
+
+Each record gains `skippedFinalRequest`, `localFastPath` and `parallelToolCalls` (a `quickCommand: true` or `inGroup: true` mark on the logged call), and the summary a `flags` object; the rest of the result file keeps its shape. `perRequestCacheWriteTokens` was already recorded and is where D shows (request 2 writes; request 3 and later read).
+
+Two visible scenarios were added to `scenarios/actions.json` (16 now): `act_15_open_safari_and_youtube` (two at-once actions in one reply; with `--parallel-actions` they run as a group and the results must be the same, in the same order) and `act_16_open_file_by_name_only` ("open compose.swift" with the file nested four folders deep in `project/Sources/App/Views/Compose/`, so a root listing does not find it; with `find_file` the expected path is `find_file`, `open_file`, then the words: 3 requests). Note for the tester's bar on `act_11` ("≤ 3 requests"): `find_file`, `read_file` and `open_file` are three tool rounds, so a turn that uses all three sends a fourth request for its words unless the model skips the find (the skip gate never applies after a file tool).
+
+```bash
+swiftc -O -o /tmp/actions_runner eval/actions_runner/main.swift leanring-buddy/ClickyCore/*.swift
+/tmp/actions_runner leanring-buddy/ClickyPrompts eval/fixtures eval/scenarios/actions.json /tmp/actions_r19_all.json --runs 2 \
+  --cache-after-first-tool-call --skip-final-request --quick-commands --parallel-actions
+```
+
+`metrics_summary/main.swift` is new: it reads a **copy** of the app's `turn_metrics.jsonl` and, optionally, of `follow_up_metrics.jsonl` (it refuses a path inside `~/Library/Logs/Clicky`, before touching it) and prints, with the app's own parsers (`ClickyUsageLogParser`, `ClickyFollowUpMetricsParser`) and price table: turns by request count (0 for a quick command, 1, 2, 3, 4+, none); by turn kind (no tool, action at once, action queued, file tool, quick command, skipped final request) the medians of `keyReleaseToAudioStartMs`, `timeToFirstReplyTextMs` and the cost at list prices; per request index the medians of milliseconds, input, cache read and cache write tokens; the `actionKinds` histogram; the share of turns with any tool call and with three or more requests (the numbers the cache breakpoint's default is judged by), with calls run in parallel, follow-up turns and Escapes (and how soon after the reply began); and for the follow-up log the close reasons by chain position (6 is the window the cap kept shut), the distributions of the floor, the peak level, the speech onset and length and the window's time, onsets by chain position, and how many windows sent to the model have their turn line in the turn log (joined by `turnId`). It prints numbers and fixed identifiers only.
+
+```bash
+cp ~/Library/Logs/Clicky/turn_metrics.jsonl ~/Library/Logs/Clicky/follow_up_metrics.jsonl <scratch folder>/
+swiftc -O -o /tmp/metrics_summary eval/metrics_summary/main.swift leanring-buddy/ClickyCore/*.swift
+/tmp/metrics_summary <scratch folder>/turn_metrics.jsonl <scratch folder>/follow_up_metrics.jsonl
+```
+
+Both type-check against ClickyCore. Neither was run against the Worker while round 19 was built (no network was allowed); the summary was run on a synthetic 50-line turn log and a 21-line follow-up log written with the app's own record types (every table printed).
+
 ## Files
 
 ```
@@ -394,7 +426,8 @@ eval/
   file_editing_runner/       round 17: Swift runner compiled with ClickyCore; runs the app's own tool loop live through the Worker on temporary folders
   scenarios/files.json       round 17: 14 file editing scenarios for file_editing_runner
   actions_runner/            round 18: Swift runner compiled with ClickyCore; runs the app's own tool loop live through the Worker with a FAKE executor (nothing is opened, created or run)
-  scenarios/actions.json     round 18: 14 Jarvis actions scenarios for actions_runner
+  scenarios/actions.json     round 18: Jarvis actions scenarios for actions_runner (16 since round 19: act_15 and act_16 added)
+  metrics_summary/           round 19: Swift summary of a copy of the app's turn and follow-up logs (compiled with ClickyCore; never reads the live logs)
   notes_protocol.json        pluggable notes adapter (disabled until the feature exists)
   results/                   raw results (git-ignored, private)
 ```

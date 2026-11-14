@@ -120,6 +120,8 @@ final class CompanionManager: ObservableObject {
 
     /// The turn that Escape stopped most recently, so that turn's metrics line can say so.
     private var escapeInterruptedTurnIdentifier: UUID?
+    /// Round 19: when that Escape was pressed, for `interruptedWithinMilliseconds` on the turn line.
+    private var escapeInterruptionUptimeSeconds: TimeInterval?
 
     /// The early speech fetch of the current turn, kept so Escape can cancel it at once.
     private var currentSpeechPrefetch: ElevenLabsSpeechPrefetch?
@@ -276,7 +278,8 @@ final class CompanionManager: ObservableObject {
             dictationActivity: statusPillDictationActivity,
             isMicrophoneStartingUp: buddyDictationManager.isPreparingToRecord,
             isSpeechAudioPlaying: isSpeechAudioPlaying,
-            turnFailureNoticeText: turnFailureNoticeText
+            turnFailureNoticeText: turnFailureNoticeText,
+            actionNoticeText: actionNoticeText
         )
 
         // While the chat panel is open the pill is hidden and the panel says the same words
@@ -317,6 +320,35 @@ final class CompanionManager: ObservableObject {
             self.turnFailureNoticeText = nil
             self.refreshStatusPill()
         }
+    }
+
+    /// Round 19: what an action just did ("opened safari"), shown in the status pill for 3 seconds
+    /// (6 when no spoken reply follows), from the moment the action happened. nil otherwise.
+    private var actionNoticeText: String?
+    private var actionNoticeHideTask: Task<Void, Never>?
+
+    /// Shows an action's notice and takes it away after `displaySeconds`. A newer notice replaces an
+    /// older one, so a reply with several actions shows the last.
+    private func showActionNoticeInStatusPill(_ noticeText: String, displaySeconds: TimeInterval) {
+        actionNoticeHideTask?.cancel()
+        actionNoticeText = noticeText
+        refreshStatusPill()
+        actionNoticeHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(displaySeconds * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.actionNoticeText = nil
+            self.refreshStatusPill()
+        }
+    }
+
+    /// Removes an action's notice at once: a new turn, a press of the ask keys, a typed message or
+    /// Escape is a new state, and the last turn's notice must not come back over its "thinking".
+    private func clearActionNoticeInStatusPill() {
+        actionNoticeHideTask?.cancel()
+        actionNoticeHideTask = nil
+        guard actionNoticeText != nil else { return }
+        actionNoticeText = nil
+        refreshStatusPill()
     }
 
     /// Stops a spoken error sentence and removes its notice at once. Called wherever the answer's
@@ -502,6 +534,7 @@ final class CompanionManager: ObservableObject {
         bindStatusPill()
         bindChatPanel()
         bindTimerAlerts()
+        restoreTimersFromTheLastRun()
         overlayWindowManager.drawingOverlayController.drawingLifetimes = ClickyDrawingLifetimes.lifetimes(for: drawingLifetimeChoice)
         // Eagerly touch the Claude API so its TLS warmup handshake completes
         // well before the onboarding demo fires at ~40s into the video.
@@ -777,6 +810,33 @@ final class CompanionManager: ObservableObject {
             } else {
                 // No picture was asked for: leave the pill up long enough to be looked at.
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
+            }
+
+            // Round 19: the pill with a sample action notice, as it shows the moment an action is
+            // done. With a picture asked for, a second picture is saved next to the first, with
+            // "-notice" before the extension.
+            if let mainDisplayScreen = NSScreen.screens.first,
+               let sampleNoticeText = ClickyActionNoticeText.notice(forResultText: "opened Safari.", kind: .openApp) {
+                statusPillController.show(
+                    ClickyStatusPillContent(word: sampleNoticeText, indicator: .none, accent: .asking),
+                    onScreen: mainDisplayScreen
+                )
+                print("✏️ draw self test: status pill shown with the sample action notice \"\(sampleNoticeText)\"")
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if let selfTestImagePath = selfTestImagePathFromEnvironment {
+                    let pictureExtension = (selfTestImagePath as NSString).pathExtension
+                    let noticePicturePath = (selfTestImagePath as NSString).deletingPathExtension + "-notice." + (pictureExtension.isEmpty ? "png" : pictureExtension)
+                    do {
+                        if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
+                            try ownWindowsPNGData.write(to: URL(fileURLWithPath: noticePicturePath))
+                            print("✏️ draw self test: saved the action notice picture (\(ownWindowsPNGData.count) bytes)")
+                        }
+                    } catch {
+                        print("✏️ draw self test: action notice capture failed: \(error.localizedDescription)")
+                    }
+                } else {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                }
             }
 
             // The pill goes back to being hidden from captures and to showing Clicky's real state.
@@ -1332,8 +1392,26 @@ final class CompanionManager: ObservableObject {
         ClickyPersona(assistantName: personaAssistantName, style: personaStyle, userAddress: personaUserAddress)
     }
 
-    /// The timers of this run. They live only while Clicky runs.
-    let timerController = ClickyTimerController()
+    /// "Quick commands" (round 19): "open safari", "set a timer for 10 minutes", "stop the timer" are
+    /// carried out on this Mac with no screenshot, no prompt and no model call. On by default; they
+    /// work only while actions are on.
+    @Published var isQuickCommandsEnabled: Bool = ClickyPanelSettingsDefaults.isEnabled(
+        storedValue: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.isQuickCommandsEnabledKey),
+        defaultValue: ClickyPanelSettingsDefaults.defaultIsQuickCommandsEnabled
+    )
+
+    func setQuickCommandsEnabled(_ enabled: Bool) {
+        isQuickCommandsEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: ClickyPanelSettingsDefaults.isQuickCommandsEnabledKey)
+    }
+
+    /// The timers. Since round 19 they are saved on every change and survive a restart; a self test
+    /// keeps them in a temporary folder (`ClickyTimerStore.directoryURLForRun`).
+    let timerController = ClickyTimerController(store: ClickyTimerStore(timersDirectoryURL: ClickyTimerStore.directoryURLForRun(
+        environment: ProcessInfo.processInfo.environment,
+        temporaryDirectoryURL: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+        uniqueFolderNameForSelfTest: "clicky-timers-self-test-" + UUID().uuidString
+    )))
     private let remindersAccess = ClickyRemindersAccess()
 
     /// What really opens, launches, creates and runs for the action tools. Everything that decides
@@ -1351,18 +1429,8 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Follow-up listening (round 18)
 
-    /// Why a follow-up window was closed or never opened, for the console (a fixed word).
-    enum FollowUpListeningCloseReason: String {
-        case settingSwitchedOff
-        case timerAlertAboutToSpeak
-        case escape
-        case askKeysPressed
-        case dictationStarted
-        case typedMessage
-        case panelOpened
-        case newTurnStarted
-        case nothingWasSaid
-    }
+    // Why a follow-up window was closed or never opened is a `ClickyFollowUpCloseReason` (round 19
+    // moved it into ClickyCore, so the console and the follow-up log share the same fixed words).
 
     /// Follow-up turns in a row with no key press and no typed message between them. At five the
     /// window stops opening, so a TV or a call in the room cannot become an endless chain of
@@ -1380,6 +1448,10 @@ final class CompanionManager: ObservableObject {
     private var followUpWindowIdentifier: UUID?
     /// When the user finished speaking in the window: the "release" of the turn that follows.
     private var followUpEndOfSpeechUptimeSeconds: TimeInterval?
+    /// Round 19: the numbers of the open window (floor, peak, when speech started and ended), kept
+    /// here and not in the listening task, so a window closed by Escape, a key press or a new turn
+    /// still writes its line to the follow-up log.
+    private var followUpWindowMeasurement: ClickyFollowUpWindowMeasurement?
 
     /// A spoken reply has been heard to its end: after 0.3 s, and only if everything still holds, a
     /// window opens and Clicky listens for a follow-up.
@@ -1387,12 +1459,26 @@ final class CompanionManager: ObservableObject {
         followUpWindowOpenTask?.cancel()
         followUpWindowOpenTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(ClickyFollowUpListeningConstants.secondsAfterReplyBeforeTheWindowOpens * 1_000_000_000))
-            guard let self, !Task.isCancelled, self.followUpWindowMayOpenNow() else { return }
+            guard let self, !Task.isCancelled else { return }
+            guard self.followUpWindowMayOpenNow() else {
+                // Round 19: when the cap on follow-up turns in a row is the only thing that keeps
+                // the window shut, the follow-up log says so (a line with no measurements).
+                if self.followUpWindowMayOpenNow(ignoringTheChainCap: true) {
+                    ClickyFollowUpMetricsLog.recordInBackground(ClickyFollowUpMetrics(
+                        timestamp: Date(),
+                        closeReason: .chainCap,
+                        chainPosition: self.followUpTurnCounter.followUpTurnsInARow + 1
+                    ))
+                }
+                return
+            }
             await self.openFollowUpListeningWindow()
         }
     }
 
-    private func followUpWindowMayOpenNow() -> Bool {
+    /// `ignoringTheChainCap` asks whether the window would open if the cap on follow-up turns in a
+    /// row were not reached, for the follow-up log's `chainCap` line.
+    private func followUpWindowMayOpenNow(ignoringTheChainCap: Bool = false) -> Bool {
         let gateAllows = ClickyFollowUpWindowGate.mayOpen(
             isEnabled: isFollowUpListeningEnabled,
             turnWasSpoken: true,
@@ -1403,7 +1489,7 @@ final class CompanionManager: ObservableObject {
             chatTextFieldIsFirstResponder: chatPanelController.isChatTextFieldFirstResponder,
             aTimerAlertIsSpeaking: isTimerAlertSpeaking,
             aWindowIsAlreadyOpen: isFollowUpWindowOpen,
-            counter: followUpTurnCounter
+            counter: ignoringTheChainCap ? ClickyFollowUpTurnCounter() : followUpTurnCounter
         )
         // Also never over another turn or another voice, and only where the microphone may be used.
         return gateAllows
@@ -1453,18 +1539,29 @@ final class CompanionManager: ObservableObject {
         followUpWindowListenTask?.cancel()
         followUpWindowListenTask = Task { @MainActor [weak self] in
             var stateMachine = ClickyFollowUpListeningStateMachine()
-            stateMachine.begin(at: ClickyTurnMetrics.currentUptimeSeconds)
+            let windowOpenedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+            stateMachine.begin(at: windowOpenedUptimeSeconds)
+            self?.followUpWindowMeasurement = ClickyFollowUpWindowMeasurement(
+                windowOpenedAtUptimeSeconds: windowOpenedUptimeSeconds,
+                chainPosition: (self?.followUpTurnCounter.followUpTurnsInARow ?? 0) + 1
+            )
             while let self, !Task.isCancelled, self.followUpWindowIdentifier == windowIdentifier, self.buddyDictationManager.isFollowUpListeningInProgress {
                 let nowUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
-                switch stateMachine.processAudioLevel(Double(self.buddyDictationManager.currentAudioPowerLevel), at: nowUptimeSeconds) {
+                let audioLevel = Double(self.buddyDictationManager.currentAudioPowerLevel)
+                let listeningAction = stateMachine.processAudioLevel(audioLevel, at: nowUptimeSeconds)
+                // Round 19: the follow-up log only watches; the decision above is round 18's.
+                self.followUpWindowMeasurement?.noteReading(level: audioLevel, stateMachine: stateMachine)
+                switch listeningAction {
                 case .keepListening:
                     break
                 case .finishAndTranscribe:
                     self.followUpEndOfSpeechUptimeSeconds = nowUptimeSeconds
+                    self.followUpWindowMeasurement?.noteEndOfSpeech(at: nowUptimeSeconds)
                     self.buddyDictationManager.stopFollowUpListening()
                     await self.waitForTheFollowUpTranscriptToEnd(windowIdentifier: windowIdentifier)
                     return
                 case .giveUpSilently:
+                    self.followUpWindowMeasurement?.noteEndOfSpeech(at: nowUptimeSeconds)
                     self.closeFollowUpListeningWindow(because: .nothingWasSaid)
                     return
                 }
@@ -1501,7 +1598,14 @@ final class CompanionManager: ObservableObject {
         followUpWindowListenTask?.cancel()
         followUpWindowListenTask = nil
 
-        switch ClickyFollowUpTranscriptDecision.decide(forTranscript: finalTranscript) {
+        let transcriptDecision = ClickyFollowUpTranscriptDecision.decide(forTranscript: finalTranscript)
+        // The turn these words start, if any; its own metrics line carries the same identifier.
+        let followUpTurnIdentifier = UUID()
+        recordFollowUpWindowLine(
+            closeReason: ClickyFollowUpCloseReason.reason(forTranscriptDecision: transcriptDecision, transcript: finalTranscript),
+            turnIdentifier: transcriptDecision == .sendToModel ? followUpTurnIdentifier : nil
+        )
+        switch transcriptDecision {
         case .closeSilently, .endPhrase:
             scheduleTransientHideIfNeeded()
         case .sendToModel:
@@ -1512,18 +1616,35 @@ final class CompanionManager: ObservableObject {
                 transcript: finalTranscript,
                 inputMode: .spoken,
                 keyReleaseUptimeSeconds: followUpEndOfSpeechUptimeSeconds,
-                startedByFollowUpListening: true
+                startedByFollowUpListening: true,
+                turnIdentifier: followUpTurnIdentifier
             )
         }
     }
 
+    /// Round 19: writes the open window's line to the follow-up log (numbers, the close reason and,
+    /// for a window whose words became a turn, that turn's identifier) and forgets the measurement.
+    private func recordFollowUpWindowLine(closeReason: ClickyFollowUpCloseReason, turnIdentifier: UUID? = nil) {
+        guard let followUpWindowMeasurement else { return }
+        self.followUpWindowMeasurement = nil
+        ClickyFollowUpMetricsLog.recordInBackground(followUpWindowMeasurement.metrics(
+            closeReason: closeReason,
+            closedAtUptimeSeconds: ClickyTurnMetrics.currentUptimeSeconds,
+            closedAt: Date(),
+            turnId: turnIdentifier
+        ))
+    }
+
     /// Closes an open window (or one that is still waiting to open) without a model call and
-    /// without a line in the metrics. Returns true when a window was open.
+    /// without a line in the turn metrics. Since round 19 an open window writes one line to the
+    /// follow-up log (a window that was only waiting to open writes nothing). Returns true when a
+    /// window was open.
     @discardableResult
-    private func closeFollowUpListeningWindow(because reason: FollowUpListeningCloseReason) -> Bool {
+    private func closeFollowUpListeningWindow(because reason: ClickyFollowUpCloseReason) -> Bool {
         followUpWindowOpenTask?.cancel()
         followUpWindowOpenTask = nil
         guard isFollowUpWindowOpen else { return false }
+        recordFollowUpWindowLine(closeReason: reason)
         isFollowUpWindowOpen = false
         followUpWindowIdentifier = nil
         followUpWindowListenTask?.cancel()
@@ -1548,6 +1669,23 @@ final class CompanionManager: ObservableObject {
         showTurnFailureNoticeInStatusPill(ClickyTimerBoard.noticeText(for: endedTimer), displaySeconds: 8)
         chatPanelViewModel.showTimerAlertLine(ClickyTimerBoard.spokenSentence(for: endedTimer))
         speakTimerAlertIfSpeechIsOn(ClickyTimerBoard.spokenSentence(for: endedTimer))
+    }
+
+    /// Round 19: the timers of the last run. A running timer fires at its original end; the ones that
+    /// ended while Clicky was quit get one combined notice in the pill and one line in the panel
+    /// (amendment 8), and one spoken sentence naming those that ended less than ten minutes ago (Sam's
+    /// decision). The sentence waits for other speech like any timer alert, at most ten seconds, and
+    /// never talks over a turn. No sound: the moment it belonged to has passed.
+    private func restoreTimersFromTheLastRun() {
+        let launchMoment = Date()
+        let endedWhileAway = timerController.restoreSavedTimers(now: launchMoment)
+        guard !endedWhileAway.isEmpty else { return }
+        showTurnFailureNoticeInStatusPill(ClickyTimerBoard.endedWhileAwayNoticeText(for: endedWhileAway), displaySeconds: 8)
+        chatPanelViewModel.showTimerAlertLine(ClickyTimerBoard.endedWhileAwaySentence(for: endedWhileAway))
+        let recentlyEnded = ClickyTimerBoard.timersEndedRecently(endedWhileAway, now: launchMoment)
+        if !recentlyEnded.isEmpty {
+            speakTimerAlertIfSpeechIsOn(ClickyTimerBoard.endedWhileAwaySentence(for: recentlyEnded))
+        }
     }
 
     /// The alert is spoken in the ElevenLabs voice, and in the Mac's own voice if that fails. It
@@ -1711,7 +1849,8 @@ final class CompanionManager: ObservableObject {
             isFollowUpListeningEnabled: isFollowUpListeningEnabled,
             personaAssistantName: personaAssistantName,
             personaStyle: personaStyle,
-            personaUserAddress: personaUserAddress
+            personaUserAddress: personaUserAddress,
+            isQuickCommandsEnabled: isQuickCommandsEnabled
         ))
         // The first three are the checks the menu bar panel already shows; the speech recognition
         // one is the status call `BuddyDictationManager` already uses.
@@ -1752,6 +1891,8 @@ final class CompanionManager: ObservableObject {
             setPersonaStyle(style)
         case .personaUserAddress(let address):
             setPersonaUserAddress(address)
+        case .quickCommandsEnabled(let isEnabled):
+            setQuickCommandsEnabled(isEnabled)
         }
     }
 
@@ -1827,6 +1968,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
         stopTellingUserAboutTurnFailure()
+        clearActionNoticeInStatusPill()
         clearDetectedElementLocation()
         overlayWindowManager.drawingOverlayController.cancelCommandsNotYetDrawn()
         overlayWindowManager.drawingOverlayController.beginKeepingMarks()
@@ -1980,6 +2122,7 @@ final class CompanionManager: ObservableObject {
         }
 
         escapeInterruptedTurnIdentifier = activeResponseTurnIdentifier
+        escapeInterruptionUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
         // A change the running turn already proposed stays on its card: Escape while Clicky speaks
         // the announcement only stops the speech. A second Escape, with nothing running, cancels it.
 
@@ -1993,6 +2136,7 @@ final class CompanionManager: ObservableObject {
         currentSpeechPrefetch?.cancel()
         elevenLabsTTSClient.stopPlayback()
         stopTellingUserAboutTurnFailure()
+        clearActionNoticeInStatusPill()
         clearDetectedElementLocation()
         voiceState = .idle
         scheduleTransientHideIfNeeded()
@@ -2078,6 +2222,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             elevenLabsTTSClient.stopPlayback()
             stopTellingUserAboutTurnFailure()
+            clearActionNoticeInStatusPill()
             clearDetectedElementLocation()
 
             // Marks already drawn stay on the screen while the user asks again, so the next
@@ -2158,15 +2303,23 @@ final class CompanionManager: ObservableObject {
     /// to speech, no "speaking" state. The reply streams into the panel as text, pointing and
     /// drawing still happen (the marks are paced with no audio), and a failure becomes a short
     /// text error in the panel instead of a spoken sentence. Both kinds are recorded in the chat.
+    ///
+    /// `turnIdentifier` names the turn (round 19): a follow-up window passes the identifier it wrote on
+    /// its own line in the follow-up log, so the two lines can be joined; every other caller gets a
+    /// new one.
     private func sendTranscriptToClaudeWithScreenshot(
         transcript: String,
         inputMode: ClickyTurnInputMode = .spoken,
         keyReleaseUptimeSeconds: TimeInterval?,
-        startedByFollowUpListening: Bool = false
+        startedByFollowUpListening: Bool = false,
+        turnIdentifier: UUID = UUID(),
+        quickCommandWasAlreadyTried: Bool = false,
+        finalTranscriptReceivedAtUptimeSeconds: TimeInterval? = nil
     ) {
         // The final transcript has just been handed to the app: this is the end of the dictation
-        // finalisation that began at the key release.
-        let finalTranscriptReceivedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+        // finalisation that began at the key release. A turn handed over by a quick command that was
+        // not one keeps the moment the words arrived.
+        let finalTranscriptReceivedUptimeSeconds = finalTranscriptReceivedAtUptimeSeconds ?? ClickyTurnMetrics.currentUptimeSeconds
 
         // File editing (round 17): while a change waits, a transcript that is exactly "yes" (or
         // another confirmation phrase), "no" or "undo that" answers it without a model call. Any
@@ -2184,6 +2337,25 @@ final class CompanionManager: ObservableObject {
             )
             return
         }
+        // Round 19 (B): a quick command ("open safari", "set a timer for 10 minutes") is carried out with
+        // no screenshot and no model call. It comes after a yes, no or undo (which win) and, for a
+        // follow-up, after the end phrases ("stop" alone still closes the window); it needs quick
+        // commands and actions on, and never runs while a dictation does. Words that are not one go
+        // on to the model below, unchanged.
+        if !quickCommandWasAlreadyTried,
+           isQuickCommandsEnabled, isActionsEnabled, dictationController.phase == .idle,
+           ClickyQuickCommandParser.couldBeAQuickCommand(transcript, assistantName: persona.assistantName) {
+            runQuickCommandOrAskTheModel(
+                transcript: transcript,
+                inputMode: inputMode,
+                keyReleaseUptimeSeconds: keyReleaseUptimeSeconds,
+                finalTranscriptReceivedUptimeSeconds: finalTranscriptReceivedUptimeSeconds,
+                startedByFollowUpListening: startedByFollowUpListening,
+                turnIdentifier: turnIdentifier
+            )
+            return
+        }
+
         // These words go to the model, so a later yes or no could answer something it asks now:
         // from here on only return or the card's buttons answer a change that is still waiting.
         fileEditingController.noteAnOrdinaryTurnStarted()
@@ -2191,10 +2363,10 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
         stopTellingUserAboutTurnFailure()
+        clearActionNoticeInStatusPill()
         // A window that was about to open for the last reply never opens over this turn.
         closeFollowUpListeningWindow(because: .newTurnStarted)
 
-        let turnIdentifier = UUID()
         let speechPrefetch = ElevenLabsSpeechPrefetch()
         activeResponseTurnIdentifier = turnIdentifier
         currentSpeechPrefetch?.cancel()
@@ -2259,6 +2431,7 @@ final class CompanionManager: ObservableObject {
             var turnMetrics = ClickyTurnMetrics(turnStartedAt: Date(), modelName: selectedModel)
             turnMetrics.inputMode = inputMode
             turnMetrics.startedByFollowUpListening = startedByFollowUpListening
+            turnMetrics.turnId = turnIdentifier
             turnMetrics.keyReleaseToFinalTranscriptMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
                 startUptimeSeconds: keyReleaseUptimeSeconds,
                 endUptimeSeconds: finalTranscriptReceivedUptimeSeconds
@@ -2266,6 +2439,8 @@ final class CompanionManager: ObservableObject {
             // Set once the reply's audio has started, and then ended without being cut off: the
             // condition for a follow-up window (round 18).
             var replyAudioWasStarted = false
+            // Round 19: when the reply's audio began, so an Escape during it can be timed.
+            var replyAudioStartedUptimeSeconds: TimeInterval?
             // The step running right now. It is cleared only when every step has finished, so a
             // turn that fails or is cancelled partway can say which step it stopped at.
             var turnStepInProgress: ClickyTurnStep? = .screenCapture
@@ -2348,6 +2523,16 @@ final class CompanionManager: ObservableObject {
                 }
                 if escapeInterruptedTurnIdentifier == turnIdentifier {
                     turnMetrics.wasInterruptedByEscapeKey = true
+                    // Round 19: how soon after the reply began the Escape came (the proxy for a
+                    // follow-up window that fired on noise): from the first audio when it had started,
+                    // else from the first reply text; nothing when no reply had begun.
+                    if let escapePressedUptimeSeconds = escapeInterruptionUptimeSeconds,
+                       let replyBeganUptimeSeconds = replyAudioStartedUptimeSeconds ?? replyTextArrivalClock.firstReplyTextArrivalUptimeSeconds {
+                        turnMetrics.interruptedWithinMilliseconds = ClickyTurnMetrics.millisecondsBetween(
+                            startUptimeSeconds: replyBeganUptimeSeconds,
+                            endUptimeSeconds: escapePressedUptimeSeconds
+                        )
+                    }
                 }
                 if let stepThatDidNotFinish = turnStepInProgress {
                     turnMetrics.outcome = Task.isCancelled ? .cancelled : .failed
@@ -2550,6 +2735,10 @@ final class CompanionManager: ObservableObject {
 
                 let streamingResult: ClaudeStreamingResult
                 var toolLoopResult: ClickyToolLoopResult?
+                // Round 19 (A): set when the turn ends after one simple action done at once, without
+                // the request that would only have turned the result into words.
+                var fixedConfirmationOfTheSkippedFinalRequest: String?
+                let personaForThisTurn = persona
                 if let preparedTurnTools {
                     // Folders are set or actions are on: the same request with the tools of this
                     // turn, and the loop that answers the model's tool calls. Only the last
@@ -2561,6 +2750,35 @@ final class CompanionManager: ObservableObject {
                         conversationHistory: historyForAPI,
                         userPrompt: transcript,
                         toolSession: preparedTurnTools.toolSession,
+                        // Round 19 (D): a cache breakpoint on this turn's user message from the second
+                        // request on, so a turn of three or more requests reads the screenshots and the
+                        // per-turn prompt from the cache. Request 1 is exactly round 18's.
+                        cacheFirstUserMessageFromRequest: 2,
+                        // Round 19 (A): after one simple action done at once, the turn ends with the
+                        // fixed confirmation built from the tool's result. Its audio is fetched now,
+                        // the moment the action is done: there is no reply stream to wait for.
+                        shouldStopAfterRequest: { roundSummary in
+                            guard let actionSession = preparedTurnTools.actionSession,
+                                  ClickyFinalRequestSkipDecision.shouldSkip(
+                                      replyMessage: roundSummary.replyMessage,
+                                      requestNumber: roundSummary.requestNumber,
+                                      toolResults: roundSummary.toolResults,
+                                      actionSession: actionSession,
+                                      fileToolCallCount: preparedFileEditing?.toolSession.toolCallCount ?? 0,
+                                      transcript: transcript,
+                                      assistantName: personaForThisTurn.assistantName
+                                  ),
+                                  let recordedKind = actionSession.actionKinds.first,
+                                  let toolResult = roundSummary.toolResults.first,
+                                  let fixedSentence = ClickyFixedConfirmationText.sentence(forKind: recordedKind, resultText: toolResult.text, persona: personaForThisTurn) else {
+                                return false
+                            }
+                            fixedConfirmationOfTheSkippedFinalRequest = fixedSentence
+                            if shouldSpeakThisReply {
+                                speechPrefetch.startFetchingFixedSentence(fixedSentence, userTranscript: transcript, ttsClient: elevenLabsTTSClientForSpeechPrefetch)
+                            }
+                            return true
+                        },
                         onProgress: { progress in
                             switch progress {
                             case .replyTextChanged(let accumulatedReplyText, _):
@@ -2575,12 +2793,21 @@ final class CompanionManager: ObservableObject {
                                     ClickyReplyTagParser.parse(toolUseFlag.latestRequestText).spokenText,
                                     turnIdentifier: turnIdentifier
                                 )
+                            case .actionToolSucceeded(let succeededKind, let resultText):
+                                // Round 19 (H): the pill (or the open panel's status row) says what
+                                // happened at once; errors show nothing, the reply speaks them.
+                                if let noticeText = ClickyActionNoticeText.notice(forResultText: resultText, kind: succeededKind) {
+                                    self.showActionNoticeInStatusPill(
+                                        noticeText,
+                                        displaySeconds: ClickyActionNoticeText.displaySeconds(replyIsSpoken: shouldSpeakThisReply)
+                                    )
+                                }
                             }
                         }
                     )
                     toolLoopResult = loopResult
                     streamingResult = ClaudeStreamingResult(
-                        text: loopResult.replyTextToFinish,
+                        text: loopResult.endedBecauseTheFinalRequestWasSkipped ? (fixedConfirmationOfTheSkippedFinalRequest ?? "") : loopResult.replyTextToFinish,
                         duration: loopResult.finalMessage.durationSeconds,
                         tokenUsage: loopResult.totalTokenUsage
                     )
@@ -2612,9 +2839,16 @@ final class CompanionManager: ObservableObject {
                         turnMetrics.actionKinds = actionSession.actionKinds
                     }
                     if let toolLoopResult {
+                        if toolLoopResult.endedBecauseTheFinalRequestWasSkipped {
+                            turnMetrics.skippedFinalRequest = true
+                        }
+                        if toolLoopResult.parallelToolCallCount > 0 {
+                            turnMetrics.parallelToolCalls = toolLoopResult.parallelToolCallCount
+                        }
                         turnMetrics.toolRoundTripCount = toolLoopResult.toolRoundTripCount
                         turnMetrics.roundTripInputTokens = toolLoopResult.requestStats.map { $0.inputTokens ?? 0 }
                         turnMetrics.roundTripCacheReadTokens = toolLoopResult.requestStats.map { $0.cacheReadInputTokens ?? 0 }
+                        turnMetrics.roundTripCacheCreationTokens = toolLoopResult.requestStats.map { $0.cacheCreationInputTokens ?? 0 }
                         turnMetrics.roundTripMilliseconds = toolLoopResult.requestStats.map(\.milliseconds)
                     }
                 }
@@ -2895,6 +3129,7 @@ final class CompanionManager: ObservableObject {
                         replyAudioWasStarted = true
                         // playSpeechAudio returns after player.play() — audio is now playing
                         let audioStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+                        replyAudioStartedUptimeSeconds = audioStartedUptimeSeconds
                         // The voice has just started: each mark is now scheduled for the moment
                         // its sentence ends, worked out from the length of this audio.
                         drawingOverlayController.performDrawCommands(
@@ -3013,6 +3248,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
         stopTellingUserAboutTurnFailure()
+        clearActionNoticeInStatusPill()
         closeFollowUpListeningWindow(because: .newTurnStarted)
 
         let turnIdentifier = UUID()
@@ -3055,6 +3291,7 @@ final class CompanionManager: ObservableObject {
             var turnMetrics = ClickyTurnMetrics(turnStartedAt: Date(), modelName: selectedModel)
             turnMetrics.inputMode = inputMode
             turnMetrics.startedByFollowUpListening = startedByFollowUpListening
+            turnMetrics.turnId = turnIdentifier
             turnMetrics.keyReleaseToFinalTranscriptMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
                 startUptimeSeconds: keyReleaseUptimeSeconds,
                 endUptimeSeconds: finalTranscriptReceivedUptimeSeconds
@@ -3158,6 +3395,243 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Quick commands (round 19)
+
+    /// Tries the words as a quick command: the installed apps are listed (off the main thread), the
+    /// closed grammar of `ClickyQuickCommandParser` decides, and a match is carried out through a fresh
+    /// action session, so the limits, the result text and the `[done: ...]` line are a model turn's.
+    /// The fixed sentence of the skip gate is said (with the "call me" name), the pill shows the notice,
+    /// and the exchange goes into the chat and the model's history so "and chrome too" has context. No
+    /// screenshot, no prompt, no model. Words that are not a quick command, and a command whose action
+    /// failed (the app did not start, the timer limit), go to the model as an ordinary turn; nothing
+    /// has been said by then, so nothing is said twice.
+    private func runQuickCommandOrAskTheModel(
+        transcript: String,
+        inputMode: ClickyTurnInputMode,
+        keyReleaseUptimeSeconds: TimeInterval?,
+        finalTranscriptReceivedUptimeSeconds: TimeInterval,
+        startedByFollowUpListening: Bool,
+        turnIdentifier: UUID
+    ) {
+        // A quick command is an ordinary turn (amendment 7): after it a spoken yes no longer answers an
+        // older change card. A follow-up window's words were already counted towards the cap of five.
+        fileEditingController.noteAnOrdinaryTurnStarted()
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
+        clearActionNoticeInStatusPill()
+        closeFollowUpListeningWindow(because: .newTurnStarted)
+        currentSpeechPrefetch?.cancel()
+        currentSpeechPrefetch = nil
+        activeResponseTurnIdentifier = turnIdentifier
+
+        let actionExecutorForThisTurn = actionExecutor
+        let runningTimersNow = timerController.runningTimers
+        let personaForThisTurn = persona
+        let shouldSpeakThisReply = ClickyReplySpeechDecision.shouldSpeakReply(
+            inputMode: inputMode,
+            isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
+            isSpeakingTypedRepliesEnabled: isSpeakingTypedRepliesEnabled
+        )
+        let replyIsOnlyShownAsText = ClickyReplySpeechDecision.shouldShowReplyAsTextInPanel(
+            inputMode: inputMode,
+            isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
+            isSpeakingTypedRepliesEnabled: isSpeakingTypedRepliesEnabled
+        )
+
+        /// Not a quick command after all: the ordinary turn, with the same identifier and the moment
+        /// the words arrived. It sets up everything of its own.
+        func handOverToTheModel() {
+            if activeResponseTurnIdentifier == turnIdentifier {
+                activeResponseTurnIdentifier = nil
+            }
+            sendTranscriptToClaudeWithScreenshot(
+                transcript: transcript,
+                inputMode: inputMode,
+                keyReleaseUptimeSeconds: keyReleaseUptimeSeconds,
+                startedByFollowUpListening: startedByFollowUpListening,
+                turnIdentifier: turnIdentifier,
+                quickCommandWasAlreadyTried: true,
+                finalTranscriptReceivedAtUptimeSeconds: finalTranscriptReceivedUptimeSeconds
+            )
+        }
+
+        currentResponseTask = Task {
+            let installedApplications = await Task.detached(priority: .userInitiated) {
+                await actionExecutorForThisTurn.installedApplications()
+            }.value
+            guard !Task.isCancelled, activeResponseTurnIdentifier == turnIdentifier else { return }
+            guard let quickCommand = ClickyQuickCommandParser.parse(
+                transcript: transcript,
+                installedApplications: installedApplications,
+                runningTimers: runningTimersNow,
+                assistantName: personaForThisTurn.assistantName
+            ) else {
+                handOverToTheModel()
+                return
+            }
+
+            // Carried out the way a model's tool call would be, off the main thread (the executor hops
+            // to the main actor for what needs it).
+            let actionSession = ClickyActionToolTurnSession(executor: actionExecutorForThisTurn, pathPolicy: nil)
+            let toolResult = await Task.detached(priority: .userInitiated) {
+                let toolCall = quickCommand.toolCall
+                return await actionSession.execute(toolName: toolCall.toolName, input: toolCall.input)
+            }.value
+            guard activeResponseTurnIdentifier == turnIdentifier else { return }
+            guard !toolResult.isError, let recordedKind = actionSession.actionKinds.first else {
+                handOverToTheModel()
+                return
+            }
+            // Every result of the three quick commands has a sentence in the table (checked); "done."
+            // is only a guard, and it is honest: the action did happen.
+            let fixedSentence = ClickyFixedConfirmationText.sentence(forKind: recordedKind, resultText: toolResult.text, persona: personaForThisTurn) ?? "done."
+            let historyText = ClickyActionHistoryText.historyText(appendingDoneLines: actionSession.doneLines, queuedActions: [], to: fixedSentence)
+
+            // From here it is a quick command's turn: one metrics line (numbers and fixed identifiers only).
+            var turnMetrics = ClickyTurnMetrics(turnStartedAt: Date(), modelName: ClickyTurnMetrics.quickCommandsModelName)
+            turnMetrics.inputMode = inputMode
+            turnMetrics.startedByFollowUpListening = startedByFollowUpListening
+            turnMetrics.turnId = turnIdentifier
+            turnMetrics.localFastPath = true
+            turnMetrics.actionToolCallCount = actionSession.toolCallCount
+            turnMetrics.actionKinds = actionSession.actionKinds
+            turnMetrics.keyReleaseToFinalTranscriptMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
+                startUptimeSeconds: keyReleaseUptimeSeconds,
+                endUptimeSeconds: finalTranscriptReceivedUptimeSeconds
+            )
+            var turnStepInProgress: ClickyTurnStep?
+            var replyAudioStartedUptimeSeconds: TimeInterval?
+            let drawingOverlayController = overlayWindowManager.drawingOverlayController
+            drawingOverlayController.cancelCommandsNotYetDrawn()
+            let keepMarksGeneration = drawingOverlayController.beginKeepingMarks()
+            var exchangeWasHandedToChat = false
+            defer {
+                if !exchangeWasHandedToChat {
+                    chatPanelViewModel.cancelPendingExchange(turnIdentifier: turnIdentifier)
+                }
+                drawingOverlayController.finishKeepingMarks(keepMarksGeneration: keepMarksGeneration)
+                if activeResponseTurnIdentifier == turnIdentifier {
+                    activeResponseTurnIdentifier = nil
+                }
+                if escapeInterruptedTurnIdentifier == turnIdentifier {
+                    turnMetrics.wasInterruptedByEscapeKey = true
+                    if let escapePressedUptimeSeconds = escapeInterruptionUptimeSeconds, let replyAudioStartedUptimeSeconds {
+                        turnMetrics.interruptedWithinMilliseconds = ClickyTurnMetrics.millisecondsBetween(
+                            startUptimeSeconds: replyAudioStartedUptimeSeconds,
+                            endUptimeSeconds: escapePressedUptimeSeconds
+                        )
+                    }
+                }
+                if let stepThatDidNotFinish = turnStepInProgress {
+                    turnMetrics.outcome = Task.isCancelled ? .cancelled : .failed
+                    turnMetrics.unfinishedStep = stepThatDidNotFinish
+                }
+                print(turnMetrics.makeConsoleSummaryLine())
+                ClickyTurnMetricsLog.recordInBackground(turnMetrics)
+            }
+
+            if let noticeText = ClickyActionNoticeText.notice(forResultText: toolResult.text, kind: recordedKind) {
+                showActionNoticeInStatusPill(noticeText, displaySeconds: ClickyActionNoticeText.displaySeconds(replyIsSpoken: shouldSpeakThisReply))
+            }
+
+            // The chat and the model's history, like any turn: the user's words, the sentence and the
+            // [done: ...] line (the chat's display text is the sentence alone).
+            let messageStartedAtDate = Date()
+            let messageStartsNewChat = chatSession.messageWouldStartNewChat(at: messageStartedAtDate)
+            if messageStartsNewChat && ClickyChatBoundary.idleBoundaryAlsoClearsConversationHistory {
+                conversationHistory.removeAll()
+            }
+            if replyIsOnlyShownAsText && !chatPanelController.isOpen {
+                chatPanelController.open(takingKeyboard: false)
+            }
+            chatPanelViewModel.beginPendingExchange(
+                turnIdentifier: turnIdentifier,
+                userText: transcript,
+                inputMode: inputMode,
+                replyIsOnlyShownAsText: replyIsOnlyShownAsText
+            )
+            // No screenshot was taken: the exchange keeps the last exchange's screen, as a yes to a
+            // change card does, so the next turn sees no change of screen it did not look at.
+            let screenOfLastExchange = conversationHistory.last?.screenOfExchange
+            conversationHistory.append((
+                userTranscript: transcript,
+                assistantResponse: historyText,
+                screenOfExchange: screenOfLastExchange
+            ))
+            if conversationHistory.count > ClickyConversationHistoryLoader.maximumConversationHistoryExchangeCount {
+                conversationHistory.removeFirst(conversationHistory.count - ClickyConversationHistoryLoader.maximumConversationHistoryExchangeCount)
+            }
+            exchangeWasHandedToChat = true
+            chatSession.recordExchange(
+                userText: transcript,
+                inputMode: inputMode,
+                replyDisplayText: fixedSentence,
+                replyHistoryText: historyText,
+                messageStartedAt: messageStartedAtDate,
+                projectForNewChat: ClickyChatProject.unknown,
+                screenOfExchange: screenOfLastExchange
+            )
+            chatPanelViewModel.finishPendingExchange(turnIdentifier: turnIdentifier)
+            memoryCompactionController.exchangeWasRecorded(startedANewChat: messageStartsNewChat)
+
+            var replyWasSpokenToTheEnd = false
+            // Counted like any reply, so the usage tab's voice characters (which the Worker's daily cap
+            // also counts) include quick commands.
+            turnMetrics.spokenReplyCharacterCount = fixedSentence.count
+            if shouldSpeakThisReply {
+                turnStepInProgress = .textToSpeech
+                let textToSpeechStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+                do {
+                    let fetchedSpeech = try await elevenLabsTTSClient.fetchSpeechAudio(for: fixedSentence)
+                    turnMetrics.textToSpeechFetchMilliseconds = fetchedSpeech.fetchMilliseconds
+                    try Task.checkCancellation()
+                    try elevenLabsTTSClient.playSpeechAudio(fetchedSpeech.audioData)
+                    let audioStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+                    replyAudioStartedUptimeSeconds = audioStartedUptimeSeconds
+                    turnMetrics.textToSpeechMilliseconds = ClickyTurnMetrics.millisecondsBetween(
+                        startUptimeSeconds: textToSpeechStartedUptimeSeconds,
+                        endUptimeSeconds: audioStartedUptimeSeconds
+                    )
+                    turnMetrics.keyReleaseToAudioStartMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
+                        startUptimeSeconds: keyReleaseUptimeSeconds,
+                        endUptimeSeconds: audioStartedUptimeSeconds
+                    )
+                    turnStepInProgress = nil
+                    // As in the main turn: the state goes back to idle at once (the pill says
+                    // "speaking" while the audio plays) and the turn stays open until the audio ends,
+                    // so an Escape during the sentence is recorded against it.
+                    voiceState = .idle
+                    scheduleTransientHideIfNeeded()
+                    while elevenLabsTTSClient.isPlaying && !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                    }
+                    if Task.isCancelled {
+                        if escapeInterruptedTurnIdentifier == turnIdentifier {
+                            turnMetrics.outcome = .cancelled
+                            turnMetrics.unfinishedStep = .speechPlayback
+                        }
+                    } else {
+                        replyWasSpokenToTheEnd = true
+                    }
+                } catch {
+                    if !Task.isCancelled {
+                        // The action is done; only the voice failed, so the sentence shows in the pill.
+                        print("⚠️ ElevenLabs TTS error after a quick command: \(error)")
+                        tellUserAboutTurnFailure(failingStep: .textToSpeech, error: error, spokenReplyTextThatCouldNotBeSpoken: fixedSentence)
+                    }
+                }
+            }
+            if !Task.isCancelled {
+                voiceState = .idle
+                scheduleTransientHideIfNeeded()
+                if inputMode == .spoken, replyWasSpokenToTheEnd {
+                    scheduleFollowUpListeningWindowAfterSpokenReply()
+                }
+            }
+        }
+    }
+
     /// If the cursor is in transient mode (user toggled "Show Clicky" off),
     /// waits for TTS playback and any pointing animation to finish, then
     /// fades out the overlay after a 1-second pause. Cancelled automatically
@@ -3219,11 +3693,21 @@ final class CompanionManager: ObservableObject {
         typedTurnIdentifier: UUID? = nil
     ) {
         let bridgedError = error as NSError
+        // Round 19: what the failed response carried, so the Worker's daily cap is told apart.
+        let failedResponseBody = bridgedError.userInfo[ClickyTurnFailureMessage.responseBodyUserInfoKey] as? String
+        let dailyCapHeaderValue = bridgedError.userInfo[ClickyTurnFailureMessage.dailyCapHeaderUserInfoKey] as? String
         let turnFailureResponse = ClickyTurnFailureMessage.response(
             failingStep: failingStep,
             errorDomain: bridgedError.domain,
             errorCode: bridgedError.code,
-            errorMessage: bridgedError.localizedDescription
+            errorMessage: bridgedError.localizedDescription,
+            responseBody: failedResponseBody,
+            dailyCapHeaderValue: dailyCapHeaderValue
+        )
+        let dailyCapWasReached = ClickyTurnFailureMessage.isDailySpendingCap(
+            httpStatusCode: ClickyTurnFailureMessage.httpStatusCode(errorDomain: bridgedError.domain, errorCode: bridgedError.code),
+            responseBody: failedResponseBody,
+            dailyCapHeaderValue: dailyCapHeaderValue
         )
 
         if let typedTurnIdentifier {
@@ -3233,7 +3717,8 @@ final class CompanionManager: ObservableObject {
                 errorSentenceForPanel = honestErrorSentence
             case .showReplyAsNoticeWithoutSpeaking:
                 errorSentenceForPanel = ClickyTurnFailureMessage.voiceUnavailableNoticeText(
-                    forSpokenReplyText: spokenReplyTextThatCouldNotBeSpoken ?? ""
+                    forSpokenReplyText: spokenReplyTextThatCouldNotBeSpoken ?? "",
+                    dailyCapWasReached: dailyCapWasReached
                 )
             }
             chatPanelViewModel.failPendingExchange(turnIdentifier: typedTurnIdentifier, errorText: errorSentenceForPanel)
@@ -3248,7 +3733,8 @@ final class CompanionManager: ObservableObject {
         case .showReplyAsNoticeWithoutSpeaking:
             showTurnFailureNoticeInStatusPill(
                 ClickyTurnFailureMessage.voiceUnavailableNoticeText(
-                    forSpokenReplyText: spokenReplyTextThatCouldNotBeSpoken ?? ""
+                    forSpokenReplyText: spokenReplyTextThatCouldNotBeSpoken ?? "",
+                    dailyCapWasReached: dailyCapWasReached
                 )
             )
         }

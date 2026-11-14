@@ -106,6 +106,27 @@ nonisolated struct ClickyTurnMetrics: Equatable {
     /// True when the user's words came from the follow-up listening window, not a key press or typing.
     var startedByFollowUpListening = false
 
+    // Round 19 (Jarvis tuning), numbers, flags and one random identifier. Each is left out of the
+    // line until it is set, so a line of a turn that did none of these is what it was in round 18.
+    /// One entry per request of the loop: the tokens the request wrote to the prompt cache. With the
+    /// cache breakpoint after the first tool call, request 2 writes and the later requests read.
+    var roundTripCacheCreationTokens: [Int]?
+    /// True when the loop ended after one simple action done at once, without a request for words:
+    /// the fixed confirmation was spoken instead.
+    var skippedFinalRequest: Bool?
+    /// True for a quick command: the words were carried out on this Mac with no model call at all.
+    var localFastPath: Bool?
+    /// Tool calls of one reply that were run together as a group.
+    var parallelToolCalls: Int?
+    /// A random identifier of this turn (never derived from anything the user said), so the line of
+    /// the follow-up window that started a turn can be joined with the turn's own line. A `UUID`, not
+    /// text, so the "no free-form string" rule of this type stays structural.
+    var turnId: UUID?
+    /// How soon Escape came after the reply began: counted from the reply's first audio, or from its
+    /// first text when no audio had started yet. Nil when Escape did not stop this turn, or stopped it
+    /// before any reply had begun. The proxy for a follow-up window that fired on noise.
+    var interruptedWithinMilliseconds: Int?
+
     var spokenReplyCharacterCount: Int?
     var skillCount: Int?
     var noteCount: Int?
@@ -146,6 +167,10 @@ nonisolated struct ClickyTurnMetrics: Equatable {
     /// identifier. Anything that does not look like a model id (for example text with spaces,
     /// such as a spoken sentence) is replaced with "unknown" instead of being logged.
     static let maximumModelNameLength = 64
+
+    /// The model name a quick command's line carries (round 19): no model was asked, and the usage
+    /// tab lists these turns under "quick commands" with no tokens and no price.
+    static let quickCommandsModelName = "quick-commands"
 
     static func sanitizedModelName(_ rawModelName: String) -> String {
         let allowedCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
@@ -200,6 +225,12 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         if let actionToolCallCount { jsonObject["actionToolCalls"] = actionToolCallCount }
         if let actionKinds { jsonObject["actionKinds"] = actionKinds.map(\.rawValue) }
         if startedByFollowUpListening { jsonObject["startedByFollowUpListening"] = true }
+        if let roundTripCacheCreationTokens { jsonObject["roundTripCacheCreationTokens"] = roundTripCacheCreationTokens }
+        if let skippedFinalRequest { jsonObject["skippedFinalRequest"] = skippedFinalRequest }
+        if let localFastPath { jsonObject["localFastPath"] = localFastPath }
+        if let parallelToolCalls { jsonObject["parallelToolCalls"] = parallelToolCalls }
+        if let turnId { jsonObject["turnId"] = turnId.uuidString }
+        if let interruptedWithinMilliseconds { jsonObject["interruptedWithinMilliseconds"] = interruptedWithinMilliseconds }
 
         if let spokenReplyCharacterCount { jsonObject["spokenReplyCharacterCount"] = spokenReplyCharacterCount }
         if let skillCount { jsonObject["skillCount"] = skillCount }
@@ -263,6 +294,18 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         }
         if startedByFollowUpListening {
             summaryLine += " | follow-up"
+        }
+        if localFastPath == true {
+            summaryLine += " | quick command"
+        }
+        if skippedFinalRequest == true {
+            summaryLine += " | final request skipped"
+        }
+        if let parallelToolCalls {
+            summaryLine += " | \(parallelToolCalls) calls in parallel"
+        }
+        if let interruptedWithinMilliseconds {
+            summaryLine += " | escape after \(interruptedWithinMilliseconds)ms"
         }
         return summaryLine
     }

@@ -119,6 +119,8 @@ nonisolated enum ClickyPanelSettingsDefaults {
     static let personaAssistantNameKey = "personaAssistantName"
     static let personaStyleKey = "personaStyle"
     static let personaUserAddressKey = "personaUserAddress"
+    // Round 19 (Jarvis tuning).
+    static let isQuickCommandsEnabledKey = "isQuickCommandsEnabled"
 
     static let defaultModelIdentifier = ClickyPanelModelOption.sonnet.modelIdentifier
     static let defaultIsClickyCursorEnabled = true
@@ -135,6 +137,10 @@ nonisolated enum ClickyPanelSettingsDefaults {
     /// After a spoken reply Clicky listens a few seconds for a follow-up.
     static let defaultIsFollowUpListeningEnabled = true
     static let defaultPersonaStyle = ClickyPersonaStyle.friendly
+    /// Quick commands are on out of the box (Sam's decision of 14 Nov 2026): "open safari" and "set a
+    /// timer for 10 minutes" are carried out on this Mac with no model call. They work only while
+    /// actions are on.
+    static let defaultIsQuickCommandsEnabled = true
 
     /// A stored true or false, or `defaultValue` when nothing (or something else) is stored.
     static func isEnabled(storedValue: Any?, defaultValue: Bool) -> Bool {
@@ -194,6 +200,8 @@ nonisolated struct ClickyPanelSettingsSnapshot: Equatable, Sendable {
     var personaAssistantName: String = ""
     var personaStyle: ClickyPersonaStyle = ClickyPanelSettingsDefaults.defaultPersonaStyle
     var personaUserAddress: String = ""
+    // Round 19. Last, with its default, like the round 18 fields.
+    var isQuickCommandsEnabled: Bool = ClickyPanelSettingsDefaults.defaultIsQuickCommandsEnabled
 
     /// The persona the three persona settings make.
     var persona: ClickyPersona {
@@ -238,6 +246,8 @@ nonisolated struct ClickyPanelSettingsSnapshot: Equatable, Sendable {
             changedSnapshot.personaStyle = style
         case .personaUserAddress(let address):
             changedSnapshot.personaUserAddress = ClickyPersona.cleanedName(address)
+        case .quickCommandsEnabled(let isEnabled):
+            changedSnapshot.isQuickCommandsEnabled = isEnabled
         }
         return changedSnapshot
     }
@@ -258,6 +268,7 @@ nonisolated enum ClickyPanelSettingChange: Equatable, Sendable {
     case personaAssistantName(String)
     case personaStyle(ClickyPersonaStyle)
     case personaUserAddress(String)
+    case quickCommandsEnabled(Bool)
 }
 
 // MARK: - Whether a reply is spoken

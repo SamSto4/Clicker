@@ -68,12 +68,20 @@ nonisolated struct ClickyStatusPillContent: Equatable {
     /// internet right now.", or the unspoken reply after "voice unavailable"). Like a dictation
     /// notice it gives way to anything live, and it comes before "speaking" because the error
     /// sentence is spoken by the Mac's own voice while the notice shows.
+    ///
+    /// `actionNoticeText` (round 19) is what an action just did ("opened safari"), shown for a few
+    /// seconds. Like a dictation notice it is a notice, but it is placed above "thinking": it appears
+    /// while the model is still working on its words, which is its whole purpose (the round 19 brief:
+    /// the result shows about two seconds into the turn, three before the model's words). It gives way
+    /// at once to anything the user starts (a dictation, the ask keys) and, when it expires, to
+    /// "thinking" or "speaking".
     static func content(
         voiceActivity: ClickyStatusPillVoiceActivity,
         dictationActivity: ClickyStatusPillDictationActivity,
         isMicrophoneStartingUp: Bool,
         isSpeechAudioPlaying: Bool,
-        turnFailureNoticeText: String? = nil
+        turnFailureNoticeText: String? = nil,
+        actionNoticeText: String? = nil
     ) -> ClickyStatusPillContent? {
         switch dictationActivity {
         case .listening:
@@ -90,6 +98,12 @@ nonisolated struct ClickyStatusPillContent: Equatable {
 
         if voiceActivity == .listening || (voiceActivity == .processing && isMicrophoneStartingUp) {
             return ClickyStatusPillContent(word: listeningWord, indicator: .listeningBars, accent: .asking)
+        }
+        if let actionNoticeText {
+            let trimmedActionNoticeText = actionNoticeText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedActionNoticeText.isEmpty {
+                return ClickyStatusPillContent(word: trimmedActionNoticeText, indicator: .none, accent: .asking)
+            }
         }
         if voiceActivity == .processing {
             return ClickyStatusPillContent(word: thinkingWord, indicator: .thinkingDots, accent: .asking)

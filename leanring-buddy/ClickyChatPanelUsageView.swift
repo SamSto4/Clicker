@@ -119,6 +119,34 @@ struct ClickyChatPanelUsageContentView: View {
 
     @ViewBuilder
     private func modelRows(modelName: String, todayUsage: ClickyModelUsage?, monthUsage: ClickyModelUsage?) -> some View {
+        if modelName == ClickyTurnMetrics.quickCommandsModelName {
+            quickCommandsRows(todayUsage: todayUsage, monthUsage: monthUsage)
+        } else {
+            pricedModelRows(modelName: modelName, todayUsage: todayUsage, monthUsage: monthUsage)
+        }
+    }
+
+    /// Round 19: quick commands asked no model, so they have no tokens and no price; the row only
+    /// counts them.
+    @ViewBuilder
+    private func quickCommandsRows(todayUsage: ClickyModelUsage?, monthUsage: ClickyModelUsage?) -> some View {
+        GridRow {
+            Text("quick commands")
+                .font(.system(size: DS.ChatPanel.rowTitleFontSizeInPoints, weight: .medium))
+                .foregroundColor(DS.Colors.chatPanelPrimaryText)
+                .padding(.top, DS.ChatPanel.usageModelBlockTopPaddingInPoints)
+                .gridCellColumns(3)
+        }
+        figureRow(
+            "run on this mac, no ai request",
+            todayText: todayUsage.map { String($0.requestCount) } ?? "–",
+            monthText: monthUsage.map { String($0.requestCount) } ?? "–",
+            isDetail: true
+        )
+    }
+
+    @ViewBuilder
+    private func pricedModelRows(modelName: String, todayUsage: ClickyModelUsage?, monthUsage: ClickyModelUsage?) -> some View {
         GridRow {
             Text(modelName)
                 .font(.system(size: DS.ChatPanel.rowTitleFontSizeInPoints, weight: .medium))

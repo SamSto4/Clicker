@@ -122,6 +122,18 @@ struct ClickyChatPanelSettingsContentView: View {
                 settingSwitch(isOn: settings.isActionsEnabled) { viewModel.applyPanelSettingChange(.actionsEnabled($0)) }
             }
 
+            // Round 19: plain commands ("open safari", "set a timer for 10 minutes") with no model call.
+            // They are actions, so the row is dimmed while actions are off.
+            settingRow(
+                symbolName: "hare",
+                title: "quick commands",
+                hint: settings.isActionsEnabled ? "open apps and set timers without asking the ai" : "needs actions on"
+            ) {
+                settingSwitch(isOn: settings.isQuickCommandsEnabled) { viewModel.applyPanelSettingChange(.quickCommandsEnabled($0)) }
+            }
+            .disabled(!settings.isActionsEnabled)
+            .opacity(settings.isActionsEnabled ? 1 : DS.ChatPanel.disabledRowOpacity)
+
             settingRow(symbolName: "person.text.rectangle", title: "assistant name", hint: "empty means clicky") {
                 ClickyChatSettingsTextField(
                     placeholderText: "clicky",
