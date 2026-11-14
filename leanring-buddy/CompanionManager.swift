@@ -2789,7 +2789,7 @@ final class CompanionManager: ObservableObject {
                                 // as a small working line, and nothing of it is ever spoken.
                                 toolUseFlag.markToolUsed()
                                 speechPrefetch.cancel()
-                                chatPanelViewModel.showWorkingNote(
+                                self.chatPanelViewModel.showWorkingNote(
                                     ClickyReplyTagParser.parse(toolUseFlag.latestRequestText).spokenText,
                                     turnIdentifier: turnIdentifier
                                 )
