@@ -275,6 +275,130 @@ class ClaudeAPI {
         )
     }
 
+    /// What the tool loop reports while a reply streams in, so the turn can show progress and stop
+    /// the early speech fetch. Both cases name the request of the loop they belong to (1 is the first).
+    enum ToolLoopProgress {
+        /// All the text of this request's reply so far. In a request that ends with a tool call this is a
+        /// progress note ("i'll open your notes file"), not the answer.
+        case replyTextChanged(accumulatedText: String, requestNumber: Int)
+        /// A `tool_use` block started, so the text of this request was a progress note.
+        case toolUseStarted(toolName: String, requestNumber: Int)
+    }
+
+    /// The same streaming chat request as `analyzeImageStreaming`, with the file tools added and the
+    /// loop that answers the model's tool calls (`ClickyToolLoop`) around it. Each request carries
+    /// the same two system blocks and the same tools; only messages are added at the end. The
+    /// session runs the tools and keeps the changes the model proposed.
+    func analyzeImageStreamingWithFileTools(
+        images: [(data: Data, label: String)],
+        staticSystemPrompt: String,
+        dynamicSystemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String,
+        toolSession: ClickyFileToolTurnSession,
+        onProgress: @MainActor @Sendable (ToolLoopProgress) -> Void
+    ) async throws -> ClickyToolLoopResult {
+        let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(
+            staticText: staticSystemPrompt,
+            dynamicText: dynamicSystemPrompt
+        )
+        let tools = ClickyFileToolDefinitions.toolsArray()
+        let baseMessages = ClickyClaudeChatRequestBuilder.messages(
+            conversationHistory: conversationHistory,
+            currentUserContentBlocks: ClickyClaudeChatRequestBuilder.currentUserContentBlocks(images: images, userPrompt: userPrompt)
+        )
+        let modelForThisTurn = model
+        return try await ClickyToolLoop.run(
+            baseMessages: baseMessages,
+            buildRequestBody: { messagesSoFar in
+                ClickyClaudeChatRequestBuilder.streamingRequestBody(
+                    model: modelForThisTurn,
+                    systemPromptValue: systemBlocks,
+                    messages: messagesSoFar,
+                    tools: tools
+                )
+            },
+            executeToolCall: { toolName, toolInput in
+                // The file work (reading, listing, checking a proposal) runs off the main thread.
+                await Task.detached(priority: .userInitiated) {
+                    toolSession.execute(toolName: toolName, input: toolInput)
+                }.value
+            },
+            sendRequest: { requestBody, requestNumber in
+                try await self.streamOneRequestOfToolLoop(
+                    requestBody: requestBody,
+                    requestNumber: requestNumber,
+                    imageCount: images.count,
+                    onProgress: onProgress
+                )
+            }
+        )
+    }
+
+    /// Sends one request of the tool loop and reads its stream into content blocks kept as received
+    /// (`ClickyStreamedMessageAssembler`).
+    private func streamOneRequestOfToolLoop(
+        requestBody: [String: Any],
+        requestNumber: Int,
+        imageCount: Int,
+        onProgress: @MainActor @Sendable (ToolLoopProgress) -> Void
+    ) async throws -> ClickyStreamedMessage {
+        let startTime = Date()
+        var request = makeAPIRequest()
+        let bodyData = try JSONSerialization.data(withJSONObject: requestBody)
+        request.httpBody = bodyData
+        let payloadMB = Double(bodyData.count) / 1_048_576.0
+        print("🌐 Claude streaming request \(requestNumber) (file tools): \(String(format: "%.1f", payloadMB))MB, \(imageCount) image(s)")
+
+        let (byteStream, response) = try await session.bytes(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response"]
+            )
+        }
+        guard (200...299).contains(httpResponse.statusCode) else {
+            var errorBodyChunks: [String] = []
+            for try await line in byteStream.lines {
+                errorBodyChunks.append(line)
+            }
+            let errorBody = errorBodyChunks.joined(separator: "\n")
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: httpResponse.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)"]
+            )
+        }
+
+        var messageAssembler = ClickyStreamedMessageAssembler()
+        for try await line in byteStream.lines {
+            guard let eventPayload = ClickyServerSentEventLine.eventPayload(fromLine: line) else { continue }
+            for notification in messageAssembler.consume(eventPayload) {
+                switch notification {
+                case .textChanged(let accumulatedText):
+                    await onProgress(.replyTextChanged(accumulatedText: accumulatedText, requestNumber: requestNumber))
+                case .toolUseBlockStarted(let toolName):
+                    await onProgress(.toolUseStarted(toolName: toolName, requestNumber: requestNumber))
+                case .thinkingBlockStarted:
+                    break
+                }
+            }
+        }
+
+        var streamedMessage = messageAssembler.finishedMessage()
+        streamedMessage.durationSeconds = Date().timeIntervalSince(startTime)
+        // An error event in the middle of a stream (such as "overloaded") is a failed request.
+        if let streamErrorMessage = streamedMessage.streamErrorMessage {
+            throw NSError(
+                domain: "ClaudeAPI",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey: "API stream error: \(streamErrorMessage)"]
+            )
+        }
+        return streamedMessage
+    }
+
     /// Non-streaming fallback for validation requests where we don't need progressive display.
     func analyzeImage(
         images: [(data: Data, label: String)],

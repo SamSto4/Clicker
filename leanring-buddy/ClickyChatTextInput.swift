@@ -19,12 +19,15 @@ final class ClickyChatNSTextView: NSTextView {
     /// False for the search field: it is one line and Return only submits.
     var allowsMultipleLines = true
     var submitHandler: (() -> Void)?
+    /// False while a proposed change waits for return or escape (round 17): the card has the
+    /// keyboard then, and the field must not take it back when the tab is shown again.
+    var takesKeyboardWhenAddedToWindow = true
 
     /// Takes the keyboard as soon as it is part of a window, so opening the panel (or switching
     /// to the search field) lets the user type at once.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard let window else { return }
+        guard takesKeyboardWhenAddedToWindow, let window else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.window === window else { return }
             window.makeFirstResponder(self)
@@ -103,6 +106,8 @@ struct ClickyChatTextInput: NSViewRepresentable {
     /// Changes each time the field should take the keyboard (the panel opened, or the user came
     /// back from the chat list).
     let focusRequestCount: Int
+    /// False while a proposed change waits for return or escape; see `ClickyChatNSTextView`.
+    var takesKeyboardWhenAddedToWindow = true
     let onSubmit: () -> Void
     /// The height the text needs: one line at least, and at most `maximumVisibleLineCount` lines.
     let maximumVisibleLineCount: Int
@@ -134,6 +139,7 @@ struct ClickyChatTextInput: NSViewRepresentable {
         let textView = ClickyChatNSTextView(frame: .zero, textContainer: textContainer)
         textView.allowsMultipleLines = allowsMultipleLines
         textView.submitHandler = onSubmit
+        textView.takesKeyboardWhenAddedToWindow = takesKeyboardWhenAddedToWindow
         textView.delegate = context.coordinator
         textView.drawsBackground = false
         textView.isRichText = false
@@ -177,6 +183,7 @@ struct ClickyChatTextInput: NSViewRepresentable {
         context.coordinator.parent = self
         guard let textView = context.coordinator.textView else { return }
         textView.submitHandler = onSubmit
+        textView.takesKeyboardWhenAddedToWindow = takesKeyboardWhenAddedToWindow
 
         // The text is set from outside when the draft is cleared after sending. Typing already
         // updates the binding, so equal text is left alone (replacing it would move the caret).

@@ -515,6 +515,11 @@ final class CompanionManager: ObservableObject {
         // A chat whose compaction into memories never finished (offline, or the app quit first) is
         // picked up again shortly after launch.
         memoryCompactionController.scheduleRetryAfterLaunch()
+        // Backups of changed files older than 30 days (or beyond 200 MB) are removed. Skipped in
+        // the panel self test, which promises to leave every real folder alone.
+        if ProcessInfo.processInfo.environment[ClickyChatStore.panelSelfTestEnvironmentVariable] != "1" {
+            fileEditingController.pruneOldBackupsInBackground()
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -1192,6 +1197,42 @@ final class CompanionManager: ObservableObject {
         chatPanelViewModel.openNotesFolderHandler = { [weak self] notesDirectoryURL in
             self?.openNotesFolderInFinder(notesDirectoryURL)
         }
+        // File editing (round 17): the settings tab's folders and the change card's buttons.
+        mirrorEditableFolderPathsIntoChatPanel()
+        chatPanelViewModel.addEditableFolderHandler = { [weak self] in
+            self?.presentEditableFolderPicker()
+        }
+        chatPanelViewModel.removeEditableFolderHandler = { [weak self] folderPath in
+            self?.removeEditableFolder(path: folderPath)
+        }
+        chatPanelViewModel.applyPendingChangeHandler = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                let changesBeingApplied = self.fileEditingController.pendingChanges
+                let changeAnswer = await self.fileEditingController.applyPendingChanges()
+                self.recordChangeAnswerInConversationHistory(changeAnswer, aboutChanges: changesBeingApplied)
+            }
+        }
+        chatPanelViewModel.cancelPendingChangeHandler = { [weak self] in
+            guard let self else { return }
+            let changesBeingCancelled = self.fileEditingController.pendingChanges
+            let changeAnswer = self.fileEditingController.discardPendingChanges()
+            self.recordChangeAnswerInConversationHistory(changeAnswer, aboutChanges: changesBeingCancelled)
+        }
+        chatPanelViewModel.undoAppliedChangeHandler = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                let undoAnswer = await self.fileEditingController.undoLastAppliedChanges()
+                // The controller already updates the card for an undo and for a refusal because a
+                // file changed; the other answers (too late, nothing left, a failure) are only words.
+                switch undoAnswer {
+                case .undoExpired, .nothingToUndo, .undoFailed:
+                    self.chatPanelViewModel.showChangeCardNotice(undoAnswer.sentence)
+                default:
+                    break
+                }
+            }
+        }
         // The settings tab and the menu bar panel's switches show the same state. Whatever
         // changes it, in either place, reaches the tab here. The mirror compares before it
         // publishes, so the frequent changes of unrelated state cost nothing.
@@ -1202,6 +1243,91 @@ final class CompanionManager: ObservableObject {
                 // After the hop the properties hold their new values.
                 self?.mirrorAppStateIntoChatPanelSettings()
             }
+    }
+
+    // MARK: - File editing (round 17): folders Clicky may edit, and the changes it proposes
+
+    /// The folders Clicky may read and change, standardized with symbolic links resolved. Stored in
+    /// `UserDefaults` under `editableFolderPaths`. Empty means the feature is off: no tools in the
+    /// request, no prompt section, every request exactly what it was before round 17.
+    @Published private(set) var editableFolderPaths: [String] = ClickyEditableFolders.folderPaths(
+        storedValue: UserDefaults.standard.object(forKey: ClickyEditableFolders.userDefaultsKey)
+    )
+
+    /// What is waiting for the user's answer, what can be undone, and what happens on an answer.
+    private(set) lazy var fileEditingController = ClickyFileEditingController(
+        chatPanelViewModel: chatPanelViewModel,
+        chatPanelController: chatPanelController
+    )
+
+    private func setEditableFolderPaths(_ newEditableFolderPaths: [String]) {
+        editableFolderPaths = newEditableFolderPaths
+        UserDefaults.standard.set(newEditableFolderPaths, forKey: ClickyEditableFolders.userDefaultsKey)
+        mirrorEditableFolderPathsIntoChatPanel()
+    }
+
+    private func mirrorEditableFolderPathsIntoChatPanel() {
+        chatPanelViewModel.mirrorEditableFolderPaths(editableFolderPaths, homeDirectoryPath: NSHomeDirectory())
+    }
+
+    /// The model's history says "[proposed: ...]" after the turn that queued changes. When the user
+    /// answers with Return, Escape or a button (a spoken or typed yes goes through
+    /// `answerAChangeWithoutAskingTheModel`, which writes its own exchange), the next turn must not
+    /// still see the change as waiting, so one short line is added to the latest history entry. The
+    /// chat's own file is not touched (a continued chat shows the proposal as it was).
+    private func recordChangeAnswerInConversationHistory(_ changeAnswer: ClickyChangeAnswer?, aboutChanges changes: [ClickyFileChange]) {
+        guard let changeAnswer, !changes.isEmpty, !conversationHistory.isEmpty else { return }
+        let historyLine: String
+        switch changeAnswer {
+        case .applied:
+            historyLine = ClickyChangeHistoryText.appliedHistoryLine(for: changes)
+        case .discarded, .refusedBecauseFileChanged, .expired:
+            historyLine = ClickyChangeHistoryText.discardedHistoryLine(for: changes)
+        case .refusedBecauseOfUnsavedEdits, .failedToApply, .undone, .undoExpired, .undoRefusedBecauseFileChanged, .undoFailed, .nothingToUndo:
+            // Still waiting, or an undo (which has its own words): nothing to add.
+            return
+        }
+        var latestHistoryEntry = conversationHistory.removeLast()
+        latestHistoryEntry.assistantResponse += "\n" + historyLine
+        conversationHistory.append(latestHistoryEntry)
+    }
+
+    /// "add folder…" in the settings tab: the system's folder chooser, then the rules for which
+    /// folders may be added (never the whole disk, the home folder, the library or a system folder).
+    private func presentEditableFolderPicker() {
+        chatPanelController.presentFolderPicker { [weak self] chosenFolderURL in
+            guard let self, let chosenFolderURL else { return }
+            self.addEditableFolder(at: chosenFolderURL)
+        }
+    }
+
+    private func addEditableFolder(at folderURL: URL) {
+        let additionResult = ClickyEditableFolders.adding(
+            folderPath: folderURL.path,
+            to: editableFolderPaths,
+            homeDirectoryPath: NSHomeDirectory()
+        )
+        if let refusal = additionResult.refusal {
+            chatPanelViewModel.showEditableFolderMessage(refusal.explanation)
+            return
+        }
+        if additionResult.wasAlreadyListed {
+            chatPanelViewModel.showEditableFolderMessage("that folder is already on the list.")
+            return
+        }
+        chatPanelViewModel.showEditableFolderMessage(nil)
+        setEditableFolderPaths(additionResult.folderPaths)
+    }
+
+    private func removeEditableFolder(path folderPath: String) {
+        // A change that waits for an answer inside a folder that is no longer allowed is dropped
+        // with it, so it can not be applied after the permission is gone.
+        let changesWaitingBeforeRemoval = fileEditingController.pendingChanges
+        fileEditingController.discardPendingChanges(insideFolderPath: folderPath)
+        if fileEditingController.pendingChanges.isEmpty {
+            recordChangeAnswerInConversationHistory(.discarded, aboutChanges: changesWaitingBeforeRemoval)
+        }
+        setEditableFolderPaths(ClickyEditableFolders.removing(folderPath: folderPath, from: editableFolderPaths))
     }
 
     // MARK: - Chat panel settings tab (round 15)
@@ -1445,8 +1571,15 @@ final class CompanionManager: ObservableObject {
         let isResponseTurnRunning = activeResponseTurnIdentifier != nil
         let isSpeechAudioPlaying = elevenLabsTTSClient.isPlaying
         guard isWaitingForFinalTranscript || isResponseTurnRunning || isSpeechAudioPlaying else {
-            // Nothing is running, so with the chat panel open Escape closes it. When something is
-            // running, the lines below stop it first and the panel stays open.
+            // Nothing is running. A change that waits for an answer is cancelled first ("okay, i
+            // left it." in the panel, not spoken) and the panel stays open; with no change waiting,
+            // Escape closes the panel. When something is running, the lines below stop it first.
+            let changesWaitingForAnAnswer = fileEditingController.pendingChanges
+            if fileEditingController.cancelPendingChangesBecauseEscapeWasPressed() {
+                recordChangeAnswerInConversationHistory(.discarded, aboutChanges: changesWaitingForAnAnswer)
+                print("⎋ Clicky: Escape cancelled the proposed change")
+                return
+            }
             if chatPanelController.isOpen {
                 chatPanelController.close()
             }
@@ -1454,6 +1587,8 @@ final class CompanionManager: ObservableObject {
         }
 
         escapeInterruptedTurnIdentifier = activeResponseTurnIdentifier
+        // A change the running turn already proposed stays on its card: Escape while Clicky speaks
+        // the announcement only stops the speech. A second Escape, with nothing running, cancels it.
 
         // Without this the transcript would still arrive a moment later and start a new answer
         // the user just asked to stop.
@@ -1632,6 +1767,25 @@ final class CompanionManager: ObservableObject {
         // finalisation that began at the key release.
         let finalTranscriptReceivedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
 
+        // File editing (round 17): while a change waits, a transcript that is exactly "yes" (or
+        // another confirmation phrase), "no" or "undo that" answers it without a model call. Any
+        // other words are a normal turn and the change stays pending. With nothing pending and
+        // nothing to undo this is always `.normalTurn`.
+        let changeDecision = fileEditingController.decision(forTranscript: transcript)
+        if changeDecision != .normalTurn {
+            answerAChangeWithoutAskingTheModel(
+                decision: changeDecision,
+                transcript: transcript,
+                inputMode: inputMode,
+                keyReleaseUptimeSeconds: keyReleaseUptimeSeconds,
+                finalTranscriptReceivedUptimeSeconds: finalTranscriptReceivedUptimeSeconds
+            )
+            return
+        }
+        // These words go to the model, so a later yes or no could answer something it asks now:
+        // from here on only return or the card's buttons answer a change that is still waiting.
+        fileEditingController.noteAnOrdinaryTurnStarted()
+
         currentResponseTask?.cancel()
         elevenLabsTTSClient.stopPlayback()
         stopTellingUserAboutTurnFailure()
@@ -1738,6 +1892,21 @@ final class CompanionManager: ObservableObject {
             let frontmostWindowTitleTask = Task.detached(priority: .userInitiated) {
                 ClickyChatProjectContextReader.readFrontmostWindowTitle(processIdentifier: frontmostProcessIdentifierForWindowTitle)
             }
+            // File editing (round 17): with at least one folder set, the open document is read and
+            // the path policy built in the same way, alongside the screenshot. With no folder this
+            // is nil and the turn is exactly what it always was.
+            let editableFolderPathsForThisTurn = editableFolderPaths
+            var preparedFileEditingTask: Task<ClickyPreparedFileEditing, Never>?
+            if !editableFolderPathsForThisTurn.isEmpty {
+                preparedFileEditingTask = Task.detached(priority: .userInitiated) {
+                    ClickyPreparedFileEditing.prepare(
+                        editableFolderPaths: editableFolderPathsForThisTurn,
+                        frontmostProcessIdentifier: frontmostProcessIdentifierForWindowTitle
+                    )
+                }
+            }
+            // Set when the model starts a tool call: no early speech fetch for such a turn.
+            let toolUseFlag = ClickyToolUseFlag()
             // Set once the finished exchange has been handed to the chat, so the "turn ended"
             // cleanup below does not take the message off the panel before the chat holds it.
             var exchangeWasHandedToChat = false
@@ -1750,6 +1919,7 @@ final class CompanionManager: ObservableObject {
                 // Cancelling one that already finished or was used does nothing.
                 speechPrefetch.cancel()
                 projectForNewChatTask?.cancel()
+                preparedFileEditingTask?.cancel()
                 // A turn that ends without a reply (cancelled, or failed before the exchange was
                 // recorded) takes its pending message off the panel. A failed typed turn has
                 // already turned its pending message into an error and is not affected.
@@ -1843,6 +2013,7 @@ final class CompanionManager: ObservableObject {
                 // that is not answering. It is waited for before the prompt assembly is timed, so
                 // the assembly's own number stays the assembly alone.
                 let frontmostWindowTitle = await frontmostWindowTitleTask.value
+                let preparedFileEditing = await preparedFileEditingTask?.value
 
                 // Assemble this turn's system prompt: base prompt, matching app skills, the
                 // "right now" block (with the window title), the note about a changed screen (only
@@ -1862,7 +2033,7 @@ final class CompanionManager: ObservableObject {
                 // The last exchange's screen is nil when the history is empty (a new chat, or
                 // cleared after ten quiet minutes) or was recorded before screens were kept, and
                 // then no note is added.
-                let turnContext = ClickyTurnContext(
+                var turnContext = ClickyTurnContext(
                     userTranscript: transcript,
                     frontmostApplicationBundleIdentifier: frontmostApplicationAtTurnStart?.bundleIdentifier,
                     frontmostApplicationName: frontmostApplicationAtTurnStart?.localizedName,
@@ -1872,6 +2043,16 @@ final class CompanionManager: ObservableObject {
                     frontmostWindowTitle: frontmostWindowTitle,
                     screenOfLastExchange: conversationHistory.last?.screenOfExchange
                 )
+                // The folders Clicky may change, and the open document when it is inside one.
+                if let preparedFileEditing {
+                    turnContext.editableFolders = preparedFileEditing.editableFolders
+                    turnContext.frontmostDocumentInEditableFolder = preparedFileEditing.frontmostDocument
+                    // A change that still waits is named, so the model knows the file does not hold
+                    // it yet (the live eval heard "my earlier message was wrong" without this).
+                    turnContext.pendingChangeDescriptions = fileEditingController.pendingChanges.map {
+                        ClickyChangeHistoryText.changeDescription(for: $0)
+                    }
+                }
                 // Recorded with this turn's exchange below, so the next turn can compare with it.
                 let screenOfThisTurn = turnContext.screenNow
                 let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
@@ -1911,47 +2092,104 @@ final class CompanionManager: ObservableObject {
                 let elevenLabsTTSClientForSpeechPrefetch = elevenLabsTTSClient
                 let claudeRequestStartedUptimeSecondsForThisCall = ClickyTurnMetrics.currentUptimeSeconds
                 claudeRequestStartedUptimeSeconds = claudeRequestStartedUptimeSecondsForThisCall
-                let streamingResult = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    staticSystemPrompt: preparedPrompt.staticSystemPromptText,
-                    dynamicSystemPrompt: dynamicSystemPromptTextWithLongTermMemory,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { accumulatedReplyText in
-                        // No streaming text display — spinner stays until TTS plays.
-                        // The callback notes when the first text arrived, for timing, and starts
-                        // the early speech fetch once the first reply tag has opened (the words
-                        // before it are final). Nothing is played from here.
-                        replyTextArrivalClock.markReplyTextArrived()
-                        // A reply that is read in the panel (a typed turn, or a voice turn while
-                        // "speak replies" is off) shows as it arrives, with every tag (even a
-                        // half-written one) already removed.
-                        if showsStreamingReplyInPanel {
-                            chatPanelViewModel.updateStreamingReply(
-                                ClickyReplyTagParser.parse(accumulatedReplyText).spokenText,
-                                turnIdentifier: turnIdentifier
-                            )
-                        }
-                        // A reply that is not spoken has no early speech fetch: nothing is sent to
-                        // the speech service for it.
-                        guard shouldSpeakThisReply else { return }
-                        // A draw, card or 3D scene reply has tags between its sentences ([DRAW,
-                        // [CARD, [ROW, [SCENE, [PART), so the words before its closing tag are not the whole spoken
-                        // answer and audio fetched for them would always be thrown away. The
-                        // early fetch is skipped for such a reply.
-                        guard !ClickySpeechPrefetch.replyHoldsTagsBetweenItsSentences(accumulatedReplyText) else { return }
-                        speechPrefetch.startIfFirstReplyTagHasOpened(
-                            accumulatedReplyText: accumulatedReplyText,
-                            userTranscript: transcript,
-                            ttsClient: elevenLabsTTSClientForSpeechPrefetch
+                // What is done with the reply text as it streams in (the same for both kinds of
+                // request below): the time of the first text, the panel for a reply that is read
+                // there, and the early speech fetch.
+                let handleReplyTextSoFar: @MainActor @Sendable (String) -> Void = { accumulatedReplyText in
+                    // No streaming text display — spinner stays until TTS plays.
+                    // The callback notes when the first text arrived, for timing, and starts
+                    // the early speech fetch once the first reply tag has opened (the words
+                    // before it are final). Nothing is played from here.
+                    replyTextArrivalClock.markReplyTextArrived()
+                    // A reply that is read in the panel (a typed turn, or a voice turn while
+                    // "speak replies" is off) shows as it arrives, with every tag (even a
+                    // half-written one) already removed.
+                    if showsStreamingReplyInPanel {
+                        self.chatPanelViewModel.updateStreamingReply(
+                            ClickyReplyTagParser.parse(accumulatedReplyText).spokenText,
+                            turnIdentifier: turnIdentifier
                         )
                     }
-                )
+                    // A reply that is not spoken has no early speech fetch: nothing is sent to
+                    // the speech service for it.
+                    guard shouldSpeakThisReply else { return }
+                    // No early fetch for a turn that used a tool (round 17): the text before a
+                    // tool call is a progress note, and only the last request's text is spoken.
+                    guard !toolUseFlag.hasUsedATool else { return }
+                    // A draw, card or 3D scene reply has tags between its sentences ([DRAW,
+                    // [CARD, [ROW, [SCENE, [PART), so the words before its closing tag are not the whole spoken
+                    // answer and audio fetched for them would always be thrown away. The
+                    // early fetch is skipped for such a reply.
+                    guard !ClickySpeechPrefetch.replyHoldsTagsBetweenItsSentences(accumulatedReplyText) else { return }
+                    speechPrefetch.startIfFirstReplyTagHasOpened(
+                        accumulatedReplyText: accumulatedReplyText,
+                        userTranscript: transcript,
+                        ttsClient: elevenLabsTTSClientForSpeechPrefetch
+                    )
+                }
+
+                let streamingResult: ClaudeStreamingResult
+                var toolLoopResult: ClickyToolLoopResult?
+                if let preparedFileEditing {
+                    // Folders are set: the same request with the file tools, and the loop that
+                    // answers the model's tool calls. Only the last request's text is the reply.
+                    let loopResult = try await claudeAPI.analyzeImageStreamingWithFileTools(
+                        images: labeledImages,
+                        staticSystemPrompt: preparedPrompt.staticSystemPromptText,
+                        dynamicSystemPrompt: dynamicSystemPromptTextWithLongTermMemory,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        toolSession: preparedFileEditing.toolSession,
+                        onProgress: { progress in
+                            switch progress {
+                            case .replyTextChanged(let accumulatedReplyText, _):
+                                toolUseFlag.latestRequestText = accumulatedReplyText
+                                handleReplyTextSoFar(accumulatedReplyText)
+                            case .toolUseStarted:
+                                // The text so far was a progress note, not the answer: it is shown
+                                // as a small working line, and nothing of it is ever spoken.
+                                toolUseFlag.markToolUsed()
+                                speechPrefetch.cancel()
+                                chatPanelViewModel.showWorkingNote(
+                                    ClickyReplyTagParser.parse(toolUseFlag.latestRequestText).spokenText,
+                                    turnIdentifier: turnIdentifier
+                                )
+                            }
+                        }
+                    )
+                    toolLoopResult = loopResult
+                    streamingResult = ClaudeStreamingResult(
+                        text: loopResult.replyTextToFinish,
+                        duration: loopResult.finalMessage.durationSeconds,
+                        tokenUsage: loopResult.totalTokenUsage
+                    )
+                } else {
+                    streamingResult = try await claudeAPI.analyzeImageStreaming(
+                        images: labeledImages,
+                        staticSystemPrompt: preparedPrompt.staticSystemPromptText,
+                        dynamicSystemPrompt: dynamicSystemPromptTextWithLongTermMemory,
+                        conversationHistory: historyForAPI,
+                        userPrompt: transcript,
+                        onTextChunk: handleReplyTextSoFar
+                    )
+                }
                 let fullResponseText = streamingResult.text
                 turnMetrics.claudeTotalMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
                     sinceUptimeSeconds: claudeRequestStartedUptimeSecondsForThisCall
                 )
                 turnMetrics.tokenUsage = streamingResult.tokenUsage
+                // File editing (round 17): numbers only, never a path or file text.
+                if let preparedFileEditing {
+                    turnMetrics.changesProposed = preparedFileEditing.toolSession.queuedChanges.count
+                    turnMetrics.toolCallCount = preparedFileEditing.toolSession.toolCallCount
+                    turnMetrics.bytesRead = preparedFileEditing.toolSession.bytesRead
+                    if let toolLoopResult {
+                        turnMetrics.toolRoundTripCount = toolLoopResult.toolRoundTripCount
+                        turnMetrics.roundTripInputTokens = toolLoopResult.requestStats.map { $0.inputTokens ?? 0 }
+                        turnMetrics.roundTripCacheReadTokens = toolLoopResult.requestStats.map { $0.cacheReadInputTokens ?? 0 }
+                        turnMetrics.roundTripMilliseconds = toolLoopResult.requestStats.map(\.milliseconds)
+                    }
+                }
                 // Claude is done; speech is the only step left. If the user interrupts before it
                 // starts, the metrics line records the turn as cancelled at the speech step.
                 turnStepInProgress = .textToSpeech
@@ -1969,7 +2207,33 @@ final class CompanionManager: ObservableObject {
                     profileStore: profileStore,
                     previousAssistantHistoryText: conversationHistory.last?.assistantResponse
                 )
-                let spokenText = finishedTurn.spokenText
+                // File editing (round 17): Clicky never claims a change is done. With changes queued, a
+                // sentence that says it is done becomes "it's ready. press return or say yes to apply
+                // it."; with nothing queued, a claim of having changed a file becomes "i didn't change
+                // anything." Without folders set the finisher's words are used as they are.
+                let changesQueuedByThisTurn = preparedFileEditing?.toolSession.queuedChanges ?? []
+                let spokenText: String
+                let finisherHistoryAssistantText: String
+                if let preparedFileEditing {
+                    spokenText = ClickyFileEditingHonesty.honestSpokenText(
+                        finishedTurn.spokenText,
+                        queuedChangeCount: changesQueuedByThisTurn.count,
+                        usedFileTools: preparedFileEditing.toolSession.toolCallCount > 0
+                    )
+                    finisherHistoryAssistantText = ClickyFileEditingHonesty.historyText(
+                        honestSpokenText: spokenText,
+                        originalSpokenText: finishedTurn.spokenText,
+                        finisherHistoryText: finishedTurn.historyAssistantText
+                    )
+                    // Nothing is written yet: the card shows the diff, and the panel takes the
+                    // keyboard so return applies it and escape cancels it.
+                    if !changesQueuedByThisTurn.isEmpty {
+                        fileEditingController.presentProposedChanges(changesQueuedByThisTurn)
+                    }
+                } else {
+                    spokenText = finishedTurn.spokenText
+                    finisherHistoryAssistantText = finishedTurn.historyAssistantText
+                }
                 turnMetrics.spokenReplyCharacterCount = spokenText.count
 
                 // The [DRAW:...], [CARD:...], [ROW:...], [SCENE:...] and [PART:...] tags of the reply, each with how far
@@ -2083,12 +2347,19 @@ final class CompanionManager: ObservableObject {
                 // [NOTE:...] and [PROFILE:...] tags stay so the model keeps saving in the same format.
                 // The [DRAW:...] tags of a draw reply are kept for the same reason; for a reply
                 // without them this is exactly the finisher's history text.
-                let assistantHistoryText = ClickyDrawTagParser.historyAssistantText(
+                let assistantHistoryTextWithoutProposals = ClickyDrawTagParser.historyAssistantText(
                     rawReplyText: fullResponseText,
                     finishedSpokenText: spokenText,
-                    finishedHistoryAssistantText: finishedTurn.historyAssistantText,
+                    finishedHistoryAssistantText: finisherHistoryAssistantText,
                     rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
                     partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
+                )
+                // One short line per change that was queued ("[proposed: edit Foo.swift: rename the
+                // button]"), so the next turn knows what is waiting. The chat's display text, which
+                // memory compaction reads, never holds these lines (it gets `spokenText`).
+                let assistantHistoryText = ClickyChangeHistoryText.historyTextAppending(
+                    proposalLinesOf: changesQueuedByThisTurn,
+                    to: assistantHistoryTextWithoutProposals
                 )
                 conversationHistory.append((
                     userTranscript: transcript,
@@ -2264,6 +2535,148 @@ final class CompanionManager: ObservableObject {
                     turnMetrics.outcome = .cancelled
                     turnMetrics.unfinishedStep = .speechPlayback
                 }
+            }
+        }
+    }
+
+    /// A spoken or typed yes, no or "undo that" while a change waits (or can be undone): the answer
+    /// is carried out without a model call, Clicky says one fixed sentence, and the exchange goes
+    /// into the chat and the model's history like any other. The words have to be exactly a
+    /// confirmation phrase (`ClickyChangeConfirmationPhrases`), which is checked by the caller.
+    private func answerAChangeWithoutAskingTheModel(
+        decision: ClickyChangeVoiceDecision,
+        transcript: String,
+        inputMode: ClickyTurnInputMode,
+        keyReleaseUptimeSeconds: TimeInterval?,
+        finalTranscriptReceivedUptimeSeconds: TimeInterval
+    ) {
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
+
+        let turnIdentifier = UUID()
+        activeResponseTurnIdentifier = turnIdentifier
+        currentSpeechPrefetch?.cancel()
+        currentSpeechPrefetch = nil
+        // Whatever the earlier turn had still to draw is not drawn. The marks already on the screen
+        // are kept (as every turn does) and their countdown starts again when this answer ends.
+        let drawingOverlayController = overlayWindowManager.drawingOverlayController
+        drawingOverlayController.cancelCommandsNotYetDrawn()
+        let keepMarksGeneration = drawingOverlayController.beginKeepingMarks()
+
+        let shouldSpeakThisAnswer = ClickyReplySpeechDecision.shouldSpeakReply(
+            inputMode: inputMode,
+            isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
+            isSpeakingTypedRepliesEnabled: isSpeakingTypedRepliesEnabled
+        )
+        let answerIsOnlyShownAsText = ClickyReplySpeechDecision.shouldShowReplyAsTextInPanel(
+            inputMode: inputMode,
+            isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
+            isSpeakingTypedRepliesEnabled: isSpeakingTypedRepliesEnabled
+        )
+        let messageStartedAtDate = Date()
+        let messageStartsNewChat = chatSession.messageWouldStartNewChat(at: messageStartedAtDate)
+        if messageStartsNewChat && ClickyChatBoundary.idleBoundaryAlsoClearsConversationHistory {
+            conversationHistory.removeAll()
+        }
+        if answerIsOnlyShownAsText && !chatPanelController.isOpen {
+            chatPanelController.open(takingKeyboard: false)
+        }
+        chatPanelViewModel.beginPendingExchange(
+            turnIdentifier: turnIdentifier,
+            userText: transcript,
+            inputMode: inputMode,
+            replyIsOnlyShownAsText: answerIsOnlyShownAsText
+        )
+
+        currentResponseTask = Task {
+            voiceState = .processing
+            var turnMetrics = ClickyTurnMetrics(turnStartedAt: Date(), modelName: selectedModel)
+            turnMetrics.inputMode = inputMode
+            turnMetrics.keyReleaseToFinalTranscriptMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
+                startUptimeSeconds: keyReleaseUptimeSeconds,
+                endUptimeSeconds: finalTranscriptReceivedUptimeSeconds
+            )
+            var exchangeWasHandedToChat = false
+            defer {
+                if !exchangeWasHandedToChat {
+                    chatPanelViewModel.cancelPendingExchange(turnIdentifier: turnIdentifier)
+                }
+                drawingOverlayController.finishKeepingMarks(keepMarksGeneration: keepMarksGeneration)
+                if activeResponseTurnIdentifier == turnIdentifier {
+                    activeResponseTurnIdentifier = nil
+                }
+                print(turnMetrics.makeConsoleSummaryLine())
+                ClickyTurnMetricsLog.recordInBackground(turnMetrics)
+            }
+
+            // The changes the answer is about, for the history line (read before it is carried out).
+            let changesTheAnswerIsAbout = fileEditingController.pendingChanges
+            let changeAnswer: ClickyChangeAnswer?
+            switch decision {
+            case .applyPendingChanges:
+                changeAnswer = await fileEditingController.applyPendingChanges()
+            case .discardPendingChanges:
+                changeAnswer = fileEditingController.discardPendingChanges()
+            case .tellThatTheChangeExpired:
+                changeAnswer = fileEditingController.answerThatTheChangeExpired()
+            case .undoLastAppliedChanges, .tellThatThereIsNothingToUndo:
+                changeAnswer = await fileEditingController.undoLastAppliedChanges()
+            case .normalTurn:
+                changeAnswer = nil
+            }
+            guard !Task.isCancelled, let changeAnswer else { return }
+
+            turnMetrics.changeOutcome = changeAnswer.metricsOutcome
+            let answerSentence = changeAnswer.sentence
+
+            // The model's history gets the sentence and one short line about what happened, so the
+            // next turn knows. The chat's display text is the sentence alone.
+            var historyText = answerSentence
+            switch changeAnswer {
+            case .applied:
+                historyText += "\n" + ClickyChangeHistoryText.appliedHistoryLine(for: changesTheAnswerIsAbout)
+            case .discarded, .refusedBecauseFileChanged, .expired:
+                historyText += "\n" + ClickyChangeHistoryText.discardedHistoryLine(for: changesTheAnswerIsAbout)
+            case .refusedBecauseOfUnsavedEdits, .failedToApply, .undone, .undoExpired, .undoRefusedBecauseFileChanged, .undoFailed, .nothingToUndo:
+                break
+            }
+            let screenOfLastExchange = conversationHistory.last?.screenOfExchange
+            conversationHistory.append((
+                userTranscript: transcript,
+                assistantResponse: historyText,
+                screenOfExchange: screenOfLastExchange
+            ))
+            if conversationHistory.count > ClickyConversationHistoryLoader.maximumConversationHistoryExchangeCount {
+                conversationHistory.removeFirst(conversationHistory.count - ClickyConversationHistoryLoader.maximumConversationHistoryExchangeCount)
+            }
+            exchangeWasHandedToChat = true
+            chatSession.recordExchange(
+                userText: transcript,
+                inputMode: inputMode,
+                replyDisplayText: answerSentence,
+                replyHistoryText: historyText,
+                messageStartedAt: messageStartedAtDate,
+                projectForNewChat: ClickyChatProject.unknown,
+                screenOfExchange: screenOfLastExchange
+            )
+            chatPanelViewModel.finishPendingExchange(turnIdentifier: turnIdentifier)
+            memoryCompactionController.exchangeWasRecorded(startedANewChat: messageStartsNewChat)
+
+            // Said out loud only when the reply to this kind of turn is (voice turns, by default).
+            // A voice failure here is silent: the sentence is already in the panel.
+            if shouldSpeakThisAnswer {
+                do {
+                    try await elevenLabsTTSClient.speakText(answerSentence)
+                } catch {
+                    if !Task.isCancelled {
+                        print("⚠️ ElevenLabs TTS error while answering a change: \(error)")
+                    }
+                }
+            }
+            if !Task.isCancelled {
+                voiceState = .idle
+                scheduleTransientHideIfNeeded()
             }
         }
     }

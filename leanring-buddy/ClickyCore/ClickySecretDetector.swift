@@ -146,6 +146,22 @@ nonisolated enum ClickySecretDetector {
         return secretKeywordRules.contains { keywordIsFollowedBySecretValue($0, in: text) }
     }
 
+    /// The shape rules alone, for the text of a file (round 17). The keyword-plus-value rules
+    /// (`secretKeywordRules`) were tuned for spoken sentences and would flag ordinary source lines
+    /// such as `let appTokenHeaderName = "X-Clicky-App-Token"`, so they are left out here. What is
+    /// left is what a credential looks like whatever the wording around it: provider key shapes,
+    /// JWTs, private key blocks, long hex or base64 tokens, Luhn-valid card numbers and IBANs.
+    /// `textLooksLikeASecret` is unchanged and still runs these same shape rules first.
+    static func textHoldsCredentialShape(_ text: String) -> Bool {
+        for secretShapePattern in alwaysSecretShapePatterns where containsMatch(of: secretShapePattern, in: text) {
+            return true
+        }
+        for secretShapePattern in caseSensitiveSecretShapePatterns where containsMatch(of: secretShapePattern, in: text, isCaseSensitive: true) {
+            return true
+        }
+        return containsIBANShape(in: text) || containsLuhnValidCardNumber(in: text)
+    }
+
     /// A card number has a known first digit and a Luhn checksum. Requiring both keeps long numbers
     /// that are not cards (a timestamp, an order or employee id) from being refused, while a real
     /// card number is still caught, with or without spaces or dashes.

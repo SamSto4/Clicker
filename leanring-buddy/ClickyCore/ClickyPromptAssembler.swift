@@ -18,6 +18,14 @@ nonisolated struct ClickyTurnContext {
     /// (a new chat, or cleared after ten quiet minutes) or when that exchange has no recorded
     /// screen (a continued chat from before screens were recorded). With nil, no note is added.
     var screenOfLastExchange: ClickyScreenDescription? = nil
+    /// The folders the user lets Clicky edit (round 17). Empty means the feature is off: no
+    /// "files you may change" section, and the request carries no tools.
+    var editableFolders: [ClickyEditableFolderDescription] = []
+    /// The document of the frontmost window, when it lies inside one of those folders.
+    var frontmostDocumentInEditableFolder: ClickyFrontmostDocumentDescription? = nil
+    /// The changes proposed earlier that still wait for the user's answer, as
+    /// `ClickyChangeHistoryText.changeDescription` writes them. Empty when none waits.
+    var pendingChangeDescriptions: [String] = []
 
     /// The screen of this turn, worked out the same way for the prompt, for the comparison with
     /// the last exchange and for the record kept with this turn's exchange.
@@ -206,6 +214,17 @@ nonisolated enum ClickyPromptAssembler {
             sectionTexts.append(memoriesSectionText)
         }
 
+        // After the profile and the memories, before the notes: the folders Clicky may change and
+        // the rules for changing them. Absent when no folder is set.
+        if let filesSectionText = ClickyFileEditingPromptSection.sectionText(for: context.editableFolders) {
+            sectionTexts.append(filesSectionText)
+            // A change proposed earlier that still waits: the model is told, so it knows the file
+            // does not hold it yet and that a new proposal replaces it.
+            if let pendingChangesText = ClickyFileEditingPromptSection.pendingChangesText(for: context.pendingChangeDescriptions) {
+                sectionTexts.append(pendingChangesText)
+            }
+        }
+
         if !includedNotes.isEmpty {
             sectionTexts.append(notesSectionText(for: includedNotes))
         }
@@ -233,6 +252,10 @@ nonisolated enum ClickyPromptAssembler {
         // is cleaned and quoted. Left out when the app has no title or it could not be read.
         if let cleanedWindowTitle = ClickyWindowTitleText.cleanedWindowTitle(from: context.frontmostWindowTitle) {
             rightNowLineTexts.append("- the frontmost window is titled \(ClickyWindowTitleText.quoted(cleanedWindowTitle)).")
+        }
+        // Round 17: the open document, when it is inside a folder Clicky may edit.
+        if let frontmostDocumentLine = ClickyFileEditingPromptSection.frontmostDocumentLine(for: context.frontmostDocumentInEditableFolder) {
+            rightNowLineTexts.append(frontmostDocumentLine)
         }
         rightNowLineTexts.append("- the user has \(screenCountDescription).")
         return rightNowLineTexts.joined(separator: "\n")

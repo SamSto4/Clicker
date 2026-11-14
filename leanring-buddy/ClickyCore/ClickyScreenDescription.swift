@@ -60,6 +60,15 @@ nonisolated enum ClickyWindowTitleText {
         return cleanedTitle.isEmpty ? nil : cleanedTitle
     }
 
+    /// Whether a raw title carries one of the edited markers above (round 17: a file open in an
+    /// editor with unsaved changes). It reads the same markers `cleanedWindowTitle` drops, so the two
+    /// can never disagree about what counts as a marker.
+    static func titleCarriesEditedMarker(_ rawWindowTitle: String?) -> Bool {
+        guard let rawWindowTitle else { return false }
+        let titleBeforeDroppingMarkers = singleLineWithoutBracketsOrDoubleQuotes(rawWindowTitle)
+        return droppingEditedMarkers(from: titleBeforeDroppingMarkers) != titleBeforeDroppingMarkers
+    }
+
     /// An app name gets the same cleaning, without the edited markers.
     static func cleanedApplicationName(from rawApplicationName: String?) -> String? {
         guard let rawApplicationName else { return nil }
