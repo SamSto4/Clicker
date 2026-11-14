@@ -62,6 +62,9 @@ struct ClickyChangeCardState: Equatable {
     /// False once another ordinary turn has started: a spoken or typed yes or no then goes to the
     /// model (see `ClickyFileChangeLedger`), so the card stops offering it. Return and the buttons stay.
     var acceptsSpokenAnswer = true
+    /// One line per action of the set after it was confirmed (round 18): `ran shortcut "x".`,
+    /// `that shortcut failed.`, `opened github.com/x.`
+    var actionResultLines: [String] = []
 }
 
 /// One folder of the settings tab's "files" section.
@@ -95,6 +98,10 @@ final class ClickyChatPanelViewModel: ObservableObject {
     /// A progress note of the model while it works with files (round 17), shown small and grey. Not
     /// the reply: it is never spoken and never saved in the chat.
     @Published private(set) var workingNoteText: String?
+    /// A line saying a timer has ended (round 18), shown under the messages of the chat tab for a
+    /// while. It is not part of any chat and is never saved.
+    @Published private(set) var timerAlertText: String?
+    private var timerAlertClearTask: Task<Void, Never>?
     /// A short text error for a typed turn that failed ("i can't reach the internet right now.").
     /// Shown below the messages until the next message is sent.
     @Published private(set) var turnErrorText: String?
@@ -648,6 +655,19 @@ final class ClickyChatPanelViewModel: ObservableObject {
         openPermissionSettingsHandler?(permissionKind)
     }
 
+    // MARK: - The timer alert line (round 18)
+
+    /// "your pasta timer is done.", under the messages, for 30 seconds or until the next alert.
+    func showTimerAlertLine(_ alertText: String) {
+        timerAlertClearTask?.cancel()
+        timerAlertText = alertText
+        timerAlertClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.timerAlertText = nil
+        }
+    }
+
     // MARK: - The change card (round 17)
 
     var isChangeCardAwaitingAnswer: Bool {
@@ -685,10 +705,26 @@ final class ClickyChatPanelViewModel: ObservableObject {
         changeCard = card
     }
 
-    func showChangeCardApplied() {
+    func showChangeCardApplied(actionResultLines: [String] = []) {
         guard var card = changeCard else { return }
         card.phase = .applied
         card.lineText = ClickyChangeSpokenSentences.applied
+        card.actionResultLines = actionResultLines
+        changeCard = card
+    }
+
+    /// The waiting set lost part of itself (a folder was removed, or actions were switched off) but
+    /// still waits: the card shows what is left. The phase and the time it appeared stay as they are.
+    func refreshPendingChangeCard(content: ClickyChangeCardContent) {
+        guard var card = changeCard, card.phase == .awaitingAnswer else { return }
+        card = ClickyChangeCardState(
+            setIdentifier: card.setIdentifier,
+            content: content,
+            phase: card.phase,
+            lineText: card.lineText,
+            acceptsSpokenAnswer: card.acceptsSpokenAnswer,
+            actionResultLines: []
+        )
         changeCard = card
     }
 

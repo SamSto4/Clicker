@@ -39,6 +39,18 @@ struct ClickyChatChangeCardView: View {
                         .font(.system(size: DS.ChatPanel.rowDetailFontSizeInPoints))
                         .foregroundColor(DS.Colors.chatPanelTertiaryText)
                 }
+                // Round 18: a link or a shortcut that waits for the same yes.
+                ForEach(Array(card.content.actionRows.enumerated()), id: \.offset) { _, actionRow in
+                    actionRowView(actionRow)
+                }
+                if card.phase == .applied {
+                    ForEach(Array(card.actionResultLines.enumerated()), id: \.offset) { _, resultLine in
+                        Text(resultLine)
+                            .font(.system(size: DS.ChatPanel.rowDetailFontSizeInPoints))
+                            .foregroundColor(DS.Colors.chatPanelSecondaryText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }
 
             footerRow
@@ -70,7 +82,7 @@ struct ClickyChatChangeCardView: View {
 
     private var headerText: String? {
         switch card.phase {
-        case .awaitingAnswer: return card.content.sections.count == 1 ? "change ready" : "\(card.content.sections.count) changes ready"
+        case .awaitingAnswer: return card.content.itemCount == 1 ? "change ready" : "\(card.content.itemCount) changes ready"
         case .applying: return "applying…"
         case .applied: return "applied"
         case .leftAlone: return "left alone"
@@ -191,6 +203,47 @@ struct ClickyChatChangeCardView: View {
                 .clipShape(RoundedRectangle(cornerRadius: DS.ChatPanel.diffCornerRadiusInPoints, style: .continuous))
             }
         }
+    }
+
+    // MARK: - One waiting action (round 18)
+
+    /// "run shortcut" and the shortcut's name, or "open link" and the whole address in monospaced
+    /// text that wraps, so the user sees exactly where a link goes before saying yes.
+    private func actionRowView(_ actionRow: ClickyChangeCardActionRow) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(actionRow.actionTitle)
+                    .font(.system(size: DS.ChatPanel.sectionTitleFontSizeInPoints, weight: .semibold))
+                    .tracking(0.4)
+                    .foregroundColor(DS.Colors.chatPanelTertiaryText)
+                if !actionRow.detailIsMonospaced {
+                    Text(actionRow.detailText)
+                        .font(.system(size: DS.ChatPanel.rowTitleFontSizeInPoints, weight: .medium))
+                        .foregroundColor(DS.Colors.chatPanelPrimaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let noteText = actionRow.noteText {
+                    Text(noteText)
+                        .font(.system(size: DS.ChatPanel.rowDetailFontSizeInPoints))
+                        .foregroundColor(DS.Colors.chatPanelPermissionMissingText)
+                }
+                Spacer(minLength: 0)
+            }
+            if actionRow.detailIsMonospaced {
+                Text(actionRow.detailText)
+                    .font(.system(size: DS.ChatPanel.diffFontSizeInPoints, design: .monospaced))
+                    .foregroundColor(DS.Colors.chatPanelPrimaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, DS.ChatPanel.diffLineHorizontalPaddingInPoints)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: DS.ChatPanel.diffCornerRadiusInPoints, style: .continuous)
+                            .fill(DS.Colors.chatPanelChoiceTrackBackground)
+                    )
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private func diffLineView(_ diffLine: ClickyDiffLine) -> some View {

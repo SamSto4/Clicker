@@ -113,6 +113,12 @@ nonisolated enum ClickyPanelSettingsDefaults {
     static let isSpeakingRepliesEnabledKey = "isSpeakingRepliesEnabled"
     static let isSpeakingTypedRepliesEnabledKey = "isSpeakingTypedRepliesEnabled"
     static let drawingLifetimeScaleKey = "drawingLifetimeScale"
+    // Round 18 (Jarvis actions).
+    static let isActionsEnabledKey = "isActionsEnabled"
+    static let isFollowUpListeningEnabledKey = "isFollowUpListeningEnabled"
+    static let personaAssistantNameKey = "personaAssistantName"
+    static let personaStyleKey = "personaStyle"
+    static let personaUserAddressKey = "personaUserAddress"
 
     static let defaultModelIdentifier = ClickyPanelModelOption.sonnet.modelIdentifier
     static let defaultIsClickyCursorEnabled = true
@@ -123,6 +129,12 @@ nonisolated enum ClickyPanelSettingsDefaults {
     /// Typed replies are only read, as they always were.
     static let defaultIsSpeakingTypedRepliesEnabled = false
     static let defaultDrawingLifetimeChoice = ClickyDrawingLifetimeChoice.normal
+    /// Actions are on out of the box: Clicky opens apps, links and files, sets timers and reminders,
+    /// and runs shortcuts when asked (the risky ones wait for a yes).
+    static let defaultIsActionsEnabled = true
+    /// After a spoken reply Clicky listens a few seconds for a follow-up.
+    static let defaultIsFollowUpListeningEnabled = true
+    static let defaultPersonaStyle = ClickyPersonaStyle.friendly
 
     /// A stored true or false, or `defaultValue` when nothing (or something else) is stored.
     static func isEnabled(storedValue: Any?, defaultValue: Bool) -> Bool {
@@ -137,6 +149,23 @@ nonisolated enum ClickyPanelSettingsDefaults {
             return defaultModelIdentifier
         }
         return ClickyPanelModelOption.replacedModelIdentifiers[storedModelIdentifier] ?? storedModelIdentifier
+    }
+
+    /// The stored persona style word. A missing or unknown value is "friendly" (today's behaviour).
+    static func personaStyle(storedValue: Any?) -> ClickyPersonaStyle {
+        guard let storedWord = storedValue as? String,
+              let storedStyle = ClickyPersonaStyle(rawValue: storedWord) else {
+            return defaultPersonaStyle
+        }
+        return storedStyle
+    }
+
+    /// A stored name or form of address, cleaned. Anything that is not text is empty.
+    static func personaText(storedValue: Any?) -> String {
+        guard let storedText = storedValue as? String else {
+            return ""
+        }
+        return ClickyPersona.cleanedName(storedText)
     }
 
     /// The stored word ("short", "normal" or "long"). A missing or unknown value is "normal".
@@ -158,6 +187,18 @@ nonisolated struct ClickyPanelSettingsSnapshot: Equatable, Sendable {
     var isSpeakingRepliesEnabled: Bool
     var isSpeakingTypedRepliesEnabled: Bool
     var drawingLifetimeChoice: ClickyDrawingLifetimeChoice
+    // Round 18. They come last and carry their defaults, so every older way of making a snapshot
+    // keeps working.
+    var isActionsEnabled: Bool = ClickyPanelSettingsDefaults.defaultIsActionsEnabled
+    var isFollowUpListeningEnabled: Bool = ClickyPanelSettingsDefaults.defaultIsFollowUpListeningEnabled
+    var personaAssistantName: String = ""
+    var personaStyle: ClickyPersonaStyle = ClickyPanelSettingsDefaults.defaultPersonaStyle
+    var personaUserAddress: String = ""
+
+    /// The persona the three persona settings make.
+    var persona: ClickyPersona {
+        ClickyPersona(assistantName: personaAssistantName, style: personaStyle, userAddress: personaUserAddress)
+    }
 
     /// What every setting is when nothing has been stored.
     static let defaults = ClickyPanelSettingsSnapshot(
@@ -187,6 +228,16 @@ nonisolated struct ClickyPanelSettingsSnapshot: Equatable, Sendable {
             changedSnapshot.isSpeakingTypedRepliesEnabled = isEnabled
         case .drawingLifetime(let drawingLifetimeChoice):
             changedSnapshot.drawingLifetimeChoice = drawingLifetimeChoice
+        case .actionsEnabled(let isEnabled):
+            changedSnapshot.isActionsEnabled = isEnabled
+        case .followUpListeningEnabled(let isEnabled):
+            changedSnapshot.isFollowUpListeningEnabled = isEnabled
+        case .personaAssistantName(let name):
+            changedSnapshot.personaAssistantName = ClickyPersona.cleanedName(name)
+        case .personaStyle(let style):
+            changedSnapshot.personaStyle = style
+        case .personaUserAddress(let address):
+            changedSnapshot.personaUserAddress = ClickyPersona.cleanedName(address)
         }
         return changedSnapshot
     }
@@ -202,6 +253,11 @@ nonisolated enum ClickyPanelSettingChange: Equatable, Sendable {
     case speakingRepliesEnabled(Bool)
     case speakingTypedRepliesEnabled(Bool)
     case drawingLifetime(ClickyDrawingLifetimeChoice)
+    case actionsEnabled(Bool)
+    case followUpListeningEnabled(Bool)
+    case personaAssistantName(String)
+    case personaStyle(ClickyPersonaStyle)
+    case personaUserAddress(String)
 }
 
 // MARK: - Whether a reply is spoken
@@ -264,12 +320,13 @@ nonisolated enum ClickyShortcutCheatSheet {
 
 // MARK: - Permissions
 
-/// The four permissions the settings tab shows.
+/// The permissions the settings tab shows (the four of round 15, and reminders since round 18).
 nonisolated enum ClickyPermissionKind: String, CaseIterable, Equatable, Sendable {
     case microphone
     case speechRecognition
     case screenRecording
     case accessibility
+    case reminders
 
     var title: String {
         switch self {
@@ -277,6 +334,7 @@ nonisolated enum ClickyPermissionKind: String, CaseIterable, Equatable, Sendable
         case .speechRecognition: return "speech recognition"
         case .screenRecording: return "screen recording"
         case .accessibility: return "accessibility"
+        case .reminders: return "reminders"
         }
     }
 
@@ -286,6 +344,7 @@ nonisolated enum ClickyPermissionKind: String, CaseIterable, Equatable, Sendable
         case .speechRecognition: return "waveform"
         case .screenRecording: return "rectangle.dashed.badge.record"
         case .accessibility: return "hand.raised"
+        case .reminders: return "checklist"
         }
     }
 
@@ -296,6 +355,7 @@ nonisolated enum ClickyPermissionKind: String, CaseIterable, Equatable, Sendable
         case .speechRecognition: return "turn what you say into words, on this mac"
         case .screenRecording: return "see your screen when you ask"
         case .accessibility: return "read shortcuts and paste dictated words"
+        case .reminders: return "add and read reminders when you ask"
         }
     }
 }

@@ -285,24 +285,26 @@ class ClaudeAPI {
         case toolUseStarted(toolName: String, requestNumber: Int)
     }
 
-    /// The same streaming chat request as `analyzeImageStreaming`, with the file tools added and the
-    /// loop that answers the model's tool calls (`ClickyToolLoop`) around it. Each request carries
-    /// the same two system blocks and the same tools; only messages are added at the end. The
-    /// session runs the tools and keeps the changes the model proposed.
-    func analyzeImageStreamingWithFileTools(
+    /// The same streaming chat request as `analyzeImageStreaming`, with the tools of this turn added
+    /// (the file tools when a folder is set, the action tools while actions are on; round 18 made
+    /// this one function for both) and the loop that answers the model's tool calls
+    /// (`ClickyToolLoop`) around it. Each request carries the same two system blocks and the same
+    /// tools; only messages are added at the end. The session runs the tools and keeps the changes
+    /// and actions the model proposed.
+    func analyzeImageStreamingWithTools(
         images: [(data: Data, label: String)],
         staticSystemPrompt: String,
         dynamicSystemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
-        toolSession: ClickyFileToolTurnSession,
+        toolSession: ClickyTurnToolSession,
         onProgress: @MainActor @Sendable (ToolLoopProgress) -> Void
     ) async throws -> ClickyToolLoopResult {
         let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(
             staticText: staticSystemPrompt,
             dynamicText: dynamicSystemPrompt
         )
-        let tools = ClickyFileToolDefinitions.toolsArray()
+        let tools = toolSession.toolsArray()
         let baseMessages = ClickyClaudeChatRequestBuilder.messages(
             conversationHistory: conversationHistory,
             currentUserContentBlocks: ClickyClaudeChatRequestBuilder.currentUserContentBlocks(images: images, userPrompt: userPrompt)
@@ -319,9 +321,11 @@ class ClaudeAPI {
                 )
             },
             executeToolCall: { toolName, toolInput in
-                // The file work (reading, listing, checking a proposal) runs off the main thread.
+                // The file work (reading, listing, checking a proposal) and the waiting for the
+                // system (launching an app, EventKit) run off the main thread; the executor hops to
+                // the main actor only for what needs it.
                 await Task.detached(priority: .userInitiated) {
-                    toolSession.execute(toolName: toolName, input: toolInput)
+                    await toolSession.execute(toolName: toolName, input: toolInput)
                 }.value
             },
             sendRequest: { requestBody, requestNumber in
@@ -348,7 +352,7 @@ class ClaudeAPI {
         let bodyData = try JSONSerialization.data(withJSONObject: requestBody)
         request.httpBody = bodyData
         let payloadMB = Double(bodyData.count) / 1_048_576.0
-        print("🌐 Claude streaming request \(requestNumber) (file tools): \(String(format: "%.1f", payloadMB))MB, \(imageCount) image(s)")
+        print("🌐 Claude streaming request \(requestNumber) (tools): \(String(format: "%.1f", payloadMB))MB, \(imageCount) image(s)")
 
         let (byteStream, response) = try await session.bytes(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {

@@ -211,6 +211,10 @@ private enum BuddyDictationStartSource {
     /// speech recogniser with the other sources, but its transcript goes to the dictation
     /// controller and never to the chat pipeline.
     case textInsertionDictation
+    /// Round 18: the follow-up window after a spoken reply. The same microphone and recogniser as a
+    /// key press, and the transcript goes to the chat pipeline as a spoken turn, but the end of
+    /// the words is decided by `ClickyFollowUpListeningStateMachine`, not by a key release.
+    case followUpListening
 }
 
 /// How a dictation into another app's text field ended. Delivered exactly once per session, unless
@@ -345,6 +349,32 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty
         )
+    }
+
+    /// Starts the follow-up window's capture (round 18). It behaves like a key press that nobody is
+    /// holding: it counts as the keyboard-shortcut session for the cursor and the status pill, so the
+    /// waveform and "listening" show as for a press. `submitTranscript` is called once, with the
+    /// final transcript, after `stopFollowUpListening`, and not at all when nothing was heard.
+    func startFollowUpListening(submitTranscript: @escaping (String) -> Void) async {
+        await startPushToTalk(
+            startSource: .followUpListening,
+            currentDraftText: "",
+            updateDraftText: { _ in },
+            submitDraftText: submitTranscript,
+            shouldAutomaticallySubmitFinalDraftOnStop: true
+        )
+    }
+
+    /// The user finished speaking: stop the microphone and take the final transcript, exactly as a
+    /// key release does.
+    func stopFollowUpListening() {
+        stopPushToTalk(expectedStartSource: .followUpListening)
+    }
+
+    /// True from the start of a follow-up capture until its transcript has been delivered or it was
+    /// cancelled (the final transcript wait included).
+    var isFollowUpListeningInProgress: Bool {
+        activeStartSource == .followUpListening
     }
 
     func stopPersistentDictationFromMicrophoneButton() {
@@ -486,9 +516,9 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         hasFinishedCurrentDictationSession = false
         isFinalizingTranscript = false
         isRecordingFromMicrophoneButton = startSource == .microphoneButton
-        isRecordingFromKeyboardShortcut = startSource == .keyboardShortcut
+        isRecordingFromKeyboardShortcut = startSource == .keyboardShortcut || startSource == .followUpListening
         isRecordingForTextInsertion = startSource == .textInsertionDictation
-        isKeyboardShortcutSessionActiveOrFinalizing = startSource == .keyboardShortcut
+        isKeyboardShortcutSessionActiveOrFinalizing = startSource == .keyboardShortcut || startSource == .followUpListening
         currentAudioPowerLevel = 0
         recordedAudioPowerHistory = Array(
             repeating: Self.recordedAudioPowerHistoryBaselineLevel,
@@ -630,6 +660,21 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         if activeStartSource == .textInsertionDictation {
             finishTextInsertionDictationAfterRecognitionError(error)
+            return
+        }
+
+        // The follow-up window (round 18) is allowed to hear nothing: Apple Speech reports an error
+        // when it hears no speech, which must neither show a message nor leave the window open. Words
+        // that were recognised before the error are the user's follow-up; with none, the window
+        // ends silently. Only the error's domain and code are printed.
+        if activeStartSource == .followUpListening {
+            let errorDetails = error as NSError
+            print("🎙️ Buddy dictation: the follow-up window's recogniser ended (\(errorDetails.domain) \(errorDetails.code))")
+            if latestRecognizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                cancelCurrentDictation(preserveDraftText: false)
+            } else {
+                finishCurrentDictationSessionIfNeeded(shouldSubmitFinalDraft: true)
+            }
             return
         }
 

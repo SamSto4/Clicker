@@ -96,6 +96,16 @@ nonisolated struct ClickyTurnMetrics: Equatable {
     var roundTripCacheReadTokens: [Int]?
     var roundTripMilliseconds: [Int]?
 
+    // Round 18 (Jarvis actions), a count, an array of an enum of fixed identifiers and a flag. There is
+    // deliberately no field that could hold an app name, link, search words, path, timer label,
+    // reminder title or shortcut name.
+    /// Action tool calls made in this turn, including refused and failed ones.
+    var actionToolCallCount: Int?
+    /// One entry per action that happened or was queued, in order.
+    var actionKinds: [ClickyActionKind]?
+    /// True when the user's words came from the follow-up listening window, not a key press or typing.
+    var startedByFollowUpListening = false
+
     var spokenReplyCharacterCount: Int?
     var skillCount: Int?
     var noteCount: Int?
@@ -187,6 +197,9 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         if let roundTripInputTokens { jsonObject["roundTripInputTokens"] = roundTripInputTokens }
         if let roundTripCacheReadTokens { jsonObject["roundTripCacheReadTokens"] = roundTripCacheReadTokens }
         if let roundTripMilliseconds { jsonObject["roundTripMs"] = roundTripMilliseconds }
+        if let actionToolCallCount { jsonObject["actionToolCalls"] = actionToolCallCount }
+        if let actionKinds { jsonObject["actionKinds"] = actionKinds.map(\.rawValue) }
+        if startedByFollowUpListening { jsonObject["startedByFollowUpListening"] = true }
 
         if let spokenReplyCharacterCount { jsonObject["spokenReplyCharacterCount"] = spokenReplyCharacterCount }
         if let skillCount { jsonObject["skillCount"] = skillCount }
@@ -243,6 +256,13 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         }
         if let changeOutcome {
             summaryLine += " | change \(changeOutcome.rawValue)"
+        }
+        if let actionToolCallCount {
+            // Counts and fixed identifiers only, never a name, link or label.
+            summaryLine += " | actions: \(actionToolCallCount) calls, kinds \((actionKinds ?? []).map(\.rawValue).joined(separator: "/"))"
+        }
+        if startedByFollowUpListening {
+            summaryLine += " | follow-up"
         }
         return summaryLine
     }

@@ -26,6 +26,9 @@ nonisolated struct ClickyAppliedChangeRecord: Equatable {
     let appliedAt: Date
     let backupDirectoryURL: URL
     let entries: [ClickyAppliedFileEntry]
+    /// Round 18: the set also held a shortcut that ran, which "undo that" cannot take back. Set by
+    /// the app after the actions ran; the applier itself never sets it.
+    var heldAShortcutThatCannotBeUndone = false
 
     func isUndoAvailable(at moment: Date) -> Bool {
         moment < appliedAt.addingTimeInterval(ClickyFileEditingLimits.undoLifetimeSeconds)

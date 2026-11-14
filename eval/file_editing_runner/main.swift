@@ -15,7 +15,13 @@
 //
 // Build and run (from the repo root):
 //   swiftc -O -o /tmp/file_editing_runner eval/file_editing_runner/main.swift leanring-buddy/ClickyCore/*.swift
-//   /tmp/file_editing_runner leanring-buddy/ClickyPrompts eval/fixtures eval/scenarios/files.json <results.json> [--runs N] [--only id,id]
+//   /tmp/file_editing_runner leanring-buddy/ClickyPrompts eval/fixtures eval/scenarios/files.json <results.json> [--runs N] [--only id,id] [--with-actions]
+//
+// `--with-actions` (round 18) runs the same scenarios with the ten action tools next to the file tools
+// and the actions paragraph and time line in the prompt, as the app sends them when the "actions"
+// setting is on and a folder is set. The action tools run against a FAKE executor (nothing is opened,
+// launched, created or run). It is a regression check: the file editing results must not get worse
+// with the action tools present, and no action tool should be used in these scenarios.
 //
 // The Worker address and app token are read from the git-ignored
 // leanring-buddy/ClickyWorkerSecrets.plist with PlistBuddy at run time; the token is never printed.
@@ -26,7 +32,7 @@ import Foundation
 
 let commandLineArguments = CommandLine.arguments
 guard commandLineArguments.count >= 5 else {
-    print("usage: file_editing_runner <promptsDirectory> <fixturesDirectory> <scenarios.json> <results.json> [--runs N] [--only id,id]")
+    print("usage: file_editing_runner <promptsDirectory> <fixturesDirectory> <scenarios.json> <results.json> [--runs N] [--only id,id] [--with-actions]")
     exit(2)
 }
 let promptsDirectoryURL = URL(fileURLWithPath: commandLineArguments[1], isDirectory: true)
@@ -35,6 +41,7 @@ let scenariosFileURL = URL(fileURLWithPath: commandLineArguments[3])
 let resultsFileURL = URL(fileURLWithPath: commandLineArguments[4])
 var runCountPerScenario = 1
 var onlyScenarioIdentifiers: Set<String>? = nil
+let runsWithActionTools = commandLineArguments.contains("--with-actions")
 var argumentIndex = 5
 while argumentIndex < commandLineArguments.count {
     if commandLineArguments[argumentIndex] == "--runs", argumentIndex + 1 < commandLineArguments.count {
@@ -72,6 +79,41 @@ let workerAppToken = readWorkerSecretsValue("WorkerAppToken")
 guard !workerBaseURLText.isEmpty, !workerAppToken.isEmpty, let workerChatURL = URL(string: workerBaseURLText + "/chat") else {
     print("WorkerBaseURL or WorkerAppToken is missing in ClickyWorkerSecrets.plist")
     exit(2)
+}
+
+// MARK: - The fake executor for `--with-actions`
+
+/// Records every call and answers from a tiny canned world. It never opens, launches, creates or runs
+/// anything. Only used with `--with-actions`.
+final class FakeActionExecutor: ClickyActionExecutor, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedCalls: [String] = []
+    private var board = ClickyTimerBoard()
+    var calls: [String] { lock.withLock { recordedCalls } }
+    private func record(_ text: String) { lock.withLock { recordedCalls.append(text) } }
+
+    func installedApplications() async -> [ClickyInstalledApplication] {
+        ["Safari", "Google Chrome", "Visual Studio Code", "Xcode", "Notes", "Spotify", "Slack", "System Settings"]
+            .map { ClickyInstalledApplication(displayName: $0, path: "/Applications/\($0).app") }
+    }
+    func launchApplication(_ application: ClickyInstalledApplication) async -> Bool { record("launchApplication"); return true }
+    func openLink(_ url: URL) async -> Bool { record("openLink"); return true }
+    func frontmostApplicationBundleIdentifier() async -> String? { "com.microsoft.VSCode" }
+    func defaultApplicationBundleIdentifier(forFileAt fileURL: URL) async -> String? { "com.apple.dt.Xcode" }
+    func perform(_ plan: ClickyOpenFilePlan, onFileAt fileURL: URL) async -> Bool { record("openFile"); return true }
+    func startTimer(durationSeconds: Int, rawLabel: String?) async -> ClickyTimerStartOutcome {
+        record("startTimer")
+        return lock.withLock { board.start(durationSeconds: durationSeconds, rawLabel: rawLabel, at: Date()) }
+    }
+    func cancelTimer(reference: String) async -> ClickyTimerCancelOutcome {
+        record("cancelTimer")
+        return lock.withLock { board.cancel(reference: reference) }
+    }
+    func createReminder(_ request: ClickyReminderRequest) async -> ClickyReminderCreateOutcome { record("createReminder"); return .created(identifier: "eval") }
+    func removeReminder(withIdentifier identifier: String) async -> Bool { record("removeReminder"); return true }
+    func listReminders(range: ClickyReminderRange) async -> ClickyReminderListOutcome { record("listReminders"); return .reminders([]) }
+    func listShortcutNames() async -> ClickyShortcutListOutcome { record("listShortcuts"); return .names(["morning routine", "focus mode", "send eta"]) }
+    func runShortcut(named name: String) async -> Bool { record("runShortcut"); return true }
 }
 
 // MARK: - Scenarios
@@ -280,6 +322,8 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
     }
     turnContext.frontmostDocumentInEditableFolder = ClickyFileEditingPromptSection.frontmostDocumentDescription(documentPath: frontmostDocumentPath, policy: pathPolicy)
     turnContext.pendingChangeDescriptions = scenario.pendingChangeDescriptions
+    turnContext.actionsAreEnabled = runsWithActionTools
+    turnContext.timeZone = TimeZone(identifier: "Europe/Amsterdam")!
     let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
         for: turnContext,
         promptsDirectoryURL: promptsDirectoryURL,
@@ -294,12 +338,19 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
     }
     let screenLabel = "user's screen (cursor is here) (image dimensions: 1280x800 pixels; center is at 640,400)"
     let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(staticText: preparedPrompt.staticSystemPromptText, dynamicText: preparedPrompt.dynamicSystemPromptText)
-    let tools = ClickyFileToolDefinitions.toolsArray()
+    let fileToolSession = ClickyFileToolTurnSession(policy: pathPolicy)
+    let fakeActionExecutor = FakeActionExecutor()
+    let actionToolSession: ClickyActionToolTurnSession? = runsWithActionTools
+        ? ClickyActionToolTurnSession(executor: fakeActionExecutor, pathPolicy: pathPolicy, currentDate: { Date() }, timeZone: TimeZone(identifier: "Europe/Amsterdam")!)
+        : nil
+    let combinedToolSession = ClickyTurnToolSession(fileSession: fileToolSession, actionSession: actionToolSession)
+    // Without `--with-actions` the request is exactly round 17's (the file tools alone).
+    let tools = runsWithActionTools ? combinedToolSession.toolsArray() : ClickyFileToolDefinitions.toolsArray()
     let baseMessages = ClickyClaudeChatRequestBuilder.messages(
         conversationHistory: scenario.history.map { (userPlaceholder: $0.user, assistantResponse: $0.assistant) },
         currentUserContentBlocks: ClickyClaudeChatRequestBuilder.currentUserContentBlocks(images: [(data: screenshotData, label: screenLabel)], userPrompt: scenario.userPrompt)
     )
-    let toolSession = ClickyFileToolTurnSession(policy: pathPolicy)
+    let toolSession = fileToolSession
     var toolCallLog: [[String: Any]] = []
     // The block types of every reply of the loop, in order ("thinking" blocks are replayed with their signature).
     var blockTypesPerRequest: [[String]] = []
@@ -313,7 +364,9 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
                 ClickyClaudeChatRequestBuilder.streamingRequestBody(model: "claude-sonnet-5-5", systemPromptValue: systemBlocks, messages: messagesSoFar, tools: tools)
             },
             executeToolCall: { toolName, toolInput in
-                let toolResult = toolSession.execute(toolName: toolName, input: toolInput)
+                let toolResult = runsWithActionTools
+                    ? await combinedToolSession.execute(toolName: toolName, input: toolInput)
+                    : toolSession.execute(toolName: toolName, input: toolInput)
                 var loggedInput = toolInput
                 for longField in ["old_text", "new_text", "content"] {
                     if let longText = loggedInput[longField] as? String, longText.count > 160 {
@@ -343,12 +396,30 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
     let rawReplyText = loopResult.replyTextToFinish
     let parsedSpokenText = ClickyReplyTagParser.parse(rawReplyText).spokenText
     let queuedChanges = toolSession.queuedChanges
-    let honestText = ClickyFileEditingHonesty.honestSpokenText(parsedSpokenText, queuedChangeCount: queuedChanges.count, usedFileTools: toolSession.toolCallCount > 0)
+    let toolCallCountOfTheTurn = runsWithActionTools ? combinedToolSession.toolCallCount : toolSession.toolCallCount
+    let honestText: String
+    if runsWithActionTools {
+        honestText = ClickyActionHonesty.honestSpokenText(parsedSpokenText, facts: ClickyActionHonestyFacts(
+            queuedFileChangeCount: queuedChanges.count,
+            queuedLinkCount: actionToolSession?.queuedActions.filter(\.isLink).count ?? 0,
+            queuedShortcutCount: actionToolSession?.queuedActions.filter(\.isShortcut).count ?? 0,
+            usedFileTools: toolSession.toolCallCount > 0,
+            anActionToolWasCalled: (actionToolSession?.toolCallCount ?? 0) > 0,
+            succeededCategories: actionToolSession?.succeededCategories ?? [],
+            fileEditingIsOn: true,
+            actionsAreOn: true
+        ))
+    } else {
+        honestText = ClickyFileEditingHonesty.honestSpokenText(parsedSpokenText, queuedChangeCount: queuedChanges.count, usedFileTools: toolSession.toolCallCount > 0)
+    }
 
     // Thinking blocks seen in any reply of the loop (they are replayed with their signature).
     record.fields["requestCount"] = loopResult.requestCount
     record.fields["toolRoundTrips"] = loopResult.toolRoundTripCount
-    record.fields["toolCallCount"] = toolSession.toolCallCount
+    record.fields["toolCallCount"] = toolCallCountOfTheTurn
+    record.fields["withActionTools"] = runsWithActionTools
+    record.fields["actionToolCallCount"] = actionToolSession?.toolCallCount ?? 0
+    record.fields["fakeExecutorCalls"] = fakeActionExecutor.calls
     record.fields["toolCalls"] = toolCallLog
     record.fields["perRequestMilliseconds"] = loopResult.requestStats.map(\.milliseconds)
     record.fields["perRequestInputTokens"] = loopResult.requestStats.map { $0.inputTokens ?? 0 }
@@ -367,8 +438,11 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
     if loopResult.endedBecauseOfRequestLimit { record.failures.append("ran out of requests") }
     if loopResult.endedBecauseTheReplyWasCutOrDeclined { record.failures.append("the reply was cut off or declined") }
     if honestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { record.failures.append("nothing to say") }
-    if let maximumToolCalls = scenario.maximumToolCalls, toolSession.toolCallCount > maximumToolCalls {
-        record.failures.append("used \(toolSession.toolCallCount) tool calls, at most \(maximumToolCalls) expected")
+    if let maximumToolCalls = scenario.maximumToolCalls, toolCallCountOfTheTurn > maximumToolCalls {
+        record.failures.append("used \(toolCallCountOfTheTurn) tool calls, at most \(maximumToolCalls) expected")
+    }
+    if (actionToolSession?.toolCallCount ?? 0) > 0 {
+        record.failures.append("called \(actionToolSession?.toolCallCount ?? 0) action tool(s) in a file editing scenario")
     }
     for forbiddenAction in scenario.forbiddenActions where queuedChanges.contains(where: { $0.action.rawValue == forbiddenAction }) {
         record.failures.append("proposed a forbidden \(forbiddenAction)")
@@ -472,6 +546,7 @@ let resultsObject: [String: Any] = [
     "totalRunCount": totalRunCount,
     "medianTurnMilliseconds": medianTurnMilliseconds,
     "estimatedDollars": totalDollars,
+    "withActionTools": runsWithActionTools,
     "records": allRecords,
 ]
 if let resultsData = try? JSONSerialization.data(withJSONObject: resultsObject, options: [.prettyPrinted, .sortedKeys]) {
