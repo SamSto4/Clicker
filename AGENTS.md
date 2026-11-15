@@ -41,8 +41,26 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | Route | Upstream | Purpose |
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
-| `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
+| `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio. Optional `voice_id` and `voice_settings.speed` (round 20, see "Voice picker: the Worker side" below) |
+| `POST /voices` | `api.elevenlabs.io/v2/voices` | The ElevenLabs account's voices for the app's voice picker (round 20) |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
+
+**Voice picker: the Worker side** (round 20; `worker/src/voices.ts`):
+- **`POST /voices`** (body `{}` or empty) lists the account's voices with `GET https://api.elevenlabs.io/v2/voices?page_size=100&include_total_count=false`, following `next_page_token` while `has_more` is true, at most 5 pages. It answers `{"voices": [{"id", "name", "category"?, "labels"?}], "defaultVoiceId": <ELEVENLABS_VOICE_ID>}`.
+  - Only those fields reach the app: never the key, never `preview_url`, `settings` or `samples`.
+  - Names, categories and labels are one line and cut to 60 characters, and labels keep only string values.
+  - A voice whose id is not 1 to 64 of `A-Z a-z 0-9 _ -` is skipped.
+  - The list is kept in the Worker instance for 10 minutes. A failure is not kept, and passes ElevenLabs' status through (502 when ElevenLabs could not be reached, 500 without the key).
+  - `/voices` is not counted by the daily cap.
+- **`POST /tts`:** a body with neither `voice_id` nor `voice_settings.speed` is forwarded byte for byte, to `ELEVENLABS_VOICE_ID`, as before. Otherwise:
+  - `voice_id` is taken out of the body, because the voice is in the URL path. A well-formed id that is the default, or is in the account's list, is used.
+  - A malformed id, or one the list does not hold, falls back to the default voice and adds the response header `X-Clicky-Voice-Fallback: 1`. The app then forgets the choice and says so in the settings tab.
+  - When the list cannot be loaded, the requested id is used as it came, with no header, so an ElevenLabs outage never clears the user's choice. A `voice_id` of null means the default.
+  - A chosen voice that ElevenLabs no longer has (a 404, or a 4xx that names `voice_not_found`; such a voice can still be in the 10-minute copy of the list) is spoken once more with the default voice, with the fallback header, and the copy of the list is dropped. Added after the round 20 tester's live check, so a deleted voice never fails a reply.
+  - `voice_settings.speed` is pulled into 0.7...1.2 and removed when it is not a number. The API reference (checked 14 Nov 2026) documents the field (default 1.0) but no range; 0.7...1.2 is the range of ElevenLabs' own slider.
+  - A body that is not a JSON object gets a 400 `{"error":{"type":"bad_request","message":"body must be a json object"}}`.
+  - The daily cap counts the `text` length before any of this.
+- **Checks:** `node worker/test/voices.check.ts` runs 61 offline checks against a fake ElevenLabs: page reading, paging, the 10-minute copy, failures, the route's shape and that it never holds the key, every `/tts` case above, and malformed ids never reaching the path.
 
 Reply tag grammar (parsed by `ClickyReplyTagParser`, case-insensitive, any order): `[POINT:x,y:label]`, `[POINT:x,y:label:screenN]`, `[POINT:none]`, `[NOTE:text]` (one line, at most 400 characters, at most three per reply) and `[PROFILE:text]` (one line, at most 200 characters, at most two per reply). Tags never reach TTS or history as tag text; history keeps `[NOTE:...]` and `[PROFILE:...]` (only for facts that were actually saved) so the model keeps the format. Draw tags (read by `ClickyDrawTagParser`, at most 8 per reply, coordinates in screenshot pixels like `[POINT]`, optional trailing `:screenN`): `[DRAW:arrow:x1,y1:x2,y2]`, `[DRAW:circle:x,y:radius]`, `[DRAW:box:x,y:width,height]`, `[DRAW:underline:x1,y1:x2,y2]`, `[DRAW:highlight:x,y:width,height]`, `[DRAW:label:x,y:text]` (cut to 40 characters), `[DRAW:sticky:x,y:text]` (cut to 120), `[DRAW:callout:x,y:text]` (a numbered tag, cut to 28), `[DRAW:erase:m3]`, `[DRAW:undo]`, `[DRAW:clear]`. Card tags (also read by `ClickyDrawTagParser`, not counted in the 8): `[CARD:title]` (cut to 48, one per reply), `[ROW:text:words]` (cut to 70), `[ROW:boxes:a|b|c -> d]` (one to five boxes, optional result), `[ROW:flow:a > b > c]` (two to five nodes), `[ROW:timeline:when=what|when=what]` (two to five points), at most 5 rows per card, each box, node or point cut to 24 characters. Scene tags (also read by `ClickyDrawTagParser`, not counted in the 8): `[SCENE:title]` (cut to 40, one per reply) and `[PART:shape:label:x,y,z:size:colour]` with an optional last `:axis` (shape `box`, `cylinder`, `sphere`, `cone`, `tube`, `capsule`; label cut to 24, may be empty; x,y,z each from -5 to 5; size `w,h,d` for a box, `radius` for a sphere, `radius,length` for the others, each from 0.05 to 6; colour one of red, orange, yellow, green, teal, blue, purple, pink, brown, gray, white, black, glass; axis `x`, `y` or `z`, default `y`), at most 12 parts per scene. `ClickyReplyTagParser` removes all of them from the spoken text (truncated fragments included); history keeps them in canonical form.
 
@@ -431,9 +449,11 @@ Worker vars: `ELEVENLABS_VOICE_ID`; optional `CLICKY_DAILY_CHAT_REQUEST_CAP` and
 | `ClickyPrompts/skill_*.md` | ~230 words each | Per-app skills (general coding, Xcode, VS Code family, terminals). Plain resource files, not compiled. |
 | `ClickyWorkerConfiguration.swift` | ~65 | Reads the Worker base URL and app token from the git-ignored `ClickyWorkerSecrets.plist` and adds the `X-Clicky-App-Token` header to Worker requests. |
 | `ClickerMemoryClient.swift` | ~150 | Long-term memory client. Talks to `memory_server.py` (K.I.T-Agent repo) on `http://127.0.0.1:8765`: fetches saved facts + a related past session for the system prompt, sends the user's own transcript to `/learn`, and saves a session summary after 10 idle minutes or on quit. Fails soft when the server isn't running. |
-| `worker/src/index.ts` | ~210 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). The app token check, then the daily spending cap for `/chat` and `/tts`. |
+| `worker/src/index.ts` | ~240 | Cloudflare Worker proxy. Four routes: `/chat` (Claude), `/tts` (ElevenLabs, with the optional voice and speed), `/voices` (the account's voices), `/transcribe-token` (AssemblyAI temp token). The app token check, then the daily spending cap for `/chat` and `/tts`. |
 | `worker/src/dailyCap.ts` | ~260 | The daily spending cap: the pure decision (600 chat requests, 60,000 speech characters per UTC day), the limits from the optional vars, the 429 answer, the Worker-side check that fails open, and the counter Durable Object `ClickyDailyCap`. No imports, so Node can run it. |
 | `worker/test/dailyCap.check.ts` | ~265 | Offline checks of the daily cap (`node worker/test/dailyCap.check.ts`): the decision, the settings, the 429 answer, the counter object against in-memory storage, the day change, failing open. |
+| `worker/src/voices.ts` | ~290 | The voice picker's Worker side (round 20): `POST /voices` (the account's voices through ElevenLabs' v2 list, paged, kept 10 minutes, only id, name, category and labels) and the `/tts` decisions (the chosen voice or the default with the fallback header, speed clamped, today's body untouched). No imports, so Node can run it. |
+| `worker/test/voices.check.ts` | ~260 | Offline checks of `voices.ts` (`node worker/test/voices.check.ts`) against a fake ElevenLabs. |
 
 ## Build & Run
 
@@ -467,8 +487,9 @@ npx wrangler deploy
 # Local dev (create worker/.dev.vars with your keys)
 npx wrangler dev
 
-# Offline checks of the daily spending cap (Node 23.6 or newer)
+# Offline checks of the daily spending cap and the voice picker's routes (Node 23.6 or newer)
 node test/dailyCap.check.ts
+node test/voices.check.ts
 ```
 
 ## Code Style & Conventions
