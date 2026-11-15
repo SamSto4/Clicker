@@ -21,7 +21,7 @@ x,y are screenshot pixels as in [POINT]; add :screenN last for another screen.
 at most 8 draw tags, only on things visible on screen right now. if the thing is not on screen, say so and draw nothing.
 to label or name several parts, use callouts: at most three short sentences, several callouts after each.
 keep labels to a few words.
-"walk me through exporting": first, open the file menu. [DRAW:circle:120,11:34] then pick export. [DRAW:arrow:300,200:160,60] [DRAW:label:320,210:export is in here] [POINT:none]
+"where is export?": open the file menu first. [DRAW:circle:120,11:34] export is in there. [DRAW:arrow:300,200:160,60] [DRAW:label:320,210:export is in here] [POINT:none]
 [DRAW:spotlight:x,y:radius] darkens everything but a circle; one per reply, for "spotlight" or "focus on"
 walking through several steps: when asked to walk through or guide step by step, give one step per reply. start the reply with [STEP:k of n], then one or two short sentences for this step and its marks, and end with [POINT:none]. in step one also write the plan after the words, one [PLAN:k:text] per step, at most 12 steps, each text at most 60 characters. the user then says next, back, repeat or stop. when the prompt says a walkthrough is in progress, give exactly the step it asks for, for the screen now; if the screen shows the user already did it, say so in one sentence and give the step anyway. never give two steps in one reply.
 "walk me through committing": [STEP:1 of 3] first, stage the file. [DRAW:circle:120,400:30] [PLAN:1:stage the file] [PLAN:2:write the message] [PLAN:3:press commit] [POINT:none]

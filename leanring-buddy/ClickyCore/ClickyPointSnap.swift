@@ -17,7 +17,8 @@ nonisolated enum ClickyPointSnapOutcome: String, CaseIterable, Equatable, Sendab
     case elementTooLarge
     /// The point is not on the element (beyond the tolerance), or the centre is too far to move to.
     case pointOutsideElement
-    /// The element belongs to Clicky itself (its own overlay or panel).
+    /// The element belongs to Clicky itself (its own overlay or panel). Rare since the reader skips
+    /// Clicky's windows and asks only the app under them.
     case ownWindow
     /// The element is a container (a window, a group, a scroll area...), whose centre means nothing.
     case roleNotSnappable
@@ -49,6 +50,17 @@ nonisolated enum ClickyPointSnap {
         "AXToolbar", "AXTabGroup", "AXOutline", "AXTable", "AXList", "AXSheet", "AXDrawer", "AXUnknown",
     ]
 
+    /// The label, icon or cell inside a control. Its own frame is only the words or the picture (a
+    /// line of text can be 190 points wide), so the reader snaps to the control around it instead
+    /// (`controlRolesALeafMaySnapTo`); with no such control it is not snapped at all.
+    static let leafRolesThatSnapOnlyThroughAControlParent: Set<String> = ["AXStaticText", "AXImage", "AXCell"]
+
+    /// The controls a label, icon or cell may hand the snap to.
+    static let controlRolesALeafMaySnapTo: Set<String> = [
+        "AXButton", "AXLink", "AXMenuItem", "AXMenuButton", "AXMenuBarItem", "AXPopUpButton",
+        "AXCheckBox", "AXRadioButton", "AXDisclosureTriangle", "AXComboBox",
+    ]
+
     /// Whether the cursor should fly to the centre of the element under the model's point. All
     /// geometry is in display points from the display's top-left corner.
     static func decide(
@@ -61,7 +73,10 @@ nonisolated enum ClickyPointSnap {
             return .notSnapped(reason: .ownWindow)
         }
         let trimmedRole = elementRole.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedRole.isEmpty || rolesThatAreNotSnappable.contains(trimmedRole) {
+        // A label, icon or cell reaches here only when the reader found no control around it.
+        if trimmedRole.isEmpty
+            || rolesThatAreNotSnappable.contains(trimmedRole)
+            || leafRolesThatSnapOnlyThroughAControlParent.contains(trimmedRole) {
             return .notSnapped(reason: .roleNotSnappable)
         }
         // The size as stored (CGRect's own width and height are always made positive), so a frame

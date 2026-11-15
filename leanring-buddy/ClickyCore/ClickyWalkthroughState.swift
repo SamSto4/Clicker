@@ -64,6 +64,22 @@ nonisolated enum ClickyWalkthroughWords {
         if stopPhrases.contains(words) { return .stop }
         return nil
     }
+
+    /// The phrases with which the user asks to be guided step by step. Only the user's own words are
+    /// checked (the transcript or typed text), never the screen, so text on a web page cannot make
+    /// the model begin a walkthrough that then keeps the microphone open for 45 seconds at a time.
+    static let walkthroughRequestPhrases: [String] = [
+        "walk me through", "walk through", "walkthrough", "walk me thru", "talk me through",
+        "guide me through", "guide me", "step by step", "one step at a time", "show me how", "steps",
+    ]
+
+    /// Whether the user's words ask for a walkthrough, so a reply with `[STEP:1 of n]` may begin one.
+    static func transcriptAsksForAWalkthrough(_ transcript: String) -> Bool {
+        let paddedWords = " " + normalizedWords(transcript) + " "
+        return walkthroughRequestPhrases.contains { walkthroughRequestPhrase in
+            paddedWords.contains(" " + walkthroughRequestPhrase + " ")
+        }
+    }
 }
 
 // MARK: - The tags of a reply
