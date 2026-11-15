@@ -2,5 +2,15 @@ name = "clicky-proxy"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
+# The daily spending cap's counter (src/dailyCap.ts): one Durable Object with
+# SQLite storage, the only storage backend the Workers Free plan allows.
+[[durable_objects.bindings]]
+name = "CLICKY_DAILY_CAP"
+class_name = "ClickyDailyCap"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ClickyDailyCap"]
+
 [vars]
 ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"

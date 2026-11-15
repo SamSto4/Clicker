@@ -6,15 +6,45 @@
  *
  * Routes:
  *   POST /chat              → Anthropic Messages API (streaming)
- *   POST /tts               → ElevenLabs TTS API
+ *   POST /tts               → ElevenLabs TTS API (optional voice_id and
+ *                             voice_settings.speed, src/voices.ts)
+ *   POST /voices            → the ElevenLabs account's voices, for the
+ *                             app's voice picker (src/voices.ts)
  *   POST /transcribe-token  → AssemblyAI short-lived streaming token
  *
  * Every request must carry the shared app token in the X-Clicky-App-Token
  * header. Without it, anyone who finds this Worker's URL could spend the
  * API credit behind these keys.
+ *
+ * A daily spending cap (src/dailyCap.ts) refuses `/chat` and `/tts` requests
+ * past 600 chat requests or 60,000 speech characters per UTC day with HTTP
+ * 429. It is checked after the app token, so a request without the token
+ * never counts.
  */
 
-interface Env {
+import {
+  ClickyDailyCap,
+  dailyCapAllowsRequest,
+  dailyCapReachedResponse,
+  textToSpeechCharacterCount,
+  type DailyCapEnvironment,
+} from "./dailyCap";
+import {
+  chosenVoiceWasNotFound,
+  forgetCachedAccountVoiceList,
+  handleVoicesRequest,
+  prepareTextToSpeechForwarding,
+  type UpstreamFetch,
+} from "./voices";
+
+/** The real `fetch`, called through a function so it never runs detached from the global scope. */
+const fetchUpstream: UpstreamFetch = (upstreamURL, init) => fetch(upstreamURL, init);
+
+// The daily cap's counter class must be exported from the Worker's main
+// module so the Durable Object binding in wrangler.toml can find it.
+export { ClickyDailyCap };
+
+interface Env extends DailyCapEnvironment {
   ANTHROPIC_API_KEY: string;
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
@@ -78,6 +108,10 @@ export default {
         return await handleTTS(request, env);
       }
 
+      if (url.pathname === "/voices") {
+        return await handleVoicesRequest(env, fetchUpstream);
+      }
+
       if (url.pathname === "/transcribe-token") {
         return await handleTranscribeToken(env);
       }
@@ -94,6 +128,10 @@ export default {
 };
 
 async function handleChat(request: Request, env: Env): Promise<Response> {
+  if (!(await dailyCapAllowsRequest(env, "chatRequests", 1))) {
+    return dailyCapReachedResponse();
+  }
+
   const body = await request.text();
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -153,20 +191,48 @@ async function handleTranscribeToken(env: Env): Promise<Response> {
 
 async function handleTTS(request: Request, env: Env): Promise<Response> {
   const body = await request.text();
-  const voiceId = env.ELEVENLABS_VOICE_ID;
 
-  const response = await fetch(
-    `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-    {
+  if (!(await dailyCapAllowsRequest(env, "textToSpeechCharacters", textToSpeechCharacterCount(body)))) {
+    return dailyCapReachedResponse();
+  }
+
+  // The chosen voice and speed (round 20). With neither, the body goes on
+  // exactly as it came, to the default voice.
+  const forwarding = await prepareTextToSpeechForwarding(body, env, fetchUpstream);
+  if (forwarding instanceof Response) {
+    return forwarding;
+  }
+
+  const requestSpeech = (voiceIdForPath: string) =>
+    fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceIdForPath}`, {
       method: "POST",
       headers: {
         "xi-api-key": env.ELEVENLABS_API_KEY,
         "content-type": "application/json",
         accept: "audio/mpeg",
       },
-      body,
+      body: forwarding.bodyToForward,
+    });
+
+  let response = await requestSpeech(forwarding.voiceIdForPath);
+  let usedDefaultVoiceAsFallback = forwarding.usedDefaultVoiceAsFallback;
+
+  // A chosen voice deleted from the account can still be in this instance's
+  // 10-minute copy of the list. Rather than failing the reply, speak it in the
+  // default voice, say so with the fallback header, and drop the stale copy.
+  if (!response.ok && forwarding.voiceIdForPath !== env.ELEVENLABS_VOICE_ID) {
+    const chosenVoiceErrorBody = await response.text();
+    if (!chosenVoiceWasNotFound(response.status, chosenVoiceErrorBody)) {
+      console.error(`[/tts] ElevenLabs API error ${response.status}: ${chosenVoiceErrorBody}`);
+      return new Response(chosenVoiceErrorBody, {
+        status: response.status,
+        headers: { "content-type": "application/json" },
+      });
     }
-  );
+    forgetCachedAccountVoiceList();
+    response = await requestSpeech(env.ELEVENLABS_VOICE_ID);
+    usedDefaultVoiceAsFallback = true;
+  }
 
   if (!response.ok) {
     const errorBody = await response.text();
@@ -177,10 +243,16 @@ async function handleTTS(request: Request, env: Env): Promise<Response> {
     });
   }
 
+  const responseHeaders: Record<string, string> = {
+    "content-type": response.headers.get("content-type") || "audio/mpeg",
+  };
+  if (usedDefaultVoiceAsFallback) {
+    // The chosen voice is no longer in the account: the default spoke, and
+    // the app's picker says so and forgets the choice.
+    responseHeaders["X-Clicky-Voice-Fallback"] = "1";
+  }
   return new Response(response.body, {
     status: response.status,
-    headers: {
-      "content-type": response.headers.get("content-type") || "audio/mpeg",
-    },
+    headers: responseHeaders,
   });
 }
