@@ -38,7 +38,10 @@ nonisolated enum ClickyFollowUpCloseReason: String, CaseIterable, Equatable, Sen
     /// transcript is "nothing was said"; one of only filler words is told apart from it.
     static func reason(forTranscriptDecision decision: ClickyFollowUpTranscriptDecision, transcript: String) -> ClickyFollowUpCloseReason {
         switch decision {
-        case .sendToModel:
+        case .sendToModel, .walkthroughNext, .walkthroughBack, .walkthroughRepeat:
+            // Round 21: a walkthrough's step word becomes a turn too (or, after the last step, the
+            // fixed "that was the last step."), so it is recorded the same way; the list of reasons
+            // is unchanged.
             return .sentToModel
         case .endPhrase:
             return .endPhrase

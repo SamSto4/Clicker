@@ -39,8 +39,10 @@ nonisolated enum ClickySpeechPrefetchOutcome: String, Equatable {
 nonisolated enum ClickySpeechPrefetch {
     /// The first reply tag opens with "[POINT", "[NOTE" or "[PROFILE" and a colon, the same shape
     /// `ClickyReplyTagParser` accepts. A stray "[" that is not a tag opening (as in "press [ to
-    /// indent") does not count, and neither does a half-arrived "[POI".
-    private static let replyTagOpeningPattern = #"\[\s*(?:POINT|NOTE|PROFILE)\s*:"#
+    /// indent") does not count, and neither does a half-arrived "[POI". Round 21 adds the
+    /// walkthrough's STEP and PLAN tags; a reply holding one is skipped earlier anyway (it has tags
+    /// between its sentences), so this only keeps the list of reply tags in one shape.
+    private static let replyTagOpeningPattern = #"\[\s*(?:POINT|NOTE|PROFILE|STEP|PLAN)\s*:"#
 
     /// Looks at the reply text received so far. Once the first tag has opened, the words before it
     /// are the spoken answer and cannot change, even though the stream goes on writing tags.
@@ -62,12 +64,13 @@ nonisolated enum ClickySpeechPrefetch {
     }
 
     /// True when the reply so far holds a tag that sits between its sentences: a `[DRAW`, `[CARD`,
-    /// `[ROW`, `[SCENE` or `[PART` tag. In such a reply the words before the first tag are not the whole spoken
+    /// `[ROW`, `[SCENE` or `[PART` tag, or (round 21) a walkthrough's `[STEP` or `[PLAN`, which a
+    /// step reply opens with. In such a reply the words before the first tag are not the whole spoken
     /// answer, so audio fetched for them would always be thrown away, and the early fetch is
     /// skipped. A half-arrived "[DRA" does not count yet; the next chunk settles it.
     static func replyHoldsTagsBetweenItsSentences(_ accumulatedReplyText: String) -> Bool {
         accumulatedReplyText.range(
-            of: #"\[\s*(?:DRAW|CARD|ROW|SCENE|PART)"#,
+            of: #"\[\s*(?:DRAW|CARD|ROW|SCENE|PART|STEP|PLAN)"#,
             options: [.regularExpression, .caseInsensitive]
         ) != nil
     }

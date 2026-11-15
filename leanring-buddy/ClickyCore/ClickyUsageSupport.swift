@@ -134,6 +134,17 @@ nonisolated struct ClickyUsageTurnRecord: Equatable, Sendable {
     var interruptedWithinMilliseconds: Int?
     var turnId: UUID?
 
+    // Round 21: read the same tolerant way; a line without them (every line before round 21) keeps
+    // the defaults here.
+    /// The characters of skill text the turn's prompt carried.
+    var skillCharacterCount: Int?
+    var spotlightDrawn = false
+    var walkthroughStep: Int?
+    var walkthroughStepCount: Int?
+    /// A word that is not one of the outcome's fixed words reads as nil.
+    var pointSnapOutcome: ClickyPointSnapOutcome?
+    var pointSnapDistancePoints: Int?
+
     var hasAnyTokenCount: Bool {
         inputTokens != nil || outputTokens != nil || cacheCreationInputTokens != nil || cacheReadInputTokens != nil
     }
@@ -230,6 +241,12 @@ nonisolated enum ClickyUsageLogParser {
         turnRecord.parallelToolCalls = nonNegativeInteger(jsonObject["parallelToolCalls"])
         turnRecord.interruptedWithinMilliseconds = nonNegativeInteger(jsonObject["interruptedWithinMilliseconds"])
         turnRecord.turnId = (jsonObject["turnId"] as? String).flatMap(UUID.init(uuidString:))
+        turnRecord.skillCharacterCount = nonNegativeInteger(jsonObject["skillCharacterCount"])
+        turnRecord.spotlightDrawn = isTrue(jsonObject["spotlightDrawn"])
+        turnRecord.walkthroughStep = nonNegativeInteger(jsonObject["walkthroughStep"])
+        turnRecord.walkthroughStepCount = nonNegativeInteger(jsonObject["walkthroughStepCount"])
+        turnRecord.pointSnapOutcome = (jsonObject["pointSnapOutcome"] as? String).flatMap(ClickyPointSnapOutcome.init(rawValue:))
+        turnRecord.pointSnapDistancePoints = nonNegativeInteger(jsonObject["pointSnapDistancePoints"])
         return turnRecord
     }
 

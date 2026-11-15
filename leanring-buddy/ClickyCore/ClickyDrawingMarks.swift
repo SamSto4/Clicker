@@ -35,6 +35,10 @@ nonisolated enum ClickyDrawingShape: Equatable {
     /// A simple 3D model built from basic shapes, turning slowly on a small panel. It carries no
     /// position either: the app places the panel (see `ClickyScenePanelPlacement`).
     case scene(ClickyScene)
+    /// Round 21: everything on the screen is darkened except a circle around a place, so one thing
+    /// stands out. One per reply, and one on the screen at a time (a new one replaces the old one,
+    /// so the shade never darkens anything twice).
+    case spotlight(center: ClickyDrawingPoint, radius: Double)
 
     /// The word used for this shape in a `[DRAW:...]` tag and in the "marks on screen" list.
     var tagKindName: String {
@@ -49,23 +53,32 @@ nonisolated enum ClickyDrawingShape: Equatable {
         case .callout: return "callout"
         case .explanationCard: return "card"
         case .scene: return "scene"
+        case .spotlight: return "spotlight"
         }
     }
 
     /// A sticky note and an explanation card are written for the user, not pointed at something
     /// on the page, so they stay when the page scrolls. Every other shape marks a place in the
-    /// content and would be wrong the moment that content moves.
+    /// content and would be wrong the moment that content moves. A spotlight lights a place in the
+    /// content, so it fades on a scroll like a circle does.
     var pointsAtScreenContent: Bool {
         switch self {
         case .stickyNote, .explanationCard, .scene:
             return false
-        case .arrow, .circle, .box, .underline, .highlight, .label, .callout:
+        case .arrow, .circle, .box, .underline, .highlight, .label, .callout, .spotlight:
             return true
         }
     }
 
     var isScene: Bool {
         if case .scene = self {
+            return true
+        }
+        return false
+    }
+
+    var isSpotlight: Bool {
+        if case .spotlight = self {
             return true
         }
         return false
@@ -94,6 +107,8 @@ nonisolated enum ClickyDrawingShape: Equatable {
             return topLeftCorner
         case .callout(let target, _, _):
             return target
+        case .spotlight(let center, _):
+            return center
         case .explanationCard, .scene:
             return nil
         }
@@ -186,6 +201,12 @@ nonisolated struct ClickyDrawingBoard: Equatable {
             if shape.isScene {
                 marksRemovedToMakeRoom += marks.filter { $0.shape.isScene }
                 marks.removeAll { $0.shape.isScene }
+            }
+            // Round 21: and for the spotlight. Two shades on the screen would darken everything twice
+            // and cover each other's hole, so a new spotlight replaces the one that is there.
+            if shape.isSpotlight {
+                marksRemovedToMakeRoom += marks.filter { $0.shape.isSpotlight }
+                marks.removeAll { $0.shape.isSpotlight }
             }
 
             let addedMark = ClickyDrawingMark(markNumber: nextMarkNumber, shape: shape, screenNumber: screenNumber)
@@ -336,6 +357,8 @@ nonisolated enum ClickyDrawingMarksOnScreenText {
             shapeDescription = "sticky note at \(coordinateText(topLeftCorner)) saying \"\(text)\""
         case .callout(let target, let text, let calloutNumber):
             shapeDescription = "callout \(calloutNumber) pointing at \(coordinateText(target)) saying \"\(text)\""
+        case .spotlight(let center, let radius):
+            shapeDescription = "spotlight at \(coordinateText(center)) radius \(wholeNumberText(radius))"
         case .explanationCard(let card):
             // The card has no position to give: the app placed it. Its rows are listed the way
             // their tags are written, so the model can see what is on it and add to it.

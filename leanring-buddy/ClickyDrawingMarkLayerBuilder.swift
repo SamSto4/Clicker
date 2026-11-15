@@ -68,6 +68,13 @@ enum ClickyDrawingMarkLayerBuilder {
     /// A label or sticky note grows from this scale to full size while it fades in.
     static let textMarkAppearStartScale: CGFloat = 0.9
 
+    /// Round 21: the thin ring of marker ink around a spotlight's hole, see-through, so the lit
+    /// circle has a clear edge on a dark or a light page.
+    static let spotlightRingLineWidthInPoints: CGFloat = 2
+    static let spotlightRingOpacity: Float = 0.6
+    /// A spotlight's shade fades in over this long (and fades out like any other mark).
+    static let spotlightAppearSeconds: Double = 0.35
+
     /// Core Animation layers accept extra values by key. Each stroke layer remembers when, as a
     /// share of the pen time, its reveal starts and ends.
     private static let revealStartShareLayerKey = "clickyRevealStartShareOfPenTime"
@@ -210,6 +217,13 @@ enum ClickyDrawingMarkLayerBuilder {
                 seed: wobbleSeed
             )
             return makeInkLayer(for: handDrawnStrokes, displaySizeInPoints: displaySizeInPoints, backingScaleFactor: backingScaleFactor)
+        case .spotlight(let center, let radius):
+            return makeSpotlightLayer(
+                center: center,
+                radius: radius,
+                displaySizeInPoints: displaySizeInPoints,
+                backingScaleFactor: backingScaleFactor
+            )
         case .callout, .explanationCard, .scene:
             // The app decides where these go, so they need more than a shape to be built. The
             // overlay controller builds them with `ClickyExplanationCardLayerBuilder` (and a 3D
@@ -485,6 +499,70 @@ enum ClickyDrawingMarkLayerBuilder {
         cardLayer.addSublayer(textLayer)
 
         return cardLayer
+    }
+
+    /// Round 21: a spotlight. One layer the size of the display holding the shade (the display's
+    /// rectangle with the circle as a second subpath; the even-odd fill rule makes the circle a hole)
+    /// and a thin ring of ink around the hole. The edge is not feathered: a soft edge would need a
+    /// blurred mask the size of the screen, and the ring already marks where the light ends.
+    ///
+    /// The shade and the ring are shape layers directly inside the spotlight layer, so the spotlight
+    /// must appear through `animateSpotlightAppearance`, never `animateAppearance` (which would
+    /// treat them as ink and reveal them along their length).
+    static func makeSpotlightLayer(
+        center: ClickyDrawingPoint,
+        radius: Double,
+        displaySizeInPoints: CGSize,
+        backingScaleFactor: CGFloat
+    ) -> CALayer {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        let spotlightLayer = CALayer()
+        spotlightLayer.frame = CGRect(origin: .zero, size: displaySizeInPoints)
+
+        // The centre is measured from the display's top-left corner; a layer's y grows upwards.
+        let holeFrameInLayer = CGRect(
+            x: CGFloat(center.x - radius),
+            y: displaySizeInPoints.height - CGFloat(center.y + radius),
+            width: CGFloat(2 * radius),
+            height: CGFloat(2 * radius)
+        )
+
+        let shadePath = CGMutablePath()
+        shadePath.addRect(spotlightLayer.bounds)
+        shadePath.addEllipse(in: holeFrameInLayer)
+        let shadeLayer = CAShapeLayer()
+        shadeLayer.frame = spotlightLayer.bounds
+        shadeLayer.path = shadePath
+        shadeLayer.fillRule = .evenOdd
+        shadeLayer.fillColor = NSColor(DS.Colors.overlayDrawingSpotlightShade).cgColor
+        shadeLayer.strokeColor = nil
+        shadeLayer.contentsScale = backingScaleFactor
+        spotlightLayer.addSublayer(shadeLayer)
+
+        let ringLayer = CAShapeLayer()
+        ringLayer.frame = spotlightLayer.bounds
+        ringLayer.path = CGPath(ellipseIn: holeFrameInLayer, transform: nil)
+        ringLayer.fillColor = nil
+        ringLayer.strokeColor = NSColor(DS.Colors.overlayDrawingInk).cgColor
+        ringLayer.lineWidth = spotlightRingLineWidthInPoints
+        ringLayer.opacity = spotlightRingOpacity
+        ringLayer.contentsScale = backingScaleFactor
+        spotlightLayer.addSublayer(ringLayer)
+
+        return spotlightLayer
+    }
+
+    /// The shade (and its ring) fade in. The layer must already be in the layer tree.
+    static func animateSpotlightAppearance(of spotlightLayer: CALayer) {
+        let fadeInAnimation = CABasicAnimation(keyPath: "opacity")
+        fadeInAnimation.fromValue = 0
+        fadeInAnimation.toValue = spotlightLayer.opacity
+        fadeInAnimation.duration = spotlightAppearSeconds
+        fadeInAnimation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        spotlightLayer.add(fadeInAnimation, forKey: penRevealAnimationKey)
     }
 
     // MARK: - Animating

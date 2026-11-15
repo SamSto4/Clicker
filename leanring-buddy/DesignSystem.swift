@@ -199,6 +199,14 @@ enum DS {
         /// small handwriting on cream paper.
         static let overlayDrawingCardAccentText = Color(hex: "#C23F1D")
 
+        /// Round 21: the band behind a code row on the card: the paper a shade darker, so the
+        /// monospaced line reads as code without leaving the card's warm look.
+        static let overlayDrawingCardCodeBackground = Color(hex: "#F3EBD4")
+
+        /// Round 21: the shade a spotlight lays over everything but its circle: black at 45 percent,
+        /// dark enough for the lit circle to stand out, light enough to keep the rest readable.
+        static let overlayDrawingSpotlightShade = Color.black.opacity(0.45)
+
         // ── Status Pill ──────────────────────────────────────────────
 
         /// The status pill at the top of the screen on a display without a notch: almost black,

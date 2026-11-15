@@ -22,6 +22,13 @@ nonisolated struct ClickySkill: Equatable {
     /// From the "when_marks_on_screen" front matter key. The skill also matches the turn while
     /// Clicky's drawing is on the screen, whatever the user says, so the drawing can be edited.
     var isSelectedWhenDrawingMarksAreOnScreen: Bool = false
+    /// From the "when_scene_on_screen" front matter key (round 21). The skill also matches the turn
+    /// while a 3D scene is on the screen, so a part can be added to it.
+    var isSelectedWhenSceneIsOnScreen: Bool = false
+    /// From the "when_walkthrough_active" front matter key (round 21). The skill also matches the
+    /// turn while a step-by-step walkthrough is in progress, so a "back" or "repeat" turn (whose
+    /// words name no format) still has the step format in its prompt.
+    var isSelectedWhileWalkthroughIsActive: Bool = false
 }
 
 /// Everything selection needs to know about the current turn. Plain strings only, so the logic
@@ -32,6 +39,10 @@ nonisolated struct ClickySkillSelectionContext {
     let frontmostApplicationName: String?
     /// True while marks Clicky drew are still on the screen.
     var drawingMarksAreOnScreen: Bool = false
+    /// True while a 3D scene Clicky built is on the screen (round 21).
+    var sceneIsOnScreen: Bool = false
+    /// True while a step-by-step walkthrough is in progress (round 21).
+    var walkthroughIsActive: Bool = false
 }
 
 /// Loads skill files from a folder and picks the few that apply to a turn.
@@ -41,10 +52,23 @@ nonisolated enum ClickySkillLibrary {
     static let keywordMatchScore = 40
     /// Caps how much skill text one turn adds. A skill that would exceed the cap is skipped whole,
     /// never cut in half.
-    static let maximumSkillBodyCharacterCountPerTurn = 2500
-    /// The "name" of the skill file that teaches the [DRAW:...] reply format. The app checks for
-    /// it to know that this turn's reply may have tags between its sentences.
+    ///
+    /// Round 21 raised it from 2,500, because the drawing, card and 3D scene formats moved out of
+    /// the cached base prompt into the three format skills (`skill_draw.md`, `skill_card.md`,
+    /// `skill_scene.md`), which are always included when they match and take their room first. A
+    /// format skill must never push an app skill out, so the cap has to hold the worst case: all
+    /// three format skills (a turn with marks and a 3D scene on the screen: about 2,100 + 1,250 +
+    /// 900 characters) and the largest pair of app skills (xcode and coding_general: about 2,500),
+    /// about 6,750 in all. The cap only limits: an ordinary turn adds exactly the skills it
+    /// matched, as before.
+    static let maximumSkillBodyCharacterCountPerTurn = 7000
+    /// The "name" of the skill file that teaches the [DRAW:...] reply format (round 21: the format
+    /// lives in `skill_draw.md` again, together with the spotlight and the walkthrough steps).
     static let drawSkillName = "draw"
+    /// The "name" of the skill file that teaches the explanation card (round 21).
+    static let cardSkillName = "card"
+    /// The "name" of the skill file that teaches the simple 3D scene (round 21).
+    static let sceneSkillName = "scene"
 
     private struct ScoredSkill {
         let skill: ClickySkill
@@ -91,7 +115,9 @@ nonisolated enum ClickySkillLibrary {
             bodyText: bodyText,
             sourceFileName: fileName,
             isAlwaysIncludedWhenSelected: frontMatterValueIsTrue(frontMatterValuesByKey["always_include"]),
-            isSelectedWhenDrawingMarksAreOnScreen: frontMatterValueIsTrue(frontMatterValuesByKey["when_marks_on_screen"])
+            isSelectedWhenDrawingMarksAreOnScreen: frontMatterValueIsTrue(frontMatterValuesByKey["when_marks_on_screen"]),
+            isSelectedWhenSceneIsOnScreen: frontMatterValueIsTrue(frontMatterValuesByKey["when_scene_on_screen"]),
+            isSelectedWhileWalkthroughIsActive: frontMatterValueIsTrue(frontMatterValuesByKey["when_walkthrough_active"])
         )
     }
 
@@ -144,7 +170,13 @@ nonisolated enum ClickySkillLibrary {
                 score += keywordMatchScore
             }
             // Marks on screen count like a keyword: the user may say only "remove the second one".
-            if !transcriptContainsKeyword && skill.isSelectedWhenDrawingMarksAreOnScreen && selectionContext.drawingMarksAreOnScreen {
+            // Round 21: so do a 3D scene on the screen ("add the wheels") and a walkthrough in
+            // progress ("back"), for the skills that ask for them.
+            let matchesWhatIsOnScreenOrInProgress =
+                (skill.isSelectedWhenDrawingMarksAreOnScreen && selectionContext.drawingMarksAreOnScreen)
+                || (skill.isSelectedWhenSceneIsOnScreen && selectionContext.sceneIsOnScreen)
+                || (skill.isSelectedWhileWalkthroughIsActive && selectionContext.walkthroughIsActive)
+            if !transcriptContainsKeyword && matchesWhatIsOnScreenOrInProgress {
                 score += keywordMatchScore
             }
             return score > 0 ? ScoredSkill(skill: skill, score: score) : nil

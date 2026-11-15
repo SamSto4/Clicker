@@ -32,13 +32,16 @@ nonisolated struct ClickyParsedDrawReply: Equatable {
 /// - `[DRAW:label:x,y:text]`
 /// - `[DRAW:sticky:x,y:text]`
 /// - `[DRAW:callout:x,y:text]` a numbered tag pointing at x,y; the numbers run 1, 2, 3 in a reply
+/// - `[DRAW:spotlight:x,y:radius]` (round 21) darkens everything but a circle; one per reply,
+///   radius 20 to 2,000
 /// - `[DRAW:erase:m3]`, `[DRAW:undo]`, `[DRAW:clear]`
 ///
 /// An explanation card has tags of its own, which do not count towards the draw tag limit:
 /// - `[CARD:title]` opens a card (one per reply; it replaces a card already on screen)
 /// - `[ROW:text:words]`, `[ROW:boxes:a|b|c -> d]`, `[ROW:flow:a > b > c]`,
-///   `[ROW:timeline:when=what|when=what]` add a row to the card opened in this reply, or to the
-///   card already on screen
+///   `[ROW:timeline:when=what|when=what]`, and since round 21 `[ROW:code:text]` and
+///   `[ROW:table:a|b|c;d|e|f]`, add a row to the card opened in this reply, or to the card already
+///   on screen
 ///
 /// A simple 3D scene has tags of its own too, which do not count towards the draw tag limit either:
 /// - `[SCENE:title]` opens a scene (one per reply; it replaces a scene already on screen)
@@ -70,6 +73,11 @@ nonisolated enum ClickyDrawTagParser {
     /// any screenshot.
     static let minimumCircleRadius: Double = 2
     static let maximumCircleRadius: Double = 5_000
+
+    /// Round 21: a spotlight's hole, in screenshot pixels. Smaller than this it is a pinhole that
+    /// hides what it should show; larger, it darkens almost nothing.
+    static let minimumSpotlightRadius: Double = 20
+    static let maximumSpotlightRadius: Double = 2_000
 
     /// The pattern of one complete draw, card or row tag. Group 1 is the tag name and group 2 is
     /// everything after its colon. Brackets are excluded from the body so one tag can never
@@ -226,6 +234,14 @@ nonisolated enum ClickyDrawTagParser {
             }
             return .addMark(shape: .circle(center: firstPoint, radius: radius), screenNumber: screenNumber)
 
+        case "spotlight":
+            // Round 21: "spotlight:x,y:radius", the same shape of tag as a circle.
+            guard let radius = Double(secondComponent), radius.isFinite,
+                  radius >= minimumSpotlightRadius, radius <= maximumSpotlightRadius else {
+                return nil
+            }
+            return .addMark(shape: .spotlight(center: firstPoint, radius: radius), screenNumber: screenNumber)
+
         case "box", "highlight":
             guard let size = size(fromComponent: secondComponent) else {
                 return nil
@@ -269,7 +285,7 @@ nonisolated enum ClickyDrawTagParser {
                 tagBodyAfterKind = "\(coordinateText(tail)):\(coordinateText(head))"
             case .underline(let start, let end):
                 tagBodyAfterKind = "\(coordinateText(start)):\(coordinateText(end))"
-            case .circle(let center, let radius):
+            case .circle(let center, let radius), .spotlight(let center, let radius):
                 tagBodyAfterKind = "\(coordinateText(center)):\(wholeNumberText(radius))"
             case .box(let topLeftCorner, let size), .highlight(let topLeftCorner, let size):
                 tagBodyAfterKind = "\(coordinateText(topLeftCorner)):\(wholeNumberText(size.width)),\(wholeNumberText(size.height))"
@@ -380,6 +396,8 @@ nonisolated enum ClickyDrawTagParser {
         // The same for a `[PART:...]` tag: how many parts the scene it would go in has at this
         // point of the reply, nil while there is no scene.
         var partCountOfScenePartsGoIn = partCountOfSceneAlreadyOnScreen
+        // Round 21: one spotlight per reply, for the reason there is one card per reply.
+        var hasDrawnASpotlightInThisReply = false
 
         for completeDrawTagMatch in completeDrawTagMatches {
             guard let rangeInReplyText = Range(completeDrawTagMatch.range, in: rawReplyText),
@@ -428,6 +446,11 @@ nonisolated enum ClickyDrawTagParser {
 
             default:
                 command = self.command(fromTagBody: tagBody, calloutNumber: nextCalloutNumber)
+                // A second spotlight is dropped before it is counted, so like a malformed tag it
+                // uses up none of the eight.
+                if case .addMark(.spotlight, _) = command, hasDrawnASpotlightInThisReply {
+                    command = nil
+                }
                 if command != nil {
                     if acceptedDrawCommandCount >= maximumDrawTagCountPerReply {
                         command = nil
@@ -437,6 +460,9 @@ nonisolated enum ClickyDrawTagParser {
                 }
                 if case .addMark(.callout, _) = command {
                     nextCalloutNumber += 1
+                }
+                if case .addMark(.spotlight, _) = command {
+                    hasDrawnASpotlightInThisReply = true
                 }
                 if case .clearAllMarks = command {
                     // The card went with everything else, so a later row has nothing to go on.
@@ -527,9 +553,45 @@ nonisolated enum ClickyDrawTagParser {
             }
             return .timeline(points: timelinePoints)
 
+        case "code":
+            // Round 21: everything after "code:" is the line of code, colons and pipes included,
+            // made one line and cut to the limit.
+            let codeText = singleLineText(rowContent, cutToCharacterCount: ClickyExplanationCard.maximumCodeRowCharacterCount)
+            return codeText.isEmpty ? nil : .code(codeText)
+
+        case "table":
+            return tableRow(fromRowContent: rowContent)
+
         default:
             return nil
         }
+    }
+
+    /// Round 21: reads "plan|price;free|0;pro|12": rows split at ";", cells at "|". Each cell is
+    /// trimmed and cut to 16 characters (an empty cell, such as a blank top-left corner, is kept).
+    /// A blank row (a trailing ";") is left out. Two to four columns, one to four rows, and every row
+    /// with the same number of cells, or the row is dropped: a table with a missing cell would put
+    /// the words under the wrong heading.
+    static func tableRow(fromRowContent rowContent: String) -> ClickyExplanationCardRow? {
+        var tableRows: [[String]] = []
+        for tableRowText in rowContent.components(separatedBy: ";") {
+            if tableRowText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                continue
+            }
+            tableRows.append(tableRowText.components(separatedBy: "|").map { cellText in
+                singleLineText(cellText, cutToCharacterCount: ClickyExplanationCard.maximumTableCellCharacterCount)
+            })
+        }
+        guard tableRows.count >= ClickyExplanationCard.minimumTableRowCount,
+              tableRows.count <= ClickyExplanationCard.maximumTableRowCount,
+              let columnCount = tableRows.first?.count,
+              columnCount >= ClickyExplanationCard.minimumTableColumnCount,
+              columnCount <= ClickyExplanationCard.maximumTableColumnCount,
+              tableRows.allSatisfy({ $0.count == columnCount }),
+              tableRows.joined().contains(where: { !$0.isEmpty }) else {
+            return nil
+        }
+        return .table(rows: tableRows)
     }
 
     /// The parts of a row between its separators, each one line and cut to the limit. Empty parts
