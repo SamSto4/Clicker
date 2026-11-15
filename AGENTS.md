@@ -54,6 +54,7 @@ The app never calls external APIs directly. All requests go through a Cloudflare
   - `voice_id` is taken out of the body, because the voice is in the URL path. A well-formed id that is the default, or is in the account's list, is used.
   - A malformed id, or one the list does not hold, falls back to the default voice and adds the response header `X-Clicky-Voice-Fallback: 1`. The app then forgets the choice and says so in the settings tab.
   - When the list cannot be loaded, the requested id is used as it came, with no header, so an ElevenLabs outage never clears the user's choice. A `voice_id` of null means the default.
+  - A chosen voice that ElevenLabs no longer has (a 404, or a 4xx that names `voice_not_found`; such a voice can still be in the 10-minute copy of the list) is spoken once more with the default voice, with the fallback header, and the copy of the list is dropped. Added after the round 20 tester's live check, so a deleted voice never fails a reply.
   - `voice_settings.speed` is pulled into 0.7...1.2 and removed when it is not a number. The API reference (checked 14 Nov 2026) documents the field (default 1.0) but no range; 0.7...1.2 is the range of ElevenLabs' own slider.
   - A body that is not a JSON object gets a 400 `{"error":{"type":"bad_request","message":"body must be a json object"}}`.
   - The daily cap counts the `text` length before any of this.

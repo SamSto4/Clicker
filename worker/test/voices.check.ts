@@ -7,6 +7,7 @@ import {
   MAXIMUM_SPEECH_SPEED,
   MINIMUM_SPEECH_SPEED,
   VOICE_LIST_CACHE_MILLISECONDS,
+  chosenVoiceWasNotFound,
   cleanedVoiceText,
   forgetCachedAccountVoiceList,
   handleVoicesRequest,
@@ -251,6 +252,15 @@ for (const badBodyText of ["[]", "null", "nope", '"text"', "42"]) {
       badBodyAnswer === '{"error":{"type":"bad_request","message":"body must be a json object"}}'
   );
 }
+
+// --- a chosen voice that is gone from the account ---
+
+check("a 404 means the voice is not there", chosenVoiceWasNotFound(404, ""));
+check("a 400 naming voice_not_found means the voice is not there", chosenVoiceWasNotFound(400, '{"detail":{"status":"voice_not_found"}}'));
+check("a 422 naming voice_not_found counts too", chosenVoiceWasNotFound(422, '{"detail":{"status":"VOICE_NOT_FOUND"}}'));
+check("a 401 is not a missing voice", !chosenVoiceWasNotFound(401, '{"detail":{"status":"invalid_api_key"}}'));
+check("a 500 is not a missing voice", !chosenVoiceWasNotFound(500, "voice_not_found"));
+check("a 429 without the words is not a missing voice", !chosenVoiceWasNotFound(429, "too many requests"));
 
 if (failedCheckDescriptions.length > 0) {
   console.log(`voice checks: ${passedCheckCount} passed, ${failedCheckDescriptions.length} FAILED`);

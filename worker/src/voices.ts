@@ -65,6 +65,18 @@ export function forgetCachedAccountVoiceList(): void {
   cachedAccountVoiceList = undefined;
 }
 
+/**
+ * True when ElevenLabs refused a text-to-speech request because the voice is
+ * not there: a 404, or a 4xx whose body names `voice_not_found`. The Worker
+ * then speaks with the default voice instead of failing the reply.
+ */
+export function chosenVoiceWasNotFound(status: number, responseBodyText: string): boolean {
+  if (status === 404) {
+    return true;
+  }
+  return status >= 400 && status < 500 && /voice_not_found/i.test(responseBodyText);
+}
+
 export function voiceIdIsWellFormed(voiceId: string): boolean {
   return VOICE_ID_PATTERN.test(voiceId);
 }
