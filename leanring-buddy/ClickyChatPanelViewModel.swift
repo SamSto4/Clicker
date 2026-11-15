@@ -11,9 +11,9 @@
 import Combine
 import Foundation
 
-/// Which of the panel's screens is showing. Five tabs: the chat tab shows `activeChat`, the chats
-/// tab shows `chatList` (and `readOnlyChat` when one is opened), and memory, usage and settings
-/// each have a screen of their own.
+/// Which of the panel's screens is showing. Six tabs: the chat tab shows `activeChat`, the chats
+/// tab shows `chatList` (and `readOnlyChat` when one is opened), and memory, context, usage and
+/// settings each have a screen of their own.
 enum ClickyChatPanelScreen: Equatable {
     /// The text field and the current chat.
     case activeChat
@@ -23,16 +23,18 @@ enum ClickyChatPanelScreen: Equatable {
     case readOnlyChat(UUID)
     /// The profile facts and the notes, each with a delete.
     case memory
+    /// The user's standing context (round 21b): an editor Clicky reads on every turn.
+    case context
     /// Questions, speed, tokens and estimated cost from the local metrics logs.
     case usage
     /// The settings, the voice options, the shortcuts and the permissions.
     case settings
 
-    /// False for the three tabs with nothing under the tab bar, which then need less room below it.
+    /// False for the four tabs with nothing under the tab bar, which then need less room below it.
     var hasRowUnderTabBar: Bool {
         switch self {
         case .activeChat, .chatList, .readOnlyChat: return true
-        case .memory, .usage, .settings: return false
+        case .memory, .context, .usage, .settings: return false
         }
     }
 }
@@ -83,7 +85,16 @@ final class ClickyChatPanelViewModel: ObservableObject {
 
     // MARK: - What the panel shows
 
-    @Published var screen: ClickyChatPanelScreen = .activeChat
+    @Published var screen: ClickyChatPanelScreen = .activeChat {
+        didSet {
+            // Round 21b: leaving the context tab by any route (a tab, a typed message that brings the
+            // chat tab up, a change card) writes a pending save at once and closes "clear everything?".
+            if oldValue == .context && screen != .context {
+                agentContextStore?.flushPendingSaveNow()
+                contextClearConfirmationIsShowing = false
+            }
+        }
+    }
     @Published var draftMessageText = ""
     @Published var searchQueryText = ""
     /// The row highlighted in the chat list by the arrow keys.
@@ -206,7 +217,7 @@ final class ClickyChatPanelViewModel: ObservableObject {
             return session.collection.activeChat
         case .readOnlyChat(let chatID):
             return session.collection.chat(withID: chatID)
-        case .chatList, .memory, .usage, .settings:
+        case .chatList, .memory, .context, .usage, .settings:
             return nil
         }
     }
@@ -217,6 +228,7 @@ final class ClickyChatPanelViewModel: ObservableObject {
         case .activeChat: return .chat
         case .chatList, .readOnlyChat: return .chats
         case .memory: return .memory
+        case .context: return .context
         case .usage: return .usage
         case .settings: return .settings
         }
@@ -256,11 +268,20 @@ final class ClickyChatPanelViewModel: ObservableObject {
         chatIDAwaitingDeleteConfirmation = nil
         memoryRowAwaitingDeleteConfirmation = nil
         folderRemovalConfirmationDidEnd()
+        contextClearConfirmationIsShowing = false
         // A change waiting for an answer takes the keyboard (return and escape act on the card),
         // so the text field must not.
         if requestsKeyboardFocus && !isChangeCardAwaitingAnswer {
             requestInputFocus()
         }
+    }
+
+    /// Called by the panel controller as the panel starts to close (Escape, a click outside, the
+    /// shortcut, quitting): the context typed in the last moment is written at once, and "clear
+    /// everything?" does not survive the panel.
+    func panelWillClose() {
+        agentContextStore?.flushPendingSaveNow()
+        contextClearConfirmationIsShowing = false
     }
 
     func requestInputFocus() {
@@ -309,6 +330,7 @@ final class ClickyChatPanelViewModel: ObservableObject {
         case .chat: showActiveChat()
         case .chats: showChatList()
         case .memory: showMemory()
+        case .context: showContext()
         case .usage: showUsage()
         case .settings: showSettings()
         }
@@ -326,6 +348,7 @@ final class ClickyChatPanelViewModel: ObservableObject {
         chatIDAwaitingDeleteConfirmation = nil
         memoryRowAwaitingDeleteConfirmation = nil
         folderRemovalConfirmationDidEnd()
+        contextClearConfirmationIsShowing = false
     }
 
     func openChatToRead(chatID: UUID) {
@@ -626,6 +649,184 @@ final class ClickyChatPanelViewModel: ObservableObject {
     private func applyLoadedUsageSummary(_ loadedSummary: ClickyUsageSummary, loadGeneration: Int) {
         guard loadGeneration == usageLoadGeneration else { return }
         usageSummary = loadedSummary
+    }
+
+    // MARK: - Context tab (round 21b)
+
+    /// The store of the user's standing context, handed in by the manager next to `panelDataLocations`
+    /// (the same store a turn reads). Nil means "no context folder": the tab says so and shows nothing
+    /// else, which only a check can produce.
+    var agentContextStore: ClickyAgentContextStore? {
+        didSet {
+            let viewModelForHandler = self
+            agentContextStore?.saveStateChangedHandler = { [weak viewModelForHandler] saveState in
+                Task { @MainActor in
+                    viewModelForHandler?.applyAgentContextSaveState(saveState)
+                }
+            }
+            refreshAgentContextFromStore()
+        }
+    }
+
+    /// The words in the editor, as the editor holds them (hidden lines and a hand-edited tail included).
+    @Published private(set) var agentContextText = ""
+    /// The tab's counter: `String.count` of the editor's words.
+    @Published private(set) var agentContextCharacterCount = 0
+    /// The lines that look like a key or a card number, named in the amber line under the editor.
+    @Published private(set) var agentContextHiddenLineNumbers: [Int] = []
+    /// What saving last reported. Nil when nothing happened since the tab opened, or two seconds after
+    /// a write ("saved ✓" then still shows while the words equal the file).
+    @Published private(set) var agentContextSaveState: ClickyAgentContextSaveState?
+    /// The words the file was last known to hold (after a read or a write), for "saved ✓". Nil before
+    /// the first read.
+    @Published private(set) var agentContextLastWrittenText: String?
+    /// "the context file couldn't be read; it was kept as context.unreadable.md", or nil.
+    @Published private(set) var agentContextLoadNotice: String?
+    /// "clear everything?" is asked in place of the clear button.
+    @Published private(set) var contextClearConfirmationIsShowing = false
+    /// False until the store's first read of the file has come back, so the editor never writes over a
+    /// file it has not read.
+    @Published private(set) var agentContextEditorIsEditable = false
+
+    /// Lets "clear" go through the editor's own undoable path. The editor fills it in when it is made.
+    let agentContextEditorConnection = ClickyAgentContextEditorConnection()
+    /// Set by "clear" just before the editor empties itself, so that change is saved at once instead of
+    /// 0.8 s later.
+    private var nextAgentContextChangeSavesAtOnce = false
+    private var agentContextSaveMarkClearTask: Task<Void, Never>?
+    /// Counts every read of the file, so an older read can never replace a newer one.
+    private var agentContextLoadGeneration = 0
+
+    /// The mark next to the counter: "saving…", "saved ✓" or "couldn't save: …".
+    var agentContextSaveMark: ClickyAgentContextSaveMark? {
+        let textEqualsLastWrittenText = agentContextLastWrittenText.map { $0 == agentContextText } ?? false
+        return ClickyAgentContextTabText.saveMark(for: agentContextSaveState, textEqualsLastWrittenText: textEqualsLastWrittenText)
+    }
+
+    /// The amber line that names the hidden lines, or nil.
+    var agentContextHiddenLinesWarningText: String? {
+        ClickyAgentContextTabText.hiddenLinesWarningText(forHiddenLineNumbers: agentContextHiddenLineNumbers)
+    }
+
+    /// Opens the context tab. The words already in memory show at once; the file is read again in the
+    /// background (unless typing waits to be written), so a hand edit shows the next time the tab opens.
+    func showContext() {
+        leaveChatScreens()
+        screen = .context
+        refreshAgentContextFromStore()
+        reloadAgentContextFromDiskIfNoSaveIsPending()
+    }
+
+    /// Shows what the store holds now (no disk read). Also used by the manager after the launch read.
+    func refreshAgentContextFromStore() {
+        guard let agentContextStore else {
+            agentContextEditorIsEditable = false
+            return
+        }
+        applyAgentContextEditorText(agentContextStore.currentText)
+        agentContextLastWrittenText = agentContextStore.lastWrittenText
+        agentContextEditorIsEditable = agentContextStore.hasFinishedFirstLoad
+    }
+
+    private func reloadAgentContextFromDiskIfNoSaveIsPending() {
+        guard let agentContextStore else { return }
+        agentContextLoadGeneration += 1
+        let loadGeneration = agentContextLoadGeneration
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let loadResult = agentContextStore.reloadFromDiskIfNoSaveIsPending()
+            await self?.finishAgentContextReload(loadResult, loadGeneration: loadGeneration)
+        }
+    }
+
+    private func finishAgentContextReload(_ loadResult: ClickyAgentContextLoadResult?, loadGeneration: Int) {
+        guard loadGeneration == agentContextLoadGeneration, agentContextStore != nil else { return }
+        switch loadResult {
+        case .unreadableFileMovedAside(let keptAsFileName):
+            agentContextLoadNotice = ClickyAgentContextTabText.unreadableFileNoticeText(keptAsFileName: keptAsFileName)
+        case .failed(let reason):
+            agentContextLoadNotice = ClickyAgentContextTabText.readFailedNoticeText(reason: reason)
+        case .loaded, .empty:
+            agentContextLoadNotice = nil
+        case nil:
+            // Skipped: typing waits to be written, and what is on screen is newer than the file.
+            break
+        }
+        refreshAgentContextFromStore()
+        // A skipped read means the user typed, which they could only do in an editor that was editable.
+        if loadResult == nil {
+            agentContextEditorIsEditable = true
+        }
+    }
+
+    /// Every committed change of the editor's words. They go to the store (what the next turn reads) and
+    /// are saved 0.8 s after the last keystroke, or at once after "clear".
+    func agentContextEditorTextDidChange(_ editorText: String) {
+        applyAgentContextEditorText(editorText)
+        guard let agentContextStore else { return }
+        agentContextStore.setCurrentText(editorText)
+        if nextAgentContextChangeSavesAtOnce {
+            nextAgentContextChangeSavesAtOnce = false
+            agentContextStore.saveNow()
+        } else {
+            agentContextStore.scheduleSave()
+        }
+    }
+
+    /// The counter and the hidden lines follow the words at once. The hidden lines come from the store's
+    /// cache, so only the line being typed is checked again (a full check of 45 lines takes about 13 ms).
+    private func applyAgentContextEditorText(_ editorText: String) {
+        if agentContextText != editorText {
+            agentContextText = editorText
+        }
+        agentContextCharacterCount = ClickyAgentContextText.characterCount(of: editorText)
+        let hiddenLineNumbers = agentContextStore?.hiddenLineNumbers(forEditorText: editorText) ?? ClickyAgentContextText.hiddenLineNumbers(in: editorText)
+        if agentContextHiddenLineNumbers != hiddenLineNumbers {
+            agentContextHiddenLineNumbers = hiddenLineNumbers
+        }
+    }
+
+    private func applyAgentContextSaveState(_ saveState: ClickyAgentContextSaveState) {
+        agentContextSaveMarkClearTask?.cancel()
+        agentContextSaveState = saveState
+        agentContextLastWrittenText = agentContextStore?.lastWrittenText
+        guard case .saved = saveState else { return }
+        // The fresh "saved ✓" of a write lasts two seconds; after that the mark shows "saved ✓" only
+        // while the words equal the file (which, after a write, they normally do).
+        agentContextSaveMarkClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(ClickyAgentContextLimits.savedMarkSeconds * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.agentContextSaveState = nil
+        }
+    }
+
+    /// The first click on "clear": the row asks "clear everything?" in place. Nothing is cleared yet.
+    func askToConfirmClearingContext() {
+        contextClearConfirmationIsShowing = true
+    }
+
+    func cancelClearingContext() {
+        contextClearConfirmationIsShowing = false
+    }
+
+    /// The second click: the editor empties itself through its own undoable path (Command + Z brings
+    /// the words back) and the empty file is written at once. The file is emptied, never deleted.
+    func confirmClearingContext() {
+        guard contextClearConfirmationIsShowing else { return }
+        contextClearConfirmationIsShowing = false
+        guard let agentContextStore else { return }
+        nextAgentContextChangeSavesAtOnce = true
+        if agentContextText.isEmpty || !agentContextEditorConnection.clearAllTextUndoably() {
+            // Nothing on screen to empty (or no editor): the store is emptied directly.
+            nextAgentContextChangeSavesAtOnce = false
+            applyAgentContextEditorText("")
+            agentContextStore.setCurrentText("")
+            agentContextStore.saveNow()
+        }
+    }
+
+    /// Writes a pending save now (the manager calls it when the app quits).
+    func flushAgentContextNow() {
+        agentContextStore?.flushPendingSaveNow()
     }
 
     // MARK: - Settings tab
@@ -982,8 +1183,13 @@ final class ClickyChatPanelViewModel: ObservableObject {
 
     // MARK: - Size
 
+    /// When the content last asked for a new height, in seconds of system uptime. The panel self test
+    /// waits until no new request has come for a moment before it takes a picture (round 21b).
+    private(set) var lastDesiredPanelHeightChangeUptimeSeconds: TimeInterval = 0
+
     func updateDesiredPanelHeight(_ desiredHeightInPoints: CGFloat) {
         guard desiredHeightInPoints.isFinite, abs(desiredHeightInPoints - desiredPanelHeightInPoints) >= 0.5 else { return }
         desiredPanelHeightInPoints = desiredHeightInPoints
+        lastDesiredPanelHeightChangeUptimeSeconds = ProcessInfo.processInfo.systemUptime
     }
 }

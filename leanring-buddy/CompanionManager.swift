@@ -219,6 +219,15 @@ final class CompanionManager: ObservableObject {
         panelDataLocations.memoriesDirectoryURL.map { ClickyMemoryStore(memoriesDirectoryURL: $0) }
     }
 
+    /// The user's standing context (round 21b): what they wrote in the panel's context tab, which every
+    /// turn reads. One store for the run (it holds the in-memory copy a turn reads and the pending
+    /// save), in ~/Library/Application Support/Clicky/Context, or a temporary folder in a panel self
+    /// test. The folder comes from `panelDataLocations`, so the tab and the turn always use the same
+    /// one. Only the tab's editor and its "clear" change the words.
+    private(set) lazy var agentContextStore = ClickyAgentContextStore(
+        directoryURL: panelDataLocations.contextDirectoryURL ?? ClickyAgentContextStore.defaultDirectoryURL
+    )
+
     /// Compacts a chat into zero to three memory lines when it ends (ten quiet minutes, a new chat,
     /// quitting). Off in the panel self test (which promises no model and no network) and when no
     /// memories folder is known.
@@ -229,12 +238,18 @@ final class CompanionManager: ObservableObject {
             appToken: ClickyWorkerConfiguration.workerAppToken
         )
         let isPanelSelfTestRun = ProcessInfo.processInfo.environment[ClickyChatStore.panelSelfTestEnvironmentVariable] == "1"
+        // Round 21b: the context lines that reach the chat prompt go into the compaction's `<known>`
+        // list, read from the store's in-memory copy (a hidden line never does).
+        let agentContextStoreForCompaction = agentContextStore
         return ClickyMemoryCompactionController(
             chatSession: chatSession,
             memoryStore: memoryStoreForThisRun ?? ClickyMemoryStore(memoriesDirectoryURL: ClickyMemoryStore.defaultMemoriesDirectoryURL),
             client: memoryCompactionClient,
             promptsDirectoryURL: ClickyPromptAssembler.promptsDirectoryURL(in: .main),
-            isEnabled: !isPanelSelfTestRun && memoryStoreForThisRun != nil
+            isEnabled: !isPanelSelfTestRun && memoryStoreForThisRun != nil,
+            loadContextLineTexts: {
+                agentContextStoreForCompaction.promptLineTextsForMemoryCompaction
+            }
         )
     }()
 
@@ -753,6 +768,7 @@ final class CompanionManager: ObservableObject {
         ClickyMemoryFileSnapshotCache.shared.enable(forDirectory: ClickyNoteStore.defaultNotesDirectoryURL)
         refreshNotesAndProfileCopyInBackground()
         warmUpPromptAssemblyInBackground()
+        readAgentContextAtLaunchInBackground()
         runDrawingSelfTestIfRequested()
         runPanelSelfTestIfRequested()
         // Read the chat files in the background (never on the main thread), and delete chats past
@@ -894,6 +910,10 @@ final class CompanionManager: ObservableObject {
         chatPanelTapCancellable?.cancel()
         chatPanelController.close()
         chatSession.stopRetentionSchedule()
+        // Round 21b: the context typed in the last moment is written now (a 2 KB file, synchronous),
+        // before the compaction's wait. Closing the panel above already flushes when it was open; this
+        // also covers a save still pending after the panel closed.
+        agentContextStore.flushPendingSaveNow()
         // Best effort: compact the chat that was in use (a short request with a short limit; if it
         // does not finish, the next launch retries it).
         memoryCompactionController.compactBeforeQuitting()
@@ -1072,8 +1092,9 @@ final class CompanionManager: ObservableObject {
     /// typed message whose reply is still streaming in, so the panel can be checked without typing.
     /// With CLICKY_PANEL_SELF_TEST_IMAGE=<png path> it also saves a picture of only Clicky's own
     /// windows (the panel is made visible to that capture for the picture alone), and then one of
-    /// each other tab next to it (the same name with "-chats", "-memory", "-usage" and "-settings"
-    /// before the extension).
+    /// each other tab next to it (the same name with "-chats", "-memory", "-context", "-usage" and
+    /// "-settings" before the extension). Round 21b: the context tab shows a made-up sample context
+    /// from a temporary folder (`CLICKY_CONTEXT_DIRECTORY` when given), with "clear everything?" open.
     ///
     /// The chats live in a temporary folder (`CLICKY_CHAT_STORE_DIRECTORY` when given, else a new
     /// folder in the temporary directory; see `ClickyChatSession.makeStoreForCurrentRun`), never
@@ -1125,7 +1146,10 @@ final class CompanionManager: ObservableObject {
             // Round 20: six made-up voices as the kept voice list, so the settings tab's voice picker
             // shows a list with no request to the Worker (the self test never asks for one).
             let wroteSampleVoices = ClickyPanelSelfTestSamples.writeSampleVoices(into: panelDataLocations)
-            print("💬 panel self test: sample memory written=\(writtenSampleData.wroteNotes) sample metrics written=\(writtenSampleData.wroteMetrics) sample memories written=\(wroteSampleMemories) sample voices written=\(wroteSampleVoices) realFolders=\(panelDataLocations.touchesARealFolder)")
+            // Round 21b: a made-up standing context of about 300 characters with one line holding a sample
+            // key shape, so the context tab's picture shows the count and the warning. Temporary folder only.
+            let wroteSampleContext = ClickyPanelSelfTestSamples.writeSampleContext(into: panelDataLocations)
+            print("💬 panel self test: sample memory written=\(writtenSampleData.wroteNotes) sample metrics written=\(writtenSampleData.wroteMetrics) sample memories written=\(wroteSampleMemories) sample voices written=\(wroteSampleVoices) sample context written=\(wroteSampleContext) realFolders=\(panelDataLocations.touchesARealFolder)")
 
             let selfTestImagePathFromEnvironment = ProcessInfo.processInfo.environment["CLICKY_PANEL_SELF_TEST_IMAGE"]
             chatPanelController.screenProvider = { mainDisplayScreen }
@@ -1165,6 +1189,15 @@ final class CompanionManager: ObservableObject {
                 await saveSelfTestPicture(toPath: pictureFilePath(forTabNamed: "memory"), description: "memory")
                 chatPanelViewModel.cancelMemoryDeleteConfirmation()
 
+                // Round 21b: the context tab with the sample context (its count and the warning about
+                // line 4), with "clear everything?" open. Nothing is cleared: it is cancelled after.
+                chatPanelViewModel.selectTab(.context)
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                chatPanelViewModel.askToConfirmClearingContext()
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                await saveSelfTestPicture(toPath: pictureFilePath(forTabNamed: "context"), description: "context")
+                chatPanelViewModel.cancelClearingContext()
+
                 chatPanelViewModel.selectTab(.usage)
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 await saveSelfTestPicture(toPath: pictureFilePath(forTabNamed: "usage"), description: "usage")
@@ -1200,16 +1233,28 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Waits, at most two seconds, until the panel's window has the height its content asks for,
-    /// and prints how long that took or that it never got there. A picture taken mid-resize shows
-    /// a window only part of the way to its height (round 16 caught a usage picture like that), and
-    /// a window that never gets there is a real bug that the printed heights then explain.
+    /// How long no new height request may have come before the self test takes a picture (round 21b).
+    private static let selfTestPictureQuietSecondsAfterLastHeightRequest: TimeInterval = 0.3
+
+    /// Waits, at most two seconds, until the panel's window has the height its content asks for and
+    /// no new height request has come for 0.3 s, and prints how long that took or that it never got
+    /// there. A picture taken mid-resize shows a window only part of the way to its height (round 16
+    /// caught a usage picture like that), and a window that never gets there is a real bug that the
+    /// printed heights then explain.
+    ///
+    /// Round 21b: in the round 21 self test the memory tab's picture was taken at 181 points, the
+    /// height of its "reading…" state, before the loaded content asked for its real height (clamped to
+    /// 440): the window agreed with an old request. So the wait first asks the content to lay itself
+    /// out (which makes it report the height it has), and then also waits for the requests to go quiet.
     private func waitForChatPanelHeightToSettle(beforePictureNamed pictureDescription: String) async {
+        chatPanelController.layOutContentForSelfTest()
         let waitStartedUptimeSeconds = ProcessInfo.processInfo.systemUptime
         while ProcessInfo.processInfo.systemUptime - waitStartedUptimeSeconds < 2 {
+            let secondsSinceLastHeightRequest = ProcessInfo.processInfo.systemUptime - chatPanelViewModel.lastDesiredPanelHeightChangeUptimeSeconds
             if let currentPanelHeight = chatPanelController.currentPanelHeightForSelfTest,
                let settledPanelHeight = chatPanelController.settledPanelHeightForSelfTest,
-               abs(currentPanelHeight - settledPanelHeight) < 1 {
+               abs(currentPanelHeight - settledPanelHeight) < 1,
+               secondsSinceLastHeightRequest >= Self.selfTestPictureQuietSecondsAfterLastHeightRequest {
                 let waitedMilliseconds = Int((ProcessInfo.processInfo.systemUptime - waitStartedUptimeSeconds) * 1_000)
                 print("💬 panel self test: \(pictureDescription) window is \(Int(currentPanelHeight)) points, settled after \(waitedMilliseconds) ms")
                 return
@@ -1482,6 +1527,8 @@ final class CompanionManager: ObservableObject {
 
         // The memory, usage and settings tabs (round 15).
         chatPanelViewModel.panelDataLocations = panelDataLocations
+        // Round 21b: the context tab edits the same store every turn reads.
+        chatPanelViewModel.agentContextStore = agentContextStore
         chatPanelViewModel.panelSettingChangedHandler = { [weak self] panelSettingChange in
             self?.applyPanelSettingChange(panelSettingChange)
         }
@@ -2781,6 +2828,24 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Round 21b: reads the standing context into the store's in-memory copy once at launch, off the
+    /// main thread, so the first turn already has it (a turn never reads the disk). Skipped until
+    /// onboarding is done, like the warm-up; the context tab reads the file again when it opens. The
+    /// console gets two numbers, never a word of the context.
+    private func readAgentContextAtLaunchInBackground() {
+        guard hasCompletedOnboarding else { return }
+        let agentContextStore = self.agentContextStore
+        Task.detached(priority: .utility) { [weak self] in
+            let loadResult = agentContextStore.reloadFromDisk()
+            print(ClickyAgentContextText.consoleSummaryLine(
+                characterCount: ClickyAgentContextText.characterCount(of: agentContextStore.currentText),
+                hiddenLineCount: agentContextStore.hiddenLineNumbers.count
+            ))
+            guard loadResult != nil else { return }
+            await self?.chatPanelViewModel.refreshAgentContextFromStore()
+        }
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
@@ -3310,7 +3375,9 @@ final class CompanionManager: ObservableObject {
                     promptsDirectoryURL: ClickyPromptAssembler.promptsDirectoryURL(in: .main),
                     noteStore: noteStore,
                     profileStore: profileStore,
-                    memoryStore: memoryStoreForThisRun
+                    memoryStore: memoryStoreForThisRun,
+                    // Round 21b: the standing context, from the store's in-memory copy (no disk read).
+                    agentContextStore: agentContextStore
                 )
                 turnMetrics.promptAssemblyMilliseconds = ClickyTurnMetrics.millisecondsElapsed(
                     sinceUptimeSeconds: promptAssemblyStartedUptimeSeconds
@@ -3323,6 +3390,9 @@ final class CompanionManager: ObservableObject {
                 // that the drawing, card and 3D formats are skills instead of base prompt text.
                 turnMetrics.skillCharacterCount = preparedPrompt.skillBodyCharacterCount
                 turnMetrics.noteCount = preparedPrompt.includedNotes.count
+                // Round 21b: two counts of the standing context, only when greater than zero; never a word.
+                turnMetrics.contextCharacterCount = preparedPrompt.contextCharacterCount > 0 ? preparedPrompt.contextCharacterCount : nil
+                turnMetrics.contextHiddenLineCount = preparedPrompt.contextHiddenLineCount > 0 ? preparedPrompt.contextHiddenLineCount : nil
 
                 // Add what the memory server remembers (saved facts and a related past session) to
                 // the per-turn part of the prompt. It must not go into the base prompt block: that
@@ -3394,6 +3464,8 @@ final class CompanionManager: ObservableObject {
                     let loopResult = try await claudeAPI.analyzeImageStreamingWithTools(
                         images: labeledImages,
                         staticSystemPrompt: preparedPrompt.staticSystemPromptText,
+                        // Round 21b: the standing context, a cached block of its own (empty: none).
+                        contextSystemPrompt: preparedPrompt.contextSystemPromptText,
                         dynamicSystemPrompt: dynamicSystemPromptTextWithLongTermMemory,
                         conversationHistory: historyForAPI,
                         userPrompt: transcript,
@@ -3463,6 +3535,8 @@ final class CompanionManager: ObservableObject {
                     streamingResult = try await claudeAPI.analyzeImageStreaming(
                         images: labeledImages,
                         staticSystemPrompt: preparedPrompt.staticSystemPromptText,
+                        // Round 21b: the standing context, a cached block of its own (empty: none).
+                        contextSystemPrompt: preparedPrompt.contextSystemPromptText,
                         dynamicSystemPrompt: dynamicSystemPromptTextWithLongTermMemory,
                         conversationHistory: historyForAPI,
                         userPrompt: transcript,

@@ -128,10 +128,13 @@ class ClaudeAPI {
     /// Same streaming request, but the system prompt is sent as two blocks so Anthropic can cache
     /// the first. `staticSystemPrompt` must be identical on every turn (it carries the cache
     /// breakpoint); `dynamicSystemPrompt` holds everything that changes per turn and follows it.
+    /// Round 21b: `contextSystemPrompt`, the user's standing context, goes between them as a cached
+    /// block of its own; empty (the default) sends exactly the two blocks of before.
     /// Also returns the token counts Claude reported, including cache creation and cache reads.
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         staticSystemPrompt: String,
+        contextSystemPrompt: String = "",
         dynamicSystemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
@@ -141,6 +144,7 @@ class ClaudeAPI {
             images: images,
             systemPromptValue: ClickySystemPromptBlocks.makeSystemBlocks(
                 staticText: staticSystemPrompt,
+                contextText: contextSystemPrompt,
                 dynamicText: dynamicSystemPrompt
             ),
             conversationHistory: conversationHistory,
@@ -297,12 +301,13 @@ class ClaudeAPI {
     /// The same streaming chat request as `analyzeImageStreaming`, with the tools of this turn added
     /// (the file tools when a folder is set, the action tools while actions are on; round 18 made
     /// this one function for both) and the loop that answers the model's tool calls
-    /// (`ClickyToolLoop`) around it. Each request carries the same two system blocks and the same
-    /// tools; only messages are added at the end. The session runs the tools and keeps the changes
-    /// and actions the model proposed.
+    /// (`ClickyToolLoop`) around it. Each request carries the same system blocks (two, or three with
+    /// the user's standing context, round 21b) and the same tools; only messages are added at the end.
+    /// The session runs the tools and keeps the changes and actions the model proposed.
     func analyzeImageStreamingWithTools(
         images: [(data: Data, label: String)],
         staticSystemPrompt: String,
+        contextSystemPrompt: String = "",
         dynamicSystemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
@@ -315,6 +320,7 @@ class ClaudeAPI {
     ) async throws -> ClickyToolLoopResult {
         let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(
             staticText: staticSystemPrompt,
+            contextText: contextSystemPrompt,
             dynamicText: dynamicSystemPrompt
         )
         let tools = toolSession.toolsArray()

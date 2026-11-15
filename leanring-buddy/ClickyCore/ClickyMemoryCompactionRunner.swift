@@ -135,6 +135,9 @@ nonisolated enum ClickyMemoryCompactionRunner {
     ///   request's `<known>` list and the validator drops a line that repeats one. The app passes
     ///   a reader that prefers its in-memory copy, because the profile is in ~/Documents (iCloud)
     ///   and reading it from disk has stalled for seconds.
+    /// - `loadContextLineTexts` (round 21b) is asked once too: the lines of the user's standing context
+    ///   that reach the chat prompt (never a hidden line) go into the `<known>` list after the profile
+    ///   facts, and the validator drops a line that repeats one. The app reads the store's in-memory copy.
     /// - Memories are stored with the date of the chat's last compacted exchange and the chat's id.
     ///
     /// A failed request, an unwritable store or a request body that cannot be encoded gives
@@ -146,6 +149,7 @@ nonisolated enum ClickyMemoryCompactionRunner {
         systemPromptText: String,
         memoryStore: ClickyMemoryStore,
         loadProfileFactTexts: @Sendable () -> [String],
+        loadContextLineTexts: @Sendable () -> [String] = { [] },
         sendRequestBody: @Sendable (Data) async -> ClickyMemoryModelResponse,
         now: Date = Date()
     ) async -> ClickyMemoryCompactionBatchResult {
@@ -190,8 +194,10 @@ nonisolated enum ClickyMemoryCompactionRunner {
             // the model does not write it again in other words) and the validator checks the answer
             // against it afterwards.
             let existingProfileFactTexts = loadProfileFactTexts()
+            let existingContextLineTexts = loadContextLineTexts()
             let knownTexts = ClickyMemoryCompaction.knownTexts(
                 profileFactTexts: existingProfileFactTexts,
+                contextLineTexts: existingContextLineTexts,
                 memories: memoryStore.loadMemories(),
                 forExchanges: exchanges,
                 now: now
@@ -217,7 +223,8 @@ nonisolated enum ClickyMemoryCompactionRunner {
             let validationResult = ClickyMemoryOutputValidator.validate(
                 modelOutput: modelText,
                 existingMemoryTexts: memoryStore.loadMemories().map(\.text),
-                existingProfileFactTexts: existingProfileFactTexts
+                existingProfileFactTexts: existingProfileFactTexts,
+                existingContextLineTexts: existingContextLineTexts
             )
             // The lines share the day of the chat they came from, and the chat's id.
             let memoriesCreatedAt = exchanges.last?.timestamp ?? now

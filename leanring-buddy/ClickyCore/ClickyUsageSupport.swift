@@ -145,6 +145,12 @@ nonisolated struct ClickyUsageTurnRecord: Equatable, Sendable {
     var pointSnapOutcome: ClickyPointSnapOutcome?
     var pointSnapDistancePoints: Int?
 
+    // Round 21b: read the same tolerant way (not shown in the usage tab); a line without them keeps nil.
+    /// The characters of the standing context that reached the prompt.
+    var contextCharacterCount: Int?
+    /// The lines of the context hidden from the model.
+    var contextHiddenLineCount: Int?
+
     var hasAnyTokenCount: Bool {
         inputTokens != nil || outputTokens != nil || cacheCreationInputTokens != nil || cacheReadInputTokens != nil
     }
@@ -247,6 +253,8 @@ nonisolated enum ClickyUsageLogParser {
         turnRecord.walkthroughStepCount = nonNegativeInteger(jsonObject["walkthroughStepCount"])
         turnRecord.pointSnapOutcome = (jsonObject["pointSnapOutcome"] as? String).flatMap(ClickyPointSnapOutcome.init(rawValue:))
         turnRecord.pointSnapDistancePoints = nonNegativeInteger(jsonObject["pointSnapDistancePoints"])
+        turnRecord.contextCharacterCount = nonNegativeInteger(jsonObject["contextCharacterCount"])
+        turnRecord.contextHiddenLineCount = nonNegativeInteger(jsonObject["contextHiddenLineCount"])
         return turnRecord
     }
 

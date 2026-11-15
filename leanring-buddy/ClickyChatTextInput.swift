@@ -22,6 +22,10 @@ final class ClickyChatNSTextView: NSTextView {
     /// False while a proposed change waits for return or escape (round 17): the card has the
     /// keyboard then, and the field must not take it back when the tab is shown again.
     var takesKeyboardWhenAddedToWindow = true
+    /// True for the context tab's editor (round 21b): Return adds a line like any text editor and
+    /// `submitHandler` is never called, because nothing is sent from that tab. False (the chat field
+    /// and the search field) keeps Return as "send".
+    var returnKeyInsertsANewLine = false
 
     /// Takes the keyboard as soon as it is part of a window, so opening the panel (or switching
     /// to the search field) lets the user type at once.
@@ -38,6 +42,10 @@ final class ClickyChatNSTextView: NSTextView {
         let isReturnKey = event.keyCode == 36 || event.keyCode == 76
         // While an input method is composing text (marked text), Return belongs to the input method.
         if isReturnKey && !hasMarkedText() {
+            if returnKeyInsertsANewLine {
+                insertNewline(nil)
+                return
+            }
             let isNewLineKeyHeld = event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.option)
             if isNewLineKeyHeld {
                 if allowsMultipleLines {

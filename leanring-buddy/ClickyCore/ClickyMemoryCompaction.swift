@@ -70,6 +70,10 @@ nonisolated enum ClickyMemoryCompaction {
     /// share words with the chat (the prompt's own selection, at most 8 lines and 800 characters).
     static let maximumKnownProfileFactCount = 20
     static let maximumKnownProfileFactsCharacterCount = 1_000
+    /// Round 21b: the lines of the user's standing context go into the list too, after the profile facts,
+    /// within a cap of their own: a memory that restates the context is noise the user already pays for
+    /// on every turn.
+    static let maximumKnownContextLinesCharacterCount = 1_000
 
     // MARK: - Request
 
@@ -138,11 +142,14 @@ nonisolated enum ClickyMemoryCompaction {
     }
 
     /// What goes in the `<known>` list for a chat: the newest profile facts (at most 20, within
-    /// 1,000 characters, oldest first like the profile section of the chat prompt), then the
-    /// memories that share words with the chat, picked the way a question picks them for the chat
-    /// prompt. Pure: the caller reads the profile and the memories.
+    /// 1,000 characters, oldest first like the profile section of the chat prompt), then (round 21b)
+    /// the lines of the user's standing context in their own order, within their own 1,000 characters,
+    /// then the memories that share words with the chat, picked the way a question picks them for the
+    /// chat prompt. Pure: the caller reads the profile, the context and the memories. The context lines
+    /// are the ones that reach the prompt, so a hidden line never gets here.
     static func knownTexts(
         profileFactTexts: [String],
+        contextLineTexts: [String] = [],
         memories: [ClickyMemory],
         forExchanges exchanges: [ClickyChatExchange],
         now: Date
@@ -157,13 +164,22 @@ nonisolated enum ClickyMemoryCompaction {
             newestProfileFactTexts.insert(profileFactText, at: 0)
             profileCharacterCount += profileFactText.count
         }
+        var knownContextLineTexts: [String] = []
+        var contextCharacterCount = 0
+        for contextLineText in contextLineTexts where !contextLineText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard contextCharacterCount + contextLineText.count <= maximumKnownContextLinesCharacterCount else {
+                break
+            }
+            knownContextLineTexts.append(contextLineText)
+            contextCharacterCount += contextLineText.count
+        }
         let relatedMemoryTexts = ClickyMemorySelection.selectMemories(
             from: memories,
             forTranscript: chatTurnLines(forExchanges: exchanges),
             wantsFullRecall: false,
             now: now
         ).map(\.text)
-        return newestProfileFactTexts + relatedMemoryTexts
+        return newestProfileFactTexts + knownContextLineTexts + relatedMemoryTexts
     }
 
     /// Low effort, as for the dictation cleanup (the other Haiku request of the app).
@@ -244,17 +260,19 @@ nonisolated struct ClickyMemoryValidationResult: Equatable, Sendable {
 ///   [NOTE:...] that the model might later echo from the prompt;
 /// - each line is cut at 160 characters, and a line with no words is dropped;
 /// - a line that looks like a secret (checked before and after the cut) is dropped;
-/// - a line essentially the same as an existing memory, a profile fact or an earlier line of the
-///   same answer is dropped (`ClickyMemoryKeyWords.textsAreEssentiallyTheSame`);
+/// - a line essentially the same as an existing memory, a profile fact, a line of the user's standing
+///   context (round 21b) or an earlier line of the same answer is dropped
+///   (`ClickyMemoryKeyWords.textsAreEssentiallyTheSame`);
 /// - at most three lines are kept, the first three that pass.
 nonisolated enum ClickyMemoryOutputValidator {
     static func validate(
         modelOutput: String,
         existingMemoryTexts: [String],
-        existingProfileFactTexts: [String]
+        existingProfileFactTexts: [String],
+        existingContextLineTexts: [String] = []
     ) -> ClickyMemoryValidationResult {
         var validationResult = ClickyMemoryValidationResult()
-        var textsAlreadyKnown = existingMemoryTexts + existingProfileFactTexts
+        var textsAlreadyKnown = existingMemoryTexts + existingProfileFactTexts + existingContextLineTexts
 
         for rawOutputLine in modelOutput.components(separatedBy: .newlines) {
             let trimmedOutputLine = rawOutputLine.trimmingCharacters(in: .whitespaces)

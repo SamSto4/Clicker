@@ -1,15 +1,22 @@
 import Foundation
 
-/// Builds the `system` field of a Claude request as two blocks, so the API can cache the first one.
+/// Builds the `system` field of a Claude request as two blocks (three with a standing context), so the
+/// API can cache the first ones.
 ///
 /// The static block (the base prompt) is the same on every turn, so it carries a cache breakpoint:
 /// from the second turn on, the API reads it from its cache instead of processing it again. The
 /// dynamic block (skills, the "right now" block, saved notes) changes between turns, so it comes
-/// after the breakpoint and is never cached.
+/// after the breakpoints and is never cached.
+///
+/// Round 21b: the user's standing context (the context tab) is a block of its own between the two,
+/// with its own breakpoint. A breakpoint caches the whole prefix, so an edit of the context rewrites
+/// only the context's cache while the static block still reads from it, and the per-turn block stays
+/// exactly what it was. With no context the array is round 21's, byte for byte.
 nonisolated enum ClickySystemPromptBlocks {
     /// Returns the exact `system` array to send. The static block comes first and carries
-    /// `cache_control`; the dynamic block follows. A blank dynamic part sends only the static block.
-    static func makeSystemBlocks(staticText: String, dynamicText: String) -> [[String: Any]] {
+    /// `cache_control`; the context block (only when it is not blank) follows with its own
+    /// `cache_control`; the dynamic block comes last, uncached. A blank part is left out.
+    static func makeSystemBlocks(staticText: String, contextText: String = "", dynamicText: String) -> [[String: Any]] {
         var systemBlocks: [[String: Any]] = []
 
         // The API rejects empty or whitespace-only text blocks, so a blank part is left out
@@ -18,6 +25,13 @@ nonisolated enum ClickySystemPromptBlocks {
             systemBlocks.append([
                 "type": "text",
                 "text": staticText,
+                "cache_control": ["type": "ephemeral"]
+            ])
+        }
+        if !isBlank(contextText) {
+            systemBlocks.append([
+                "type": "text",
+                "text": contextText,
                 "cache_control": ["type": "ephemeral"]
             ])
         }
