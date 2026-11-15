@@ -5,7 +5,7 @@
    "expect": {"maxSentences": 2, "maxWords": 45, "pointExpectation": "none"}},
 
   {"id": "br_v02", "split": "visible", "dimension": "brevity", "category": "small-talk",
-   "userPrompt": "Hey Clicky, how's it going?",
+   "userPrompt": "Hey Ezra, how's it going?",
    "screens": ["browser_main.jpg"],
    "expect": {"maxSentences": 2, "maxWords": 45, "pointExpectation": "none"}},
 

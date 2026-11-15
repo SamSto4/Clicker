@@ -1,0 +1,517 @@
+//
+//  EzraChatPanelController.swift
+//  leanring-buddy
+//
+//  The chat panel's window and its life: it hangs from the notch (or sits below the menu bar),
+//  fades in on a clean tap of option + command, takes the keyboard without making Ezra the
+//  active app, follows the height of its content, and closes on Escape or a click outside, giving
+//  the keyboard back to the app the user was in.
+//
+//  The panel is its own borderless window. Its SwiftUI content is the window's own hosting view;
+//  nothing is ever added to an existing hosting view by hand.
+//
+
+import AppKit
+import Combine
+import SwiftUI
+
+/// The panel's window. Borderless and see-through, at the status pill's level, on every Space and
+/// over full-screen apps. Unlike the pill it may become the key window, because the text field
+/// needs the keyboard, but it is non-activating: showing it never makes Ezra the active app, so
+/// the app the user was typing in stays frontmost behind it.
+final class EzraChatPanelWindow: NSPanel {
+    /// Asked first about every key press. Returns true when the key was handled and must go no
+    /// further (Escape, and the arrow keys and Return in the chat list).
+    var keyEventInterceptor: ((NSEvent) -> Bool)?
+
+    init() {
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: DS.ChatPanel.widthInPoints, height: 120),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        // The same level as the status pill: just above the menu bar, below the menus that open from it.
+        level = .statusBar
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+        isMovable = false
+        // The panel's own fade does the showing and hiding, with no zoom from the window server.
+        animationBehavior = .none
+        // Keeps the panel out of screenshots and screen sharing. Ezra's own screenshots already
+        // leave out every window of this app; this covers every other capture as well.
+        sharingType = .none
+    }
+
+    /// True while the panel is the key window, so dictation can tell that a paste belongs in the
+    /// panel's text field and not in the app behind it.
+    private(set) static var isTheKeyWindow = false
+
+    override var canBecomeKey: Bool {
+        true
+    }
+
+    override var canBecomeMain: Bool {
+        false
+    }
+
+    override func becomeKey() {
+        super.becomeKey()
+        Self.isTheKeyWindow = true
+    }
+
+    override func resignKey() {
+        super.resignKey()
+        Self.isTheKeyWindow = false
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, let keyEventInterceptor, keyEventInterceptor(event) {
+            return
+        }
+        super.sendEvent(event)
+    }
+}
+
+@MainActor
+final class EzraChatPanelController {
+    /// The design system's sizes, in the form the placement maths takes them.
+    static let layoutMetrics = EzraChatPanelMetrics(
+        widthInPoints: Double(DS.ChatPanel.widthInPoints),
+        maximumHeightInPoints: Double(DS.ChatPanel.maximumHeightInPoints),
+        gapBelowMenuBarInPoints: Double(DS.ChatPanel.gapBelowMenuBarInPoints),
+        notchOverlapInPoints: Double(DS.ChatPanel.notchOverlapInPoints),
+        screenEdgeMarginInPoints: Double(DS.ChatPanel.screenEdgeMarginInPoints)
+    )
+
+    let viewModel: EzraChatPanelViewModel
+
+    private(set) var isOpen = false
+
+    /// Called with true when the panel has opened and false when it has closed, so the status pill
+    /// can hide while the panel is up and come back after.
+    var openStateChangedHandler: ((Bool) -> Void)?
+
+    /// Round 21 review: where the panel is on the screen while it is open (global AppKit
+    /// coordinates), nil while it is closed. It is the frame the window was last asked to have, where
+    /// its open or resize animation ends. A spotlight cuts it out of its shade, because the panel sits
+    /// below the overlay the shade is drawn in.
+    var frameOnScreen: CGRect? {
+        isOpen ? lastRequestedPanelFrame : nil
+    }
+
+    /// Round 21 review: called when the panel opens, closes or changes its frame, so a spotlight on
+    /// the screen can cut the panel out of its shade again.
+    var frameOnScreenChangedHandler: (() -> Void)?
+
+    /// True while the "ask ezra…" text field has the keyboard (round 18). Follow-up listening does
+    /// not open while the user is typing, so the microphone and the keyboard are never both in use.
+    var isChatTextFieldFirstResponder: Bool {
+        isOpen && panel?.firstResponder is EzraChatNSTextView
+    }
+
+    /// Which screen the panel opens on: the one under the mouse. Replaced in the self test.
+    var screenProvider: () -> NSScreen? = {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
+    /// The geometry the panel is placed with (the screen's frame, notch and menu bar). Replaced
+    /// only by the offscreen check that runs this very controller (see `EzraChatPanelController`
+    /// in the round 15 live-size render), so the window can be placed where nobody sees it.
+    var screenGeometryProvider: (NSScreen) -> EzraStatusPillScreenGeometry = { screen in
+        EzraStatusPillController.screenGeometry(for: screen)
+    }
+
+    /// Escape was pressed in the panel. The manager decides: stop the running turn, or close.
+    /// Without a handler Escape simply closes the panel.
+    var escapePressedHandler: (() -> Void)?
+
+    private var panel: EzraChatPanelWindow?
+    private var clickOutsideMonitor: Any?
+    private var contentHeightCancellable: AnyCancellable?
+    private var changeCardCancellable: AnyCancellable?
+    private var applicationFrontmostBeforeOpening: NSRunningApplication?
+    private var shownOnScreen: NSScreen?
+
+    /// The frame the window was last asked to have: where its resize is heading, which is not
+    /// where the window is while the 0.16 s animation is still running. A new height is compared
+    /// with this and not with the window's current frame. Comparing with the current frame
+    /// dropped a request that came while an earlier one was still starting to move: the usage tab
+    /// first shows "reading the logs…" (a short panel), and its data arrived a few milliseconds
+    /// later and asked for the height the window still had, so the grow was thrown away as "no
+    /// change" and the window finished shrinking to the short height, with the tab's content
+    /// hanging out of it.
+    private var lastRequestedPanelFrame: NSRect?
+
+    /// Counts every open and close. The work that takes the window off the screen after the fade
+    /// carries the number it was scheduled with and does nothing if the panel opened again.
+    private var visibilityGeneration = 0
+
+    init(viewModel: EzraChatPanelViewModel) {
+        self.viewModel = viewModel
+    }
+
+    // MARK: - Opening and closing
+
+    func toggle() {
+        if isOpen {
+            close()
+        } else {
+            open()
+        }
+    }
+
+    /// Opens the panel. `takingKeyboard` is false when it opens only to show a reply that is not
+    /// spoken ("speak replies" is off): it is then ordered to the front without becoming the key
+    /// window, so the app the user is typing in keeps the keyboard.
+    func open(takingKeyboard: Bool = true) {
+        guard !isOpen else { return }
+        guard let screen = screenProvider() else { return }
+
+        isOpen = true
+        visibilityGeneration += 1
+        shownOnScreen = screen
+
+        // Remember who had the keyboard: the panel never activates Ezra, so that app is still
+        // frontmost, and it is handed the keyboard back when the panel closes.
+        let frontmostApplication = NSWorkspace.shared.frontmostApplication
+        applicationFrontmostBeforeOpening = frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            ? nil
+            : frontmostApplication
+
+        let screenGeometry = screenGeometryProvider(screen)
+        viewModel.hangsFromNotch = screenGeometry.hasNotch
+        viewModel.panelWillOpen(requestsKeyboardFocus: takingKeyboard)
+
+        let panel = existingOrNewPanel()
+        let finalFrame = placement(forContentHeightInPoints: viewModel.desiredPanelHeightInPoints, on: screen).frame
+
+        // It drops in from just above its final place while it fades in.
+        panel.alphaValue = 0
+        lastRequestedPanelFrame = finalFrame
+        panel.setFrame(finalFrame.offsetBy(dx: 0, dy: DS.ChatPanel.dropDistanceInPoints), display: false)
+        if takingKeyboard {
+            panel.makeKeyAndOrderFront(nil)
+        }
+        // Ezra is almost never the active app, so the panel is also ordered in explicitly.
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { animationContext in
+            animationContext.duration = DS.ChatPanel.openSeconds
+            animationContext.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(finalFrame, display: true)
+            panel.animator().alphaValue = 1
+        }
+
+        installClickOutsideMonitor()
+        // The view reports its height again whenever its content changes; the window follows. The
+        // value that arrives is used, because a @Published property still holds the old value
+        // while its publisher is sending the new one.
+        contentHeightCancellable = viewModel.$desiredPanelHeightInPoints
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] desiredHeightInPoints in
+                self?.followContentHeight(desiredHeightInPoints, animated: true)
+            }
+
+        // A change waiting for an answer has the keyboard instead (return applies it, escape
+        // cancels it): the window itself is first responder then, so no key lands in the field.
+        if takingKeyboard {
+            if viewModel.isChangeCardAwaitingAnswer {
+                panel.makeFirstResponder(nil)
+            } else {
+                viewModel.requestInputFocus()
+            }
+        }
+        observeChangeCardWhileOpen()
+        openStateChangedHandler?(true)
+        frameOnScreenChangedHandler?()
+    }
+
+    // MARK: - A change waiting for the user's answer (round 17)
+
+    /// Brings the panel up with the keyboard for a change that waits for return or escape: opens
+    /// it, or, when it is already open (typed there, or shown without the keyboard for a reply that
+    /// is not spoken), makes it the key window. The card, not the text field, has the keyboard.
+    func openTakingKeyboardForPendingChange() {
+        if isOpen, let panel {
+            panel.makeKeyAndOrderFront(nil)
+            panel.orderFrontRegardless()
+            panel.makeFirstResponder(nil)
+        } else {
+            open(takingKeyboard: true)
+        }
+    }
+
+    /// While the panel is open, a change that starts waiting takes the keyboard from the text field
+    /// (typed turns are asked in that field, so it has the keyboard when the card appears).
+    private func observeChangeCardWhileOpen() {
+        changeCardCancellable = viewModel.$changeCard
+            .map { $0?.phase == .awaitingAnswer }
+            .removeDuplicates()
+            .filter { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, self.isOpen, let panel = self.panel, panel.isKeyWindow else { return }
+                panel.makeFirstResponder(nil)
+            }
+    }
+
+    // MARK: - The folder picker (round 17)
+
+    /// Opens the system's folder chooser for the settings tab's "add folder…". The chooser needs
+    /// the app to be active, which this non-activating panel normally is not, and it is an ordinary
+    /// panel (a low window level), which would open behind this panel (status bar level). So Ezra
+    /// is activated for the moment, the chooser is lifted above this panel, and when it closes the
+    /// keyboard goes back to the app the user was in.
+    func presentFolderPicker(completion: @escaping (URL?) -> Void) {
+        let openPanel = NSOpenPanel()
+        openPanel.canChooseDirectories = true
+        openPanel.canChooseFiles = false
+        openPanel.allowsMultipleSelection = false
+        openPanel.canCreateDirectories = false
+        openPanel.prompt = "add folder"
+        openPanel.message = "pick a folder ezra may read and edit files in"
+        openPanel.level = NSWindow.Level(rawValue: (panel?.level.rawValue ?? NSWindow.Level.statusBar.rawValue) + 1)
+
+        let applicationToReturnTo = applicationFrontmostBeforeOpening ?? NSWorkspace.shared.frontmostApplication
+        let applicationToReturnToIsEzra = applicationToReturnTo?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        isPresentingFolderPicker = true
+        NSApp.activate(ignoringOtherApps: true)
+        openPanel.begin { [weak self] response in
+            self?.isPresentingFolderPicker = false
+            // Ezra became the active app only for the chooser: the app the user was in gets the
+            // keyboard back, and this panel stays where it is.
+            if !applicationToReturnToIsEzra, let applicationToReturnTo, !applicationToReturnTo.isTerminated {
+                applicationToReturnTo.activate()
+            }
+            completion(response == .OK ? openPanel.url : nil)
+        }
+    }
+
+    /// True while the folder chooser is up, so a click in it never counts as a click outside the panel.
+    private var isPresentingFolderPicker = false
+
+    func close() {
+        guard isOpen else { return }
+        // Round 21b: before the fade, the context typed in the last moment is written (Escape and a
+        // click outside both come through here).
+        viewModel.panelWillClose()
+        isOpen = false
+        visibilityGeneration += 1
+        let generationWhenClosed = visibilityGeneration
+
+        removeClickOutsideMonitor()
+        contentHeightCancellable = nil
+        changeCardCancellable = nil
+
+        if let panel {
+            NSAnimationContext.runAnimationGroup { animationContext in
+                animationContext.duration = DS.ChatPanel.closeSeconds
+                animationContext.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                panel.animator().alphaValue = 0
+            }
+            // A work item on the main queue, like the status pill's: it runs on the main thread
+            // and so may touch the panel directly.
+            DispatchQueue.main.asyncAfter(deadline: .now() + DS.ChatPanel.closeSeconds) { [weak self] in
+                guard let self, self.visibilityGeneration == generationWhenClosed else { return }
+                self.panel?.orderOut(nil)
+            }
+        }
+
+        handKeyboardBackToPreviousApplication()
+        openStateChangedHandler?(false)
+        frameOnScreenChangedHandler?()
+    }
+
+    /// The panel is non-activating, so the app the user was in normally never lost the keyboard.
+    /// If Ezra did become active (the user clicked the menu bar panel meanwhile), that app is
+    /// brought back.
+    private func handKeyboardBackToPreviousApplication() {
+        guard NSApp.isActive, let applicationFrontmostBeforeOpening, !applicationFrontmostBeforeOpening.isTerminated else {
+            return
+        }
+        applicationFrontmostBeforeOpening.activate()
+    }
+
+    // MARK: - Self test
+
+    /// Lets Ezra's own proof picture (the panel self test) contain the panel. Normally the
+    /// panel is hidden from every capture; the self test is the one place where seeing it in a
+    /// capture is the point.
+    func setVisibleInScreenCapturesForSelfTest(_ isVisibleInScreenCaptures: Bool) {
+        existingOrNewPanel().sharingType = isVisibleInScreenCaptures ? .readOnly : .none
+        isTakingSelfTestPictures = isVisibleInScreenCaptures
+    }
+
+    /// Only while the self test takes its pictures:
+    /// - every height request is printed, so a picture of a window with the wrong height can be
+    ///   told apart from a window caught mid-resize;
+    /// - a click outside the panel does not close it. In round 16 a click in another app (the
+    ///   person at the Mac switching to their terminal) closed the panel halfway through, and
+    ///   the remaining pictures showed no panel at all.
+    /// A normal run never sets it, so it prints nothing and closes on an outside click as always.
+    private var isTakingSelfTestPictures = false
+
+    /// The window's height now, and the height it should end at for the content's current
+    /// height. The self test waits for the two to agree before it takes a picture.
+    var currentPanelHeightForSelfTest: CGFloat? {
+        panel?.frame.height
+    }
+
+    var settledPanelHeightForSelfTest: CGFloat? {
+        guard let shownOnScreen else { return nil }
+        return placement(forContentHeightInPoints: viewModel.desiredPanelHeightInPoints, on: shownOnScreen).frame.height
+    }
+
+    /// Asks the window's content to lay itself out now (self test only, before a picture). In the round
+    /// 21 self test the memory tab's height request stayed at its "reading…" height until the next
+    /// change of state after the picture; a layout pass makes the content report the height it has.
+    func layOutContentForSelfTest() {
+        guard let contentView = panel?.contentView else { return }
+        contentView.needsLayout = true
+        contentView.layoutSubtreeIfNeeded()
+    }
+
+    // MARK: - Window
+
+    private func existingOrNewPanel() -> EzraChatPanelWindow {
+        if let panel {
+            return panel
+        }
+        let newPanel = EzraChatPanelWindow()
+        let hostingView = NSHostingView(rootView: EzraChatPanelView(viewModel: viewModel))
+        // The window's size is set here, from the content's reported height. The hosting view
+        // must not push minimum or maximum sizes onto the window itself.
+        hostingView.sizingOptions = []
+        hostingView.frame = NSRect(origin: .zero, size: newPanel.frame.size)
+        hostingView.autoresizingMask = [.width, .height]
+        newPanel.contentView = hostingView
+        newPanel.keyEventInterceptor = { [weak self] keyEvent in
+            self?.handleKeyDown(keyEvent) ?? false
+        }
+        panel = newPanel
+        return newPanel
+    }
+
+    private func placement(forContentHeightInPoints contentHeightInPoints: CGFloat, on screen: NSScreen) -> EzraChatPanelPlacement {
+        EzraChatPanelLayout.placement(
+            forContentHeightInPoints: Double(contentHeightInPoints),
+            screenGeometry: screenGeometryProvider(screen),
+            metrics: Self.layoutMetrics
+        )
+    }
+
+    private func followContentHeight(_ desiredHeightInPoints: CGFloat, animated: Bool) {
+        guard isOpen, let panel, let shownOnScreen else { return }
+        let newFrame = placement(forContentHeightInPoints: desiredHeightInPoints, on: shownOnScreen).frame
+        if isTakingSelfTestPictures {
+            let previouslyRequestedHeight = lastRequestedPanelFrame.map { Int($0.height) } ?? -1
+            let unchangedMarker = newFrame == lastRequestedPanelFrame ? " (unchanged)" : ""
+            print("💬 panel size: content asks \(Int(desiredHeightInPoints)), window to \(Int(newFrame.height)), last asked \(previouslyRequestedHeight), now \(Int(panel.frame.height))\(unchangedMarker)")
+        }
+        guard newFrame != lastRequestedPanelFrame else { return }
+        lastRequestedPanelFrame = newFrame
+        frameOnScreenChangedHandler?()
+        if animated && panel.isVisible {
+            NSAnimationContext.runAnimationGroup { animationContext in
+                animationContext.duration = DS.ChatPanel.resizeSeconds
+                animationContext.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().setFrame(newFrame, display: true)
+            }
+        } else {
+            panel.setFrame(newFrame, display: true)
+        }
+    }
+
+    // MARK: - Keys
+
+    /// Escape in every screen, and the arrow keys and Return in the chat list. Returns true when
+    /// the key was used up.
+    private func handleKeyDown(_ keyEvent: NSEvent) -> Bool {
+        // While an input method is composing text, Return and Escape belong to the input method.
+        if let focusedTextView = panel?.firstResponder as? NSTextView, focusedTextView.hasMarkedText() {
+            return false
+        }
+
+        let escapeKeyCode: UInt16 = 53
+        let returnKeyCode: UInt16 = 36
+        let keypadEnterKeyCode: UInt16 = 76
+        let upArrowKeyCode: UInt16 = 126
+        let downArrowKeyCode: UInt16 = 125
+
+        if keyEvent.keyCode == escapeKeyCode {
+            if let escapePressedHandler {
+                escapePressedHandler()
+            } else {
+                close()
+            }
+            return true
+        }
+
+        // A proposed change is waiting (round 17): the card has the keyboard, not the text field.
+        // Return applies it and no other key does anything, so nothing typed can land in "ask
+        // ezra…". Escape went to the handler above. Once the user clicks into the field on
+        // purpose it is first responder and keys work there as usual.
+        if viewModel.screen == .activeChat,
+           viewModel.isChangeCardAwaitingAnswer,
+           !(panel?.firstResponder is EzraChatNSTextView) {
+            let hasShortcutModifierHeld = !keyEvent.modifierFlags.intersection([.command, .control]).isEmpty
+            if hasShortcutModifierHeld {
+                return false
+            }
+            if (keyEvent.keyCode == returnKeyCode || keyEvent.keyCode == keypadEnterKeyCode) && !keyEvent.isARepeat {
+                viewModel.requestApplyPendingChangeFromReturnKey(keyPressedAtUptimeSeconds: keyEvent.timestamp)
+            }
+            return true
+        }
+
+        guard viewModel.screen == .chatList else { return false }
+        let hasModifierHeld = !keyEvent.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty
+        guard !hasModifierHeld else { return false }
+
+        switch keyEvent.keyCode {
+        case upArrowKeyCode:
+            viewModel.moveSelection(.up)
+            return true
+        case downArrowKeyCode:
+            viewModel.moveSelection(.down)
+            return true
+        case returnKeyCode, keypadEnterKeyCode:
+            viewModel.openSelectedChatToRead()
+            return true
+        default:
+            return false
+        }
+    }
+
+    // MARK: - Click outside
+
+    /// A click anywhere outside the panel closes it, the way a pop-up menu goes away. The monitor
+    /// only exists while the panel is open, so a closed panel costs nothing and can never take a
+    /// click.
+    private func installClickOutsideMonitor() {
+        removeClickOutsideMonitor()
+        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isOpen, let panel = self.panel else { return }
+                guard !panel.frame.contains(NSEvent.mouseLocation) else { return }
+                guard !self.isTakingSelfTestPictures, !self.isPresentingFolderPicker else { return }
+                self.close()
+            }
+        }
+    }
+
+    private func removeClickOutsideMonitor() {
+        if let clickOutsideMonitor {
+            NSEvent.removeMonitor(clickOutsideMonitor)
+            self.clickOutsideMonitor = nil
+        }
+    }
+}

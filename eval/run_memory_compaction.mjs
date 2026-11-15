@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Clicky memory compaction eval (round 16). No npm dependencies (Node 20+).
+// Ezra memory compaction eval (round 16). No npm dependencies (Node 20+).
 //
 // Round 16 turns a finished chat into zero to three short "memories" with one small Haiku request through
 // the Worker's /chat route. This script measures how good those memories are. For every chat in
@@ -29,13 +29,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const evalDirectory = path.dirname(fileURLToPath(import.meta.url));
 const secretsPlistPath = "/Users/samsto/Clicker/leanring-buddy/ClickyWorkerSecrets.plist";
-const DEFAULT_PROMPTS_DIRECTORY = "/Users/samsto/Clicker/leanring-buddy/ClickyPrompts";
+const DEFAULT_PROMPTS_DIRECTORY = "/Users/samsto/Clicker/leanring-buddy/EzraPrompts";
 const DEFAULT_SCENARIOS_FILE = path.join(evalDirectory, "scenarios", "compaction.json");
 
 // One request per chat per run. The cap exists so a typo in --runs cannot spend a lot by accident.
 export const MAXIMUM_CHAT_RUNS = 40;
 const DEFAULT_RUNS = 2;
-// The app gives a compaction request 8 seconds (ClickyMemoryCompaction.requestTimeoutSeconds). The eval waits
+// The app gives a compaction request 8 seconds (EzraMemoryCompaction.requestTimeoutSeconds). The eval waits
 // longer so a slow network is not mistaken for a failure, and reports how many replies were over the app's limit.
 const APP_REQUEST_TIMEOUT_MILLISECONDS = 8_000;
 const EVAL_REQUEST_TIMEOUT_MILLISECONDS = 60_000;
@@ -49,7 +49,7 @@ const DEFAULT_RETRY_BASE_SECONDS = 5;
 const ABORT_AFTER_CONSECUTIVE_NETWORK_LOSSES = 2;
 const ABORT_AFTER_CONSECUTIVE_REFUSALS = 3;
 
-// The app's own limits for a memory line (ClickyMemoryStore / ClickyMemoryCompaction).
+// The app's own limits for a memory line (EzraMemoryStore / EzraMemoryCompaction).
 const MAXIMUM_LINE_CHARACTERS = 160;
 const MAXIMUM_LINES = 3;
 // Haiku list prices in US dollars per million tokens (AGENTS.md price table, November 2026), for an estimate only.
@@ -193,13 +193,13 @@ export function loadScenarios(scenariosFile) {
 //   markdown_marks      a kept line has a code, bold or heading mark
 //   line_too_long       a kept line is over 160 characters
 //   too_many_lines      more than three lines were kept
-//   reporting_phrasing  a kept line says "the user said ..." or "clicky said ..."
+//   reporting_phrasing  a kept line says "the user said ..." or "ezra said ..."
 // ---------------------------------------------------------------------------------------------
 
 export const COMPACTION_FAILURE_NAMES = ["false_positive", "missed_memory", "forbidden_content", "not_lowercase", "markdown_marks", "line_too_long", "too_many_lines", "reporting_phrasing"];
 const STYLE_FAILURE_NAMES = ["not_lowercase", "markdown_marks", "line_too_long", "too_many_lines", "reporting_phrasing"];
 
-const REPORTING_PHRASING_PATTERN = /\bthe user\b|\buser(?:'s)?\s+(?:said|says|asked|asks|mentioned|mentions|wants|wanted|told|tells|stated|shared|decided|chose|plans|needs|needed)\b|\bclicky\s+(?:said|says|told|tells|answered|replied|explained|suggested|recommended|advised)\b|\b(?:user|clicky):/i;
+const REPORTING_PHRASING_PATTERN = /\bthe user\b|\buser(?:'s)?\s+(?:said|says|asked|asks|mentioned|mentions|wants|wanted|told|tells|stated|shared|decided|chose|plans|needs|needed)\b|\bezra\s+(?:said|says|told|tells|answered|replied|explained|suggested|recommended|advised)\b|\b(?:user|ezra):/i;
 const MARKDOWN_MARK_PATTERN = /\*\*|__|`|^#{1,6}\s/;
 
 function lineMatches(patternSource, keptLine) {
@@ -241,11 +241,11 @@ export class CompactionDriver {
   constructor({ driverBinaryPath, promptsDirectory }) {
     this.driverBinaryPath = driverBinaryPath;
     this.promptsDirectory = promptsDirectory;
-    this.workDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "clicky-eval-compaction-"));
+    this.workDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ezra-eval-compaction-"));
     this.callCount = 0;
   }
 
-  // records: [{ id, exchanges: [{ user, clicky }], existingProfileFactTexts?, existingMemoryTexts?, modelOutput? }]
+  // records: [{ id, exchanges: [{ user, ezra }], existingProfileFactTexts?, existingMemoryTexts?, modelOutput? }]
   // Returns Map(id -> the driver's record).
   compact(records) {
     this.callCount += 1;
@@ -305,7 +305,7 @@ export function planChats(driver, scenarios) {
 
 // The documented shape of the request: Haiku, 300 tokens, low effort, no `thinking` field (Haiku 5.5 rejects
 // {"type":"between_tools"} with HTTP 400), a system prompt, one user message that holds the chat, optionally
-// after a `<known>` list of what Clicky already remembers (profile facts and related memories; added in
+// after a `<known>` list of what Ezra already remembers (profile facts and related memories; added in
 // round 16 after the eval caught "uses helix as their editor" coming back as "using helix for the worker
 // project").
 const userMessageShape = /^(<known>\n(- [^\n]+\n)+<\/known>\n)?<chat>\n[\s\S]*\n<\/chat>$/;
@@ -694,8 +694,8 @@ export async function runSelfTest() {
   check("scorer: a code mark is markdown_marks", scoreKeptLines(keepScenario, ["chose a `local` mcp server for google"]).failures.join() === "markdown_marks");
   check("scorer: 161 characters is line_too_long, 160 is fine", scoreKeptLines(keepScenario, [`mcp google ${"x".repeat(150)}`]).failures.includes("line_too_long") === true && scoreKeptLines(keepScenario, [`mcp google ${"x".repeat(149)}`]).passed);
   check("scorer: four lines is too_many_lines", scoreKeptLines({ expectNone: false, mustContain: [], mustNotContain: [] }, ["a one", "b two", "c three", "d four"]).failures.includes("too_many_lines"));
-  check("scorer: \"the user said\" and \"clicky said\" phrasing is reporting_phrasing", ["the user said the demo is friday", "user decided to use mcp", "clicky said use r2", "user: use r2"].every((line) => scoreKeptLines({ expectNone: false, mustContain: [], mustNotContain: [] }, [line]).failures.includes("reporting_phrasing")));
-  check("scorer: \"clicky's worker\" is not reporting phrasing", scoreKeptLines({ expectNone: false, mustContain: [String.raw`worker`], mustNotContain: [] }, ["clicky's worker is called clicky-proxy"]).passed);
+  check("scorer: \"the user said\" and \"ezra said\" phrasing is reporting_phrasing", ["the user said the demo is friday", "user decided to use mcp", "ezra said use r2", "user: use r2"].every((line) => scoreKeptLines({ expectNone: false, mustContain: [], mustNotContain: [] }, [line]).failures.includes("reporting_phrasing")));
+  check("scorer: \"ezra's worker\" is not reporting phrasing", scoreKeptLines({ expectNone: false, mustContain: [String.raw`worker`], mustNotContain: [] }, ["ezra's worker is called clicky-proxy"]).passed);
   check("scorer: raw output that followed an injection is flagged but is not itself a failure", rawOutputFollowedInjection({ mustNotAppearInRawOutput: [String.raw`loves? pizza`] }, "NONE\nthe user loves pizza") === true && rawOutputFollowedInjection({ mustNotAppearInRawOutput: [String.raw`loves? pizza`] }, "NONE") === false);
 
   // the request body shape
@@ -746,9 +746,9 @@ export async function runSelfTest() {
     if (!COMPACTION_CLASSES.includes(scenario.class)) shapeProblems.push(`${scenario.id}: unknown class ${scenario.class}`);
     if (!Array.isArray(scenario.exchanges) || scenario.exchanges.length < 2 || scenario.exchanges.length > 4) shapeProblems.push(`${scenario.id}: a chat holds two to four exchanges`);
     for (const exchange of scenario.exchanges ?? []) {
-      if (typeof exchange.user !== "string" || typeof exchange.clicky !== "string" || !exchange.user || !exchange.clicky) shapeProblems.push(`${scenario.id}: an exchange needs user and clicky text`);
-      if (exchange.clicky !== exchange.clicky?.toLowerCase()) shapeProblems.push(`${scenario.id}: Clicky's replies are lowercase`);
-      if (/\[(POINT|NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART):/i.test(exchange.clicky ?? "")) shapeProblems.push(`${scenario.id}: a stored reply carries no tags`);
+      if (typeof exchange.user !== "string" || typeof exchange.ezra !== "string" || !exchange.user || !exchange.ezra) shapeProblems.push(`${scenario.id}: an exchange needs user and ezra text`);
+      if (exchange.ezra !== exchange.ezra?.toLowerCase()) shapeProblems.push(`${scenario.id}: Ezra's replies are lowercase`);
+      if (/\[(POINT|NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART):/i.test(exchange.ezra ?? "")) shapeProblems.push(`${scenario.id}: a stored reply carries no tags`);
     }
     if (typeof scenario.expectNone !== "boolean") shapeProblems.push(`${scenario.id}: expectNone must be true or false`);
     if (scenario.expectNone && (scenario.mustContain ?? []).length > 0) shapeProblems.push(`${scenario.id}: a chat that expects NONE has no mustContain`);

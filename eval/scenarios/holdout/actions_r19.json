@@ -2362,7 +2362,7 @@
       "id": "o19_timer_01",
       "area": "timer-while-quit",
       "check": "Persistence round trip",
-      "how": "ClickyTimerBoard Codable state / the timers.json writer on a TEMPORARY folder (never ~/Library). Start t1 'pasta' 600 s and t2 (no label) 90 s; encode; decode into a new board.",
+      "how": "EzraTimerBoard Codable state / the timers.json writer on a TEMPORARY folder (never ~/Library). Start t1 'pasta' 600 s and t2 (no label) 90 s; encode; decode into a new board.",
       "expect": "same ids, labels, durations, start and end dates (end dates identical to the second: no drift); the next start gets t3."
     },
     {
@@ -2412,7 +2412,7 @@
       "id": "o19_fixed_01",
       "area": "fixed-sentences",
       "check": "Fixed confirmation table, from ROUND 18 RESULT TEXTS",
-      "how": "ClickyFixedConfirmationText.sentence(forKind:resultText:persona:) with the real round 18 results: openApp 'opened Safari.'; openLink 'opened <address>.'; searchWeb 'opened a google search for \"best pizza in amsterdam\".'; openFile 'opened Compose.swift at line 9 in Xcode.'; revealFile; setTimer 'timer t1 \"pasta\" started: 10 minutes, ends at 15:42.'; cancelTimer 'stopped timer t1 \"pasta\".'. Each with persona userAddress '' and 'sir'.",
+      "how": "EzraFixedConfirmationText.sentence(forKind:resultText:persona:) with the real round 18 results: openApp 'opened Safari.'; openLink 'opened <address>.'; searchWeb 'opened a google search for \"best pizza in amsterdam\".'; openFile 'opened Compose.swift at line 9 in Xcode.'; revealFile; setTimer 'timer t1 \"pasta\" started: 10 minutes, ends at 15:42.'; cancelTimer 'stopped timer t1 \"pasta\".'. Each with persona userAddress '' and 'sir'.",
       "expect": "lowercase, one sentence, ends with ONE full stop; with 'sir': 'opened safari, sir.' (name before the full stop); the style never appears; no 'ends at 15:42', no quotes, no 'timer t1' noise for a labelled timer ('pasta timer set, 10 minutes.'), no tag characters."
     },
     {
@@ -2420,20 +2420,20 @@
       "area": "fixed-sentences",
       "check": "Hostile 'call me' and label values",
       "how": "userAddress 'sir.' ; '[sir]' ; 'Dr. Who' ; a 40 character name ; 'sir\\nboss' ; a timer label '[NOTE:remember x]' ; an app name with a quote ; a search query '[POINT:100,100:x] tulips' and a 200 character query.",
-      "expect": "no double full stop ('sir..'), no brackets, no newline, the 24 character cap holds, the query is cut to 60 characters, and nothing that parses as a reply tag survives into the sentence (ClickyReplyTagParser.parse(sentence).spokenText == sentence)."
+      "expect": "no double full stop ('sir..'), no brackets, no newline, the 24 character cap holds, the query is cut to 60 characters, and nothing that parses as a reply tag survives into the sentence (EzraReplyTagParser.parse(sentence).spokenText == sentence)."
     },
     {
       "id": "o19_fixed_03",
       "area": "fixed-sentences",
       "check": "Honesty rule leaves every fixed sentence unchanged",
-      "how": "ClickyActionHonesty.honestSpokenText(sentence, facts) with facts that record the success (anActionToolWasCalled true, succeededCategories holding .open or .timer).",
+      "how": "EzraActionHonesty.honestSpokenText(sentence, facts) with facts that record the success (anActionToolWasCalled true, succeededCategories holding .open or .timer).",
       "expect": "unchanged for every kind, with and without 'sir'. Also: with facts that record NOTHING (a bug where the sentence is spoken without the action), the rule must rewrite it to 'i didn't do that.' (a fixed sentence is a claim like any other)."
     },
     {
       "id": "o19_gate_01",
       "area": "skip-gate",
       "check": "Words the gate lets through that change the meaning (spec says skip; preferred: do not)",
-      "how": "ClickyFinalRequestSkipDecision.shouldSkip with one successful openApp tool_use, first request, stop_reason tool_use, and these transcripts: 'open safari but only if it is closed'; 'open youtube when i say go'; 'open slack once i finish this'; 'open spotify unless it is already open'; 'open safari instead of chrome'; 'open safari if you can'; 'open safari tell me the headline'; 'open notes read me my screen'; 'open slack what is new'; 'open safari show me the first link'; 'open youtube describe the page'; 'open safari is it updated'.",
+      "how": "EzraFinalRequestSkipDecision.shouldSkip with one successful openApp tool_use, first request, stop_reason tool_use, and these transcripts: 'open safari but only if it is closed'; 'open youtube when i say go'; 'open slack once i finish this'; 'open spotify unless it is already open'; 'open safari instead of chrome'; 'open safari if you can'; 'open safari tell me the headline'; 'open notes read me my screen'; 'open slack what is new'; 'open safari show me the first link'; 'open youtube describe the page'; 'open safari is it updated'.",
       "expect": "Brief's gate returns TRUE for every one (none holds and/then/also/after/before/while, none starts with a question word, none has a '?'). PREFERRED: false. Report each TRUE as a finding against the brief, not as a builder fault. Suggested fix: skip only when the transcript is nothing but the command, e.g. it also matches a closed 'verb + object' grammar, or hold the skip back when the transcript has any of: but, if, unless, once, until, instead, tell, read, show, describe, explain, say, what, how, why, is, are, does, do."
     },
     {
@@ -2496,7 +2496,7 @@
       "id": "o19_find_01",
       "area": "find-file",
       "check": "find_file rules",
-      "how": "ClickyFileToolTurnSession.execute(find_file) on a temporary folder with: ApiClient.swift (depth 3), a file at depth 6 and one at depth 7, .github/workflows/ci.yml, .gitignore, .git/config, .env, notes.secret.md, my-credentials.txt, id_rsa.pub, a 30 file 'Report' set, a symlink report-link -> /etc/hosts, a folder named 'Client', 'Café.md'.",
+      "how": "EzraFileToolTurnSession.execute(find_file) on a temporary folder with: ApiClient.swift (depth 3), a file at depth 6 and one at depth 7, .github/workflows/ci.yml, .gitignore, .git/config, .env, notes.secret.md, my-credentials.txt, id_rsa.pub, a 30 file 'Report' set, a symlink report-link -> /etc/hosts, a folder named 'Client', 'Café.md'.",
       "expect": "'APICLIENT' finds ApiClient.swift (case); depth 6 found, depth 7 not (document it); 'ci.yml' IS found (.github is not .git); 'gitignore' IS found (a file called .gitignore is not inside .git); 'config' does NOT return .git/config; 'env', 'secret', 'credential', 'id_rsa' return exactly the same text as a query that matches nothing, apart from the echoed name (no existence oracle); 'report' lists 20 sorted by path and ends 'and 10 more'; 'hosts' does not list the symlink that points out (or lists it only if open_file refuses it); a folder named Client is not listed as a file (ambiguous: report); 'cafe' finding Café.md is ambiguous (report); result paths open_file accepts unchanged; the query '*', '.*', '../../etc/passwd', '/etc/hosts', an empty string and a 10,000 character string never traverse or crash."
     },
     {
@@ -2516,14 +2516,14 @@
     {
       "id": "o19_cap_01",
       "area": "cap-sentence",
-      "check": "ClickyTurnFailureMessage.response",
+      "check": "EzraTurnFailureMessage.response",
       "how": "Errors built the way ClaudeAPI and ElevenLabsTTSClient will build them: (a) HTTP 429, body {\"error\":{\"type\":\"clicky_daily_cap\",\"message\":\"daily cap reached\"}}; (b) 429, header X-Clicky-Cap: daily, empty body; (c) 429, header spelled x-clicky-cap in lower case; (d) 429 with an Anthropic rate_limit_error body whose message contains the words 'daily cap'; (e) plain 429, empty; (f) 429 whose body is not JSON; (g) the (a) body on a 402; (h) the header on a 500; (i) the /tts failure after a good reply with (b).",
       "expect": "(a) (b) (c): \"i've hit today's spending cap.\"; (d) (e) (f): \"i'm being rate limited. try again in a moment.\" (the match is on the type or the header, never on words in a provider message); (g) the billing sentence (402) or the cap sentence: report which; (h) the generic sentence; (i) speaks nothing and the pill shows 'voice unavailable · <reply>' plus cap words. The userInfo carries the body and the header but never the app token or any request header."
     },
     {
       "id": "o19_pill_01",
       "area": "pill-notice",
-      "check": "ClickyActionNoticeText.notice(forResultText:kind:)",
+      "check": "EzraActionNoticeText.notice(forResultText:kind:)",
       "how": "Every round 18 result text: opened app, opened link, google search, opened file (with and without line, reveal), timer started (with and without label), timer stopped, queued link and queued shortcut results, reminder created, list results, every error text.",
       "expect": "success: first sentence without the full stop, at most 60 characters (a 61st is an ellipsis), one line, no brackets, no straight double quotes problem for the pill; queued kinds: 'waiting for your yes'; errors: nil (nothing shown). Never contains a line break."
     },
@@ -2531,8 +2531,8 @@
       "id": "o19_usage_01",
       "area": "usage-tab",
       "check": "Parser reads old and new lines",
-      "how": "ClickyUsageLogParser on: a round 18 turn line; a round 19 line with skippedFinalRequest true, toolRoundTripCount 0, roundTripCacheCreationTokens [0, 3100]; a quick command line (localFastPath true, modelName 'quick-commands', no token fields); a line with a negative cache creation number, a string where an array belongs, and a turnId that is not a UUID.",
-      "expect": "all lines parse; the quick command is one question at 0 tokens in a 'quick commands' row with no price; bad new fields read as missing, never skip the line; ClickyUsageAggregator does not price 'quick-commands' (no 'est. $' for it)."
+      "how": "EzraUsageLogParser on: a round 18 turn line; a round 19 line with skippedFinalRequest true, toolRoundTripCount 0, roundTripCacheCreationTokens [0, 3100]; a quick command line (localFastPath true, modelName 'quick-commands', no token fields); a line with a negative cache creation number, a string where an array belongs, and a turnId that is not a UUID.",
+      "expect": "all lines parse; the quick command is one question at 0 tokens in a 'quick commands' row with no price; bad new fields read as missing, never skip the line; EzraUsageAggregator does not price 'quick-commands' (no 'est. $' for it)."
     },
     {
       "id": "o19_privacy_01",
@@ -2545,7 +2545,7 @@
       "id": "o19_followup_01",
       "area": "follow-up-log",
       "check": "Line shape and rotation",
-      "how": "ClickyFollowUpMetrics: write 600 lines to a temporary file; encode every close reason; encode with an out-of-range level.",
+      "how": "EzraFollowUpMetrics: write 600 lines to a temporary file; encode every close reason; encode with an out-of-range level.",
       "expect": "only numbers, the closeReason enum and a UUID; newest 500 kept; per-mille values clamp to 0..1000 and the file stays valid JSON lines when the level is NaN or negative; the same turnId appears on the follow-up line and the turn line of that follow-up turn."
     }
   ]

@@ -10,7 +10,7 @@ struct ClaudeStreamingResult {
     let text: String
     let duration: TimeInterval
     /// Input, output, cache-creation and cache-read token counts. A count is nil if the stream never reported it.
-    let tokenUsage: ClickyClaudeTokenUsage
+    let tokenUsage: EzraClaudeTokenUsage
 }
 
 /// Claude API helper with streaming for progressive text display.
@@ -49,7 +49,7 @@ class ClaudeAPI {
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        ClickyWorkerConfiguration.addAppTokenHeader(to: &request)
+        EzraWorkerConfiguration.addAppTokenHeader(to: &request)
         return request
     }
 
@@ -142,7 +142,7 @@ class ClaudeAPI {
     ) async throws -> ClaudeStreamingResult {
         return try await streamReply(
             images: images,
-            systemPromptValue: ClickySystemPromptBlocks.makeSystemBlocks(
+            systemPromptValue: EzraSystemPromptBlocks.makeSystemBlocks(
                 staticText: staticSystemPrompt,
                 contextText: contextSystemPrompt,
                 dynamicText: dynamicSystemPrompt
@@ -197,8 +197,8 @@ class ClaudeAPI {
         messages.append(["role": "user", "content": contentBlocks])
 
         // Low effort and hidden thinking off are added by one shared function; the reasons and
-        // the measurements are at `ClickyClaudeRequestSettings`.
-        let body = ClickyClaudeRequestSettings.addingSpokenReplySettings(to: [
+        // the measurements are at `EzraClaudeRequestSettings`.
+        let body = EzraClaudeRequestSettings.addingSpokenReplySettings(to: [
             "model": model,
             "max_tokens": 1024,
             "stream": true,
@@ -236,15 +236,15 @@ class ClaudeAPI {
                 code: httpResponse.statusCode,
                 userInfo: [
                     NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)",
-                    ClickyTurnFailureMessage.responseBodyUserInfoKey: errorBody,
-                    ClickyTurnFailureMessage.dailyCapHeaderUserInfoKey: httpResponse.value(forHTTPHeaderField: ClickyTurnFailureMessage.dailyCapHeaderName) ?? "",
+                    EzraTurnFailureMessage.responseBodyUserInfoKey: errorBody,
+                    EzraTurnFailureMessage.dailyCapHeaderUserInfoKey: httpResponse.value(forHTTPHeaderField: EzraTurnFailureMessage.dailyCapHeaderName) ?? "",
                 ]
             )
         }
 
         // Parse SSE stream — each event is "data: {json}\n\n"
         var accumulatedResponseText = ""
-        var streamUsageAccumulator = ClickyClaudeStreamUsageAccumulator()
+        var streamUsageAccumulator = EzraClaudeStreamUsageAccumulator()
 
         for try await line in byteStream.lines {
             // SSE lines look like: "data: {...}"
@@ -295,13 +295,13 @@ class ClaudeAPI {
         case toolUseStarted(toolName: String, requestNumber: Int)
         /// Round 19: an action tool call succeeded (it opened, started or stopped something, or queued
         /// it for a yes). The kind and the result text decide the status pill's notice.
-        case actionToolSucceeded(kind: ClickyActionKind, resultText: String)
+        case actionToolSucceeded(kind: EzraActionKind, resultText: String)
     }
 
     /// The same streaming chat request as `analyzeImageStreaming`, with the tools of this turn added
     /// (the file tools when a folder is set, the action tools while actions are on; round 18 made
     /// this one function for both) and the loop that answers the model's tool calls
-    /// (`ClickyToolLoop`) around it. Each request carries the same system blocks (two, or three with
+    /// (`EzraToolLoop`) around it. Each request carries the same system blocks (two, or three with
     /// the user's standing context, round 21b) and the same tools; only messages are added at the end.
     /// The session runs the tools and keeps the changes and actions the model proposed.
     func analyzeImageStreamingWithTools(
@@ -311,28 +311,28 @@ class ClaudeAPI {
         dynamicSystemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
-        toolSession: ClickyTurnToolSession,
+        toolSession: EzraTurnToolSession,
         cacheFirstUserMessageFromRequest: Int? = nil,
-        shouldStopAfterRequest: (ClickyToolLoopRoundSummary) -> Bool = { _ in false },
+        shouldStopAfterRequest: (EzraToolLoopRoundSummary) -> Bool = { _ in false },
         // Escaping because the calls that run together (round 19, E) report progress from inside a
         // task group's closure, which outlives this call's frame as far as the compiler can tell.
         onProgress: @escaping @MainActor @Sendable (ToolLoopProgress) -> Void
-    ) async throws -> ClickyToolLoopResult {
-        let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(
+    ) async throws -> EzraToolLoopResult {
+        let systemBlocks = EzraSystemPromptBlocks.makeSystemBlocks(
             staticText: staticSystemPrompt,
             contextText: contextSystemPrompt,
             dynamicText: dynamicSystemPrompt
         )
         let tools = toolSession.toolsArray()
-        let baseMessages = ClickyClaudeChatRequestBuilder.messages(
+        let baseMessages = EzraClaudeChatRequestBuilder.messages(
             conversationHistory: conversationHistory,
-            currentUserContentBlocks: ClickyClaudeChatRequestBuilder.currentUserContentBlocks(images: images, userPrompt: userPrompt)
+            currentUserContentBlocks: EzraClaudeChatRequestBuilder.currentUserContentBlocks(images: images, userPrompt: userPrompt)
         )
         let modelForThisTurn = model
-        return try await ClickyToolLoop.run(
+        return try await EzraToolLoop.run(
             baseMessages: baseMessages,
             buildRequestBody: { messagesSoFar in
-                ClickyClaudeChatRequestBuilder.streamingRequestBody(
+                EzraClaudeChatRequestBuilder.streamingRequestBody(
                     model: modelForThisTurn,
                     systemPromptValue: systemBlocks,
                     messages: messagesSoFar,
@@ -348,7 +348,7 @@ class ClaudeAPI {
                 }.value
                 // Round 19: the status pill shows what happened the moment it happened, before the
                 // model has written a word about it.
-                if let succeededKind = ClickyActionNoticeText.kindOfSuccessfulResult(toolName: toolName, resultText: toolResult.text, isError: toolResult.isError) {
+                if let succeededKind = EzraActionNoticeText.kindOfSuccessfulResult(toolName: toolName, resultText: toolResult.text, isError: toolResult.isError) {
                     onProgress(.actionToolSucceeded(kind: succeededKind, resultText: toolResult.text))
                 }
                 return toolResult
@@ -367,14 +367,14 @@ class ClaudeAPI {
             // the turn has places left), and their results go back in the calls' order.
             leadingToolCallsThatMayRunTogether: { toolUseBlocks in
                 guard let actionSession = toolSession.actionSession else { return 0 }
-                return ClickyParallelToolCalls.leadingCallsThatMayRunTogether(toolUseBlocks, openedItemPlacesLeft: actionSession.openedItemPlacesLeft)
+                return EzraParallelToolCalls.leadingCallsThatMayRunTogether(toolUseBlocks, openedItemPlacesLeft: actionSession.openedItemPlacesLeft)
             },
             executeToolCallInGroup: { @Sendable toolName, toolInputData in
                 // The input crosses into the group as JSON data (a dictionary of `Any` is not
                 // `Sendable`) and is read back here.
                 let toolInput = ((try? JSONSerialization.jsonObject(with: toolInputData)) as? [String: Any]) ?? [:]
                 let toolResult = await toolSession.execute(toolName: toolName, input: toolInput)
-                if let succeededKind = ClickyActionNoticeText.kindOfSuccessfulResult(toolName: toolName, resultText: toolResult.text, isError: toolResult.isError) {
+                if let succeededKind = EzraActionNoticeText.kindOfSuccessfulResult(toolName: toolName, resultText: toolResult.text, isError: toolResult.isError) {
                     await onProgress(.actionToolSucceeded(kind: succeededKind, resultText: toolResult.text))
                 }
                 return toolResult
@@ -383,13 +383,13 @@ class ClaudeAPI {
     }
 
     /// Sends one request of the tool loop and reads its stream into content blocks kept as received
-    /// (`ClickyStreamedMessageAssembler`).
+    /// (`EzraStreamedMessageAssembler`).
     private func streamOneRequestOfToolLoop(
         requestBody: [String: Any],
         requestNumber: Int,
         imageCount: Int,
         onProgress: @MainActor @Sendable (ToolLoopProgress) -> Void
-    ) async throws -> ClickyStreamedMessage {
+    ) async throws -> EzraStreamedMessage {
         let startTime = Date()
         var request = makeAPIRequest()
         let bodyData = try JSONSerialization.data(withJSONObject: requestBody)
@@ -418,15 +418,15 @@ class ClaudeAPI {
                 code: httpResponse.statusCode,
                 userInfo: [
                     NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)",
-                    ClickyTurnFailureMessage.responseBodyUserInfoKey: errorBody,
-                    ClickyTurnFailureMessage.dailyCapHeaderUserInfoKey: httpResponse.value(forHTTPHeaderField: ClickyTurnFailureMessage.dailyCapHeaderName) ?? "",
+                    EzraTurnFailureMessage.responseBodyUserInfoKey: errorBody,
+                    EzraTurnFailureMessage.dailyCapHeaderUserInfoKey: httpResponse.value(forHTTPHeaderField: EzraTurnFailureMessage.dailyCapHeaderName) ?? "",
                 ]
             )
         }
 
-        var messageAssembler = ClickyStreamedMessageAssembler()
+        var messageAssembler = EzraStreamedMessageAssembler()
         for try await line in byteStream.lines {
-            guard let eventPayload = ClickyServerSentEventLine.eventPayload(fromLine: line) else { continue }
+            guard let eventPayload = EzraServerSentEventLine.eventPayload(fromLine: line) else { continue }
             for notification in messageAssembler.consume(eventPayload) {
                 switch notification {
                 case .textChanged(let accumulatedText):
@@ -492,7 +492,7 @@ class ClaudeAPI {
         messages.append(["role": "user", "content": contentBlocks])
 
         // Same two settings as the streaming request: low effort and hidden thinking off.
-        let body = ClickyClaudeRequestSettings.addingSpokenReplySettings(to: [
+        let body = EzraClaudeRequestSettings.addingSpokenReplySettings(to: [
             "model": model,
             "max_tokens": 256,
             "system": systemPrompt,
@@ -514,8 +514,8 @@ class ClaudeAPI {
                 code: (response as? HTTPURLResponse)?.statusCode ?? -1,
                 userInfo: [
                     NSLocalizedDescriptionKey: "API Error: \(responseString)",
-                    ClickyTurnFailureMessage.responseBodyUserInfoKey: responseString,
-                    ClickyTurnFailureMessage.dailyCapHeaderUserInfoKey: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: ClickyTurnFailureMessage.dailyCapHeaderName) ?? "",
+                    EzraTurnFailureMessage.responseBodyUserInfoKey: responseString,
+                    EzraTurnFailureMessage.dailyCapHeaderUserInfoKey: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: EzraTurnFailureMessage.dailyCapHeaderName) ?? "",
                 ]
             )
         }

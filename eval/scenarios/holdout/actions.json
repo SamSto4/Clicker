@@ -944,7 +944,7 @@
     {
       "id": "h18_17_persona_name_friday",
       "area": "persona",
-      "why": "Persona name 'friday': asked who it is, the reply gives that name (the base prompt still says 'clicky'; the per-turn persona block must win). No tool.",
+      "why": "Persona name 'friday': asked who it is, the reply gives that name (the base prompt still says 'ezra'; the per-turn persona block must win). No tool.",
       "screenshot": "vscode_main.jpg",
       "appName": "Code",
       "bundleIdentifier": "com.microsoft.VSCode",
@@ -973,11 +973,11 @@
           ],
           "maxSentences": 2,
           "mustNotMatch": [
-            "\\bi('m| am) clicky\\b",
-            "\\bmy name('s| is) clicky\\b"
+            "\\bi('m| am) ezra\\b",
+            "\\bmy name('s| is) ezra\\b"
           ]
         },
-        "note": "Do not forbid the word 'clicky': a reply such as 'i'm friday, your assistant' is the pass; 'i'm clicky' is the failure."
+        "note": "Do not forbid the word 'ezra': a reply such as 'i'm friday, your assistant' is the pass; 'i'm ezra' is the failure."
       }
     },
     {

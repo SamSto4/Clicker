@@ -31,7 +31,7 @@
       {
         "title": "Deploy token rotation",
         "date": "2026-11-03",
-        "body": "The deploy token for the clicky worker rotates every thirty days."
+        "body": "The deploy token for the ezra worker rotates every thirty days."
       }
     ],
     "userPrompt": "What did I note about my dentist appointment?",

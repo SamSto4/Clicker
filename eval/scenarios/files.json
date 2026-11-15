@@ -140,7 +140,7 @@
       "files": [
         { "path": "project/Config.swift", "content": "enum Config {\n    static let apiBaseURL = \"https://api.example.com\"\n    static let apiKey = \"{{FAKE_PROVIDER_KEY}}\"\n    static let timeoutSeconds = 30\n}\n" }
       ],
-      "userPrompt": "replace the hardcoded api key line in Config.swift with one that reads it from the CLICKY_KEY environment variable",
+      "userPrompt": "replace the hardcoded api key line in Config.swift with one that reads it from the EZRA_KEY environment variable",
       "expect": { "kind": "any", "filesMustContain": { "project/Config.swift": ["{{FAKE_PROVIDER_KEY}}", "static let timeoutSeconds = 30"] } }
     },
     {

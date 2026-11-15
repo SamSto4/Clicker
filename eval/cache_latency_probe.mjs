@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const evalDirectory = path.dirname(fileURLToPath(import.meta.url));
 const secretsPlistPath = "/Users/samsto/Clicker/leanring-buddy/ClickyWorkerSecrets.plist";
-const promptsDirectory = "/Users/samsto/Clicker/leanring-buddy/ClickyPrompts";
+const promptsDirectory = "/Users/samsto/Clicker/leanring-buddy/EzraPrompts";
 const MODEL_NAME = "claude-sonnet-5-5";
 const MAX_TOTAL_CALLS = 20;
 
@@ -48,8 +48,8 @@ function readWorkerConfiguration() {
 
 // Runs the app's prompt assembler through the eval driver for one turn context (zero API calls).
 function assembleWithDriver(driverBinaryPath, turnInput) {
-  const workDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "clicky-eval-io-"));
-  const notesRootDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "clicky-eval-notes-"));
+  const workDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ezra-eval-io-"));
+  const notesRootDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ezra-eval-notes-"));
   try {
     const inputPath = path.join(workDirectory, "prepare_input.json");
     const outputPath = path.join(workDirectory, "prepare_output.json");

@@ -4,14 +4,14 @@
 // per-request medians, the action kinds, the share of turns that called a tool (the number the cache
 // breakpoint's default is judged by), and the follow-up windows by close reason and chain position.
 //
-// It is compiled with ClickyCore, so the lines are read by the app's own parsers
-// (`ClickyUsageLogParser`, `ClickyFollowUpMetricsParser`) and priced with the usage tab's table
-// (`ClickyModelPriceTable`). It never reads `~/Library/Logs/Clicky` itself: copy the files into a
+// It is compiled with EzraCore, so the lines are read by the app's own parsers
+// (`EzraUsageLogParser`, `EzraFollowUpMetricsParser`) and priced with the usage tab's table
+// (`EzraModelPriceTable`). It never reads `~/Library/Logs/Ezra` itself: copy the files into a
 // scratch folder first and pass their paths. It prints nothing but numbers and fixed identifiers (the
 // logs hold nothing else).
 //
 // Build and run (from the repo root):
-//   swiftc -O -o /tmp/metrics_summary eval/metrics_summary/main.swift leanring-buddy/ClickyCore/*.swift
+//   swiftc -O -o /tmp/metrics_summary eval/metrics_summary/main.swift leanring-buddy/EzraCore/*.swift
 //   /tmp/metrics_summary <copy of turn_metrics.jsonl> [<copy of follow_up_metrics.jsonl>]
 
 import Foundation
@@ -27,7 +27,7 @@ guard commandLineArguments.count >= 2 else {
 /// The app's own log folder. The summary refuses to read from it so the live logs are never opened
 /// while the app may be writing them: the orchestrator copies them first.
 /// Compared as written (standardized, no disk access), so a refused path is never even looked at.
-let liveLogFolderPath = ClickyTurnMetricsLog.defaultLogFileURL.deletingLastPathComponent().standardizedFileURL.path
+let liveLogFolderPath = EzraTurnMetricsLog.defaultLogFileURL.deletingLastPathComponent().standardizedFileURL.path
 
 func isInsideTheLiveLogFolder(_ fileURL: URL) -> Bool {
     fileURL.path == liveLogFolderPath || fileURL.path.hasPrefix(liveLogFolderPath + "/")
@@ -50,7 +50,7 @@ let followUpLogURL: URL? = commandLineArguments.count >= 3 ? logFileURL(fromArgu
 // MARK: - Small helpers
 
 func median(_ values: [Int]) -> Int? {
-    ClickyUsageAggregator.median(of: values)
+    EzraUsageAggregator.median(of: values)
 }
 
 func medianDollars(_ values: [Decimal]) -> Decimal? {
@@ -75,7 +75,7 @@ func text(_ number: Int?) -> String {
 
 func dollarsText(_ dollars: Decimal?) -> String {
     guard let dollars else { return "-" }
-    return "$" + ClickyUsageText.dollarsText(dollars, decimalPlaces: 4)
+    return "$" + EzraUsageText.dollarsText(dollars, decimalPlaces: 4)
 }
 
 func percentText(_ part: Int, of whole: Int) -> String {
@@ -102,11 +102,11 @@ func printTable(_ rows: [[String]]) {
 
 // MARK: - The turn log
 
-let turnLogLines = ClickyUsageLogReader.lines(inFileAt: turnLogURL)
-var turnRecords: [ClickyUsageTurnRecord] = []
+let turnLogLines = EzraUsageLogReader.lines(inFileAt: turnLogURL)
+var turnRecords: [EzraUsageTurnRecord] = []
 var skippedTurnLineCount = 0
 for turnLogLine in turnLogLines {
-    if let turnRecord = ClickyUsageLogParser.parseTurnRecord(fromLine: turnLogLine) {
+    if let turnRecord = EzraUsageLogParser.parseTurnRecord(fromLine: turnLogLine) {
         turnRecords.append(turnRecord)
     } else {
         skippedTurnLineCount += 1
@@ -115,7 +115,7 @@ for turnLogLine in turnLogLines {
 
 /// How many requests a turn sent: 0 for a quick command, the loop's count for a tool-loop turn, 1 for
 /// a plain turn with tokens, and nil for a turn that never got as far as a request.
-func requestCount(of turnRecord: ClickyUsageTurnRecord) -> Int? {
+func requestCount(of turnRecord: EzraUsageTurnRecord) -> Int? {
     if turnRecord.isQuickCommand { return 0 }
     if !turnRecord.roundTripMilliseconds.isEmpty { return turnRecord.roundTripMilliseconds.count }
     return turnRecord.hasAnyTokenCount ? 1 : nil
@@ -131,7 +131,7 @@ enum TurnKind: String, CaseIterable {
     case skippedFinalRequest = "skipped final request"
 }
 
-func turnKind(of turnRecord: ClickyUsageTurnRecord) -> TurnKind {
+func turnKind(of turnRecord: EzraUsageTurnRecord) -> TurnKind {
     if turnRecord.isQuickCommand { return .quickCommand }
     if turnRecord.skippedFinalRequest { return .skippedFinalRequest }
     if turnRecord.actionKinds.contains(.openLinkQueued) || turnRecord.actionKinds.contains(.runShortcutQueued) { return .actionQueued }
@@ -140,10 +140,10 @@ func turnKind(of turnRecord: ClickyUsageTurnRecord) -> TurnKind {
     return .noTool
 }
 
-func estimatedDollars(of turnRecord: ClickyUsageTurnRecord) -> Decimal? {
+func estimatedDollars(of turnRecord: EzraUsageTurnRecord) -> Decimal? {
     if turnRecord.isQuickCommand { return 0 }
     guard turnRecord.hasAnyTokenCount else { return nil }
-    return ClickyModelPriceTable.estimatedCostInDollars(
+    return EzraModelPriceTable.estimatedCostInDollars(
         modelName: turnRecord.modelName,
         inputTokens: turnRecord.inputTokens ?? 0,
         outputTokens: turnRecord.outputTokens ?? 0,
@@ -190,7 +190,7 @@ var requestIndexRows: [[String]] = [["request", "turns", "ms", "input tokens", "
 if longestLoop > 0 {
     for requestIndex in 0..<longestLoop {
         let turnsWithThisRequest = turnRecords.filter { $0.roundTripMilliseconds.count > requestIndex }
-        func valuesAtIndex(_ values: (ClickyUsageTurnRecord) -> [Int]) -> [Int] {
+        func valuesAtIndex(_ values: (EzraUsageTurnRecord) -> [Int]) -> [Int] {
             turnsWithThisRequest.compactMap { turnRecord in
                 let turnValues = values(turnRecord)
                 return turnValues.count > requestIndex ? turnValues[requestIndex] : nil
@@ -212,7 +212,7 @@ printTable(requestIndexRows)
 
 print("\n== action kinds")
 var actionKindRows: [[String]] = [["kind", "count"]]
-for actionKind in ClickyActionKind.allCases {
+for actionKind in EzraActionKind.allCases {
     let kindCount = turnRecords.reduce(0) { runningCount, turnRecord in
         runningCount + turnRecord.actionKinds.filter { $0 == actionKind }.count
     }
@@ -238,14 +238,14 @@ print("escape after the reply began (ms): n \(escapeDelays.count), median \(text
 // MARK: - The follow-up log
 
 if let followUpLogURL {
-    let followUpLines = ClickyUsageLogReader.lines(inFileAt: followUpLogURL)
-    let followUpRecords = followUpLines.compactMap { ClickyFollowUpMetricsParser.parse(line: $0) }
+    let followUpLines = EzraUsageLogReader.lines(inFileAt: followUpLogURL)
+    let followUpRecords = followUpLines.compactMap { EzraFollowUpMetricsParser.parse(line: $0) }
     print("\nfollow-up metrics: \(followUpRecords.count) lines read, \(followUpLines.count - followUpRecords.count) skipped")
 
     print("\n== follow-up windows: close reason by chain position (6 = the window the cap kept shut)")
     let chainPositions = Array(Set(followUpRecords.map(\.chainPosition))).sorted()
     var closeReasonRows: [[String]] = [["close reason"] + chainPositions.map { "pos \($0)" } + ["all"]]
-    for closeReason in ClickyFollowUpCloseReason.allCases {
+    for closeReason in EzraFollowUpCloseReason.allCases {
         let recordsWithReason = followUpRecords.filter { $0.closeReason == closeReason }
         var row = [closeReason.rawValue]
         for chainPosition in chainPositions {

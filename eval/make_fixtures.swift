@@ -2,7 +2,7 @@
 //
 //  make_fixtures.swift
 //
-//  Generates the synthetic "screenshots" used by the Clicky evaluation harness, plus
+//  Generates the synthetic "screenshots" used by the Ezra evaluation harness, plus
 //  fixtures/manifest.json with the ground-truth bounding box of every element a
 //  pointing scenario can ask about.
 //

@@ -1,12 +1,12 @@
 // File editing eval (round 17): runs the app's own tool loop live through the Worker.
 //
-// Everything that decides what happens is the app's ClickyCore code, compiled in: the prompt
-// (`ClickyPromptAssembler` with the "files you may change" section), the tools
-// (`ClickyFileToolDefinitions`), the request body (`ClickyClaudeChatRequestBuilder`), the stream reader
-// (`ClickyStreamedMessageAssembler`, which keeps every block as received, thinking signatures and the
-// `caller` field included), the loop (`ClickyToolLoop`), the path policy and tools
-// (`ClickyFileToolTurnSession`), the honesty rule (`ClickyFileEditingHonesty`) and the applier
-// (`ClickyChangeApplier`). The only code of its own is the network send (the same request
+// Everything that decides what happens is the app's EzraCore code, compiled in: the prompt
+// (`EzraPromptAssembler` with the "files you may change" section), the tools
+// (`EzraFileToolDefinitions`), the request body (`EzraClaudeChatRequestBuilder`), the stream reader
+// (`EzraStreamedMessageAssembler`, which keeps every block as received, thinking signatures and the
+// `caller` field included), the loop (`EzraToolLoop`), the path policy and tools
+// (`EzraFileToolTurnSession`), the honesty rule (`EzraFileEditingHonesty`) and the applier
+// (`EzraChangeApplier`). The only code of its own is the network send (the same request
 // `ClaudeAPI.streamOneRequestOfToolLoop` makes) and the scoring.
 //
 // Every scenario runs on a new temporary folder seeded with its sample files: never a real project.
@@ -14,8 +14,8 @@
 // and the files are scored afterwards.
 //
 // Build and run (from the repo root):
-//   swiftc -O -o /tmp/file_editing_runner eval/file_editing_runner/main.swift leanring-buddy/ClickyCore/*.swift
-//   /tmp/file_editing_runner leanring-buddy/ClickyPrompts eval/fixtures eval/scenarios/files.json <results.json> [--runs N] [--only id,id] [--with-actions]
+//   swiftc -O -o /tmp/file_editing_runner eval/file_editing_runner/main.swift leanring-buddy/EzraCore/*.swift
+//   /tmp/file_editing_runner leanring-buddy/EzraPrompts eval/fixtures eval/scenarios/files.json <results.json> [--runs N] [--only id,id] [--with-actions]
 //
 // `--with-actions` (round 18) runs the same scenarios with the ten action tools next to the file tools
 // and the actions paragraph and time line in the prompt, as the app sends them when the "actions"
@@ -85,34 +85,34 @@ guard !workerBaseURLText.isEmpty, !workerAppToken.isEmpty, let workerChatURL = U
 
 /// Records every call and answers from a tiny canned world. It never opens, launches, creates or runs
 /// anything. Only used with `--with-actions`.
-final class FakeActionExecutor: ClickyActionExecutor, @unchecked Sendable {
+final class FakeActionExecutor: EzraActionExecutor, @unchecked Sendable {
     private let lock = NSLock()
     private var recordedCalls: [String] = []
-    private var board = ClickyTimerBoard()
+    private var board = EzraTimerBoard()
     var calls: [String] { lock.withLock { recordedCalls } }
     private func record(_ text: String) { lock.withLock { recordedCalls.append(text) } }
 
-    func installedApplications() async -> [ClickyInstalledApplication] {
+    func installedApplications() async -> [EzraInstalledApplication] {
         ["Safari", "Google Chrome", "Visual Studio Code", "Xcode", "Notes", "Spotify", "Slack", "System Settings"]
-            .map { ClickyInstalledApplication(displayName: $0, path: "/Applications/\($0).app") }
+            .map { EzraInstalledApplication(displayName: $0, path: "/Applications/\($0).app") }
     }
-    func launchApplication(_ application: ClickyInstalledApplication) async -> Bool { record("launchApplication"); return true }
+    func launchApplication(_ application: EzraInstalledApplication) async -> Bool { record("launchApplication"); return true }
     func openLink(_ url: URL) async -> Bool { record("openLink"); return true }
     func frontmostApplicationBundleIdentifier() async -> String? { "com.microsoft.VSCode" }
     func defaultApplicationBundleIdentifier(forFileAt fileURL: URL) async -> String? { "com.apple.dt.Xcode" }
-    func perform(_ plan: ClickyOpenFilePlan, onFileAt fileURL: URL) async -> Bool { record("openFile"); return true }
-    func startTimer(durationSeconds: Int, rawLabel: String?) async -> ClickyTimerStartOutcome {
+    func perform(_ plan: EzraOpenFilePlan, onFileAt fileURL: URL) async -> Bool { record("openFile"); return true }
+    func startTimer(durationSeconds: Int, rawLabel: String?) async -> EzraTimerStartOutcome {
         record("startTimer")
         return lock.withLock { board.start(durationSeconds: durationSeconds, rawLabel: rawLabel, at: Date()) }
     }
-    func cancelTimer(reference: String) async -> ClickyTimerCancelOutcome {
+    func cancelTimer(reference: String) async -> EzraTimerCancelOutcome {
         record("cancelTimer")
         return lock.withLock { board.cancel(reference: reference) }
     }
-    func createReminder(_ request: ClickyReminderRequest) async -> ClickyReminderCreateOutcome { record("createReminder"); return .created(identifier: "eval") }
+    func createReminder(_ request: EzraReminderRequest) async -> EzraReminderCreateOutcome { record("createReminder"); return .created(identifier: "eval") }
     func removeReminder(withIdentifier identifier: String) async -> Bool { record("removeReminder"); return true }
-    func listReminders(range: ClickyReminderRange) async -> ClickyReminderListOutcome { record("listReminders"); return .reminders([]) }
-    func listShortcutNames() async -> ClickyShortcutListOutcome { record("listShortcuts"); return .names(["morning routine", "focus mode", "send eta"]) }
+    func listReminders(range: EzraReminderRange) async -> EzraReminderListOutcome { record("listReminders"); return .reminders([]) }
+    func listShortcutNames() async -> EzraShortcutListOutcome { record("listShortcuts"); return .names(["morning routine", "focus mode", "send eta"]) }
     func runShortcut(named name: String) async -> Bool { record("runShortcut"); return true }
 }
 
@@ -218,7 +218,7 @@ let workerSession: URLSession = {
     return URLSession(configuration: configuration)
 }()
 
-func sendOneRequest(requestBody: [String: Any]) async throws -> ClickyStreamedMessage {
+func sendOneRequest(requestBody: [String: Any]) async throws -> EzraStreamedMessage {
     let startTime = Date()
     var request = URLRequest(url: workerChatURL)
     request.httpMethod = "POST"
@@ -243,9 +243,9 @@ func sendOneRequest(requestBody: [String: Any]) async throws -> ClickyStreamedMe
                 }
                 throw WorkerRequestFailure(description: "HTTP \(statusCode): \(errorBody.prefix(400))")
             }
-            var messageAssembler = ClickyStreamedMessageAssembler()
+            var messageAssembler = EzraStreamedMessageAssembler()
             for try await line in byteStream.lines {
-                guard let eventPayload = ClickyServerSentEventLine.eventPayload(fromLine: line) else { continue }
+                guard let eventPayload = EzraServerSentEventLine.eventPayload(fromLine: line) else { continue }
                 messageAssembler.consume(eventPayload)
             }
             var streamedMessage = messageAssembler.finishedMessage()
@@ -280,7 +280,7 @@ func readText(_ fileURL: URL) -> String? {
 
 /// A rough price at list prices for Sonnet 5.5 (dollars per million tokens: input 2, output 10, cache
 /// read 0.20, cache write 2.50), the table the app's usage tab uses.
-func estimatedDollars(_ usage: ClickyClaudeTokenUsage) -> Double {
+func estimatedDollars(_ usage: EzraClaudeTokenUsage) -> Double {
     let inputDollars = Double(usage.inputTokens ?? 0) * 2.0 / 1_000_000
     let outputDollars = Double(usage.outputTokens ?? 0) * 10.0 / 1_000_000
     let cacheReadDollars = Double(usage.cacheReadInputTokens ?? 0) * 0.20 / 1_000_000
@@ -295,7 +295,7 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
 
     // A new temporary root: the folders the user "chose", a home folder, and an empty notes folder.
     let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        .appendingPathComponent("clicky-files-eval-\(scenario.identifier)-\(runNumber)-\(UUID().uuidString.prefix(6))", isDirectory: true)
+        .appendingPathComponent("ezra-files-eval-\(scenario.identifier)-\(runNumber)-\(UUID().uuidString.prefix(6))", isDirectory: true)
     let homeURL = rootURL.appendingPathComponent("home", isDirectory: true)
     let notesURL = rootURL.appendingPathComponent("notes", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: rootURL) }
@@ -309,11 +309,11 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
     }
     let originalFileTexts = Dictionary(uniqueKeysWithValues: scenario.files.map { ($0.path, $0.content) })
 
-    // The policy and the turn context exactly as `ClickyPreparedFileEditing.prepare` builds them.
+    // The policy and the turn context exactly as `EzraPreparedFileEditing.prepare` builds them.
     let editableFolderPaths = scenario.editableFolderNames.map { rootURL.appendingPathComponent($0, isDirectory: true).path }
     let frontmostDocumentPath = scenario.frontmostDocument.map { rootURL.appendingPathComponent($0).path }
-    let pathPolicy = ClickyFilePathPolicy(allowedFolderPaths: editableFolderPaths, homeDirectoryPath: homeURL.path, frontmostDocumentPath: frontmostDocumentPath)
-    var turnContext = ClickyTurnContext(
+    let pathPolicy = EzraFilePathPolicy(allowedFolderPaths: editableFolderPaths, homeDirectoryPath: homeURL.path, frontmostDocumentPath: frontmostDocumentPath)
+    var turnContext = EzraTurnContext(
         userTranscript: scenario.userPrompt,
         frontmostApplicationBundleIdentifier: scenario.bundleIdentifier,
         frontmostApplicationName: scenario.applicationName,
@@ -322,26 +322,26 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
         frontmostWindowTitle: scenario.windowTitle
     )
     turnContext.editableFolders = pathPolicy.allowedFolderURLs.map {
-        ClickyEditableFolderDescription(name: ClickyEditableFolders.displayName(forFolderPath: $0.path), path: $0.path)
+        EzraEditableFolderDescription(name: EzraEditableFolders.displayName(forFolderPath: $0.path), path: $0.path)
     }
-    turnContext.frontmostDocumentInEditableFolder = ClickyFileEditingPromptSection.frontmostDocumentDescription(documentPath: frontmostDocumentPath, policy: pathPolicy)
+    turnContext.frontmostDocumentInEditableFolder = EzraFileEditingPromptSection.frontmostDocumentDescription(documentPath: frontmostDocumentPath, policy: pathPolicy)
     turnContext.pendingChangeDescriptions = scenario.pendingChangeDescriptions
     turnContext.actionsAreEnabled = runsWithActionTools
     turnContext.timeZone = TimeZone(identifier: "Europe/Amsterdam")!
     // Round 21b: the scenario's standing context, seeded through the store's own setCurrentText and save
     // into the temporary root, and handed to the assembler as the app hands its store.
     let agentContextStore = scenario.agentContext.map { agentContextText in
-        let scenarioContextStore = ClickyAgentContextStore(directoryURL: rootURL.appendingPathComponent("context", isDirectory: true))
+        let scenarioContextStore = EzraAgentContextStore(directoryURL: rootURL.appendingPathComponent("context", isDirectory: true))
         scenarioContextStore.setCurrentText(agentContextText)
         scenarioContextStore.saveNow()
         scenarioContextStore.flushPendingSaveNow()
         return scenarioContextStore
     }
-    let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
+    let preparedPrompt = EzraPromptAssembler.prepareSystemPrompt(
         for: turnContext,
         promptsDirectoryURL: promptsDirectoryURL,
-        noteStore: ClickyNoteStore(notesDirectoryURL: notesURL),
-        profileStore: ClickyProfileStore(profileDirectoryURL: notesURL),
+        noteStore: EzraNoteStore(notesDirectoryURL: notesURL),
+        profileStore: EzraProfileStore(profileDirectoryURL: notesURL),
         agentContextStore: agentContextStore
     )
     // Round 21b: in every record (0 without a context), so a run can prove the context reached the request.
@@ -354,18 +354,18 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
         return record
     }
     let screenLabel = "user's screen (cursor is here) (image dimensions: 1280x800 pixels; center is at 640,400)"
-    let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(staticText: preparedPrompt.staticSystemPromptText, contextText: preparedPrompt.contextSystemPromptText, dynamicText: preparedPrompt.dynamicSystemPromptText)
-    let fileToolSession = ClickyFileToolTurnSession(policy: pathPolicy)
+    let systemBlocks = EzraSystemPromptBlocks.makeSystemBlocks(staticText: preparedPrompt.staticSystemPromptText, contextText: preparedPrompt.contextSystemPromptText, dynamicText: preparedPrompt.dynamicSystemPromptText)
+    let fileToolSession = EzraFileToolTurnSession(policy: pathPolicy)
     let fakeActionExecutor = FakeActionExecutor()
-    let actionToolSession: ClickyActionToolTurnSession? = runsWithActionTools
-        ? ClickyActionToolTurnSession(executor: fakeActionExecutor, pathPolicy: pathPolicy, currentDate: { Date() }, timeZone: TimeZone(identifier: "Europe/Amsterdam")!)
+    let actionToolSession: EzraActionToolTurnSession? = runsWithActionTools
+        ? EzraActionToolTurnSession(executor: fakeActionExecutor, pathPolicy: pathPolicy, currentDate: { Date() }, timeZone: TimeZone(identifier: "Europe/Amsterdam")!)
         : nil
-    let combinedToolSession = ClickyTurnToolSession(fileSession: fileToolSession, actionSession: actionToolSession)
+    let combinedToolSession = EzraTurnToolSession(fileSession: fileToolSession, actionSession: actionToolSession)
     // Without `--with-actions` the request is exactly round 17's (the file tools alone).
-    let tools = runsWithActionTools ? combinedToolSession.toolsArray() : ClickyFileToolDefinitions.toolsArray()
-    let baseMessages = ClickyClaudeChatRequestBuilder.messages(
+    let tools = runsWithActionTools ? combinedToolSession.toolsArray() : EzraFileToolDefinitions.toolsArray()
+    let baseMessages = EzraClaudeChatRequestBuilder.messages(
         conversationHistory: scenario.history.map { (userPlaceholder: $0.user, assistantResponse: $0.assistant) },
-        currentUserContentBlocks: ClickyClaudeChatRequestBuilder.currentUserContentBlocks(images: [(data: screenshotData, label: screenLabel)], userPrompt: scenario.userPrompt)
+        currentUserContentBlocks: EzraClaudeChatRequestBuilder.currentUserContentBlocks(images: [(data: screenshotData, label: screenLabel)], userPrompt: scenario.userPrompt)
     )
     let toolSession = fileToolSession
     var toolCallLog: [[String: Any]] = []
@@ -373,12 +373,12 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
     var blockTypesPerRequest: [[String]] = []
 
     let turnStart = Date()
-    let loopResult: ClickyToolLoopResult
+    let loopResult: EzraToolLoopResult
     do {
-        loopResult = try await ClickyToolLoop.run(
+        loopResult = try await EzraToolLoop.run(
             baseMessages: baseMessages,
             buildRequestBody: { messagesSoFar in
-                ClickyClaudeChatRequestBuilder.streamingRequestBody(model: "claude-sonnet-5-5", systemPromptValue: systemBlocks, messages: messagesSoFar, tools: tools)
+                EzraClaudeChatRequestBuilder.streamingRequestBody(model: "claude-sonnet-5-5", systemPromptValue: systemBlocks, messages: messagesSoFar, tools: tools)
             },
             executeToolCall: { toolName, toolInput in
                 let toolResult = runsWithActionTools
@@ -411,12 +411,12 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
 
     // What the user would hear: tags removed, then the honesty rule (as CompanionManager does).
     let rawReplyText = loopResult.replyTextToFinish
-    let parsedSpokenText = ClickyReplyTagParser.parse(rawReplyText).spokenText
+    let parsedSpokenText = EzraReplyTagParser.parse(rawReplyText).spokenText
     let queuedChanges = toolSession.queuedChanges
     let toolCallCountOfTheTurn = runsWithActionTools ? combinedToolSession.toolCallCount : toolSession.toolCallCount
     let honestText: String
     if runsWithActionTools {
-        honestText = ClickyActionHonesty.honestSpokenText(parsedSpokenText, facts: ClickyActionHonestyFacts(
+        honestText = EzraActionHonesty.honestSpokenText(parsedSpokenText, facts: EzraActionHonestyFacts(
             queuedFileChangeCount: queuedChanges.count,
             queuedLinkCount: actionToolSession?.queuedActions.filter(\.isLink).count ?? 0,
             queuedShortcutCount: actionToolSession?.queuedActions.filter(\.isShortcut).count ?? 0,
@@ -427,7 +427,7 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
             actionsAreOn: true
         ))
     } else {
-        honestText = ClickyFileEditingHonesty.honestSpokenText(parsedSpokenText, queuedChangeCount: queuedChanges.count, usedFileTools: toolSession.toolCallCount > 0)
+        honestText = EzraFileEditingHonesty.honestSpokenText(parsedSpokenText, queuedChangeCount: queuedChanges.count, usedFileTools: toolSession.toolCallCount > 0)
     }
 
     // Thinking blocks seen in any reply of the loop (they are replayed with their signature).
@@ -467,8 +467,8 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
 
     // Apply what was queued, with the app's applier, in the temporary folder, and score the files.
     if !queuedChanges.isEmpty {
-        let applyOutcome = ClickyChangeApplier.apply(
-            changeSet: ClickyPendingChangeSet(changes: queuedChanges, proposedAt: Date()),
+        let applyOutcome = EzraChangeApplier.apply(
+            changeSet: EzraPendingChangeSet(changes: queuedChanges, proposedAt: Date()),
             backupsRootDirectoryURL: rootURL.appendingPathComponent("backups", isDirectory: true),
             now: Date()
         )

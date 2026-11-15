@@ -28,7 +28,7 @@ final class ElevenLabsTTSClient {
     /// audio finishes playing even if the caller doesn't hold a reference.
     private var audioPlayer: AVAudioPlayer?
 
-    /// Round 20: called just before Clicky's own speech starts playing, so a voice sample playing in
+    /// Round 20: called just before Ezra's own speech starts playing, so a voice sample playing in
     /// the settings tab stops (the reply wins).
     var speechPlaybackWillStartHandler: (() -> Void)?
 
@@ -50,7 +50,7 @@ final class ElevenLabsTTSClient {
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
     /// `voiceSettings` is the voice and speed to speak with (round 20).
-    func speakText(_ text: String, voiceSettings: ClickyVoiceSettings) async throws {
+    func speakText(_ text: String, voiceSettings: EzraVoiceSettings) async throws {
         let fetchedSpeech = try await fetchSpeechAudio(for: text, voiceSettings: voiceSettings)
 
         try Task.checkCancellation()
@@ -64,18 +64,18 @@ final class ElevenLabsTTSClient {
     ///
     /// Round 20: every spoken word goes through here, so the chosen voice and speed apply to all of
     /// them. With nothing chosen and the normal speed the body is today's (see
-    /// `ClickyTextToSpeechRequestBody.make`); a chosen voice adds `voice_id` and a speed adds
+    /// `EzraTextToSpeechRequestBody.make`); a chosen voice adds `voice_id` and a speed adds
     /// `voice_settings.speed`.
-    func fetchSpeechAudio(for text: String, voiceSettings: ClickyVoiceSettings) async throws -> ElevenLabsFetchedSpeech {
-        let fetchStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+    func fetchSpeechAudio(for text: String, voiceSettings: EzraVoiceSettings) async throws -> ElevenLabsFetchedSpeech {
+        let fetchStartedUptimeSeconds = EzraTurnMetrics.currentUptimeSeconds
 
         var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
-        ClickyWorkerConfiguration.addAppTokenHeader(to: &request)
+        EzraWorkerConfiguration.addAppTokenHeader(to: &request)
 
-        let body = ClickyTextToSpeechRequestBody.make(text: text, voiceSettings: voiceSettings)
+        let body = EzraTextToSpeechRequestBody.make(text: text, voiceSettings: voiceSettings)
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -92,16 +92,16 @@ final class ElevenLabsTTSClient {
             throw NSError(domain: "ElevenLabsTTS", code: httpResponse.statusCode,
                           userInfo: [
                               NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)",
-                              ClickyTurnFailureMessage.responseBodyUserInfoKey: errorBody,
-                              ClickyTurnFailureMessage.dailyCapHeaderUserInfoKey: httpResponse.value(forHTTPHeaderField: ClickyTurnFailureMessage.dailyCapHeaderName) ?? "",
+                              EzraTurnFailureMessage.responseBodyUserInfoKey: errorBody,
+                              EzraTurnFailureMessage.dailyCapHeaderUserInfoKey: httpResponse.value(forHTTPHeaderField: EzraTurnFailureMessage.dailyCapHeaderName) ?? "",
                           ])
         }
 
         // Round 20: the Worker spoke with its default voice because the voice asked for is not in
         // the account (or its id was malformed). The audio is still good; the settings tab is told,
         // and only when a voice was actually asked for.
-        let usedDefaultVoiceAsFallback = ClickyTextToSpeechRequestBody.responseUsedDefaultVoiceAsFallback(
-            fallbackHeaderValue: httpResponse.value(forHTTPHeaderField: ClickyTextToSpeechRequestBody.voiceFallbackHeaderName)
+        let usedDefaultVoiceAsFallback = EzraTextToSpeechRequestBody.responseUsedDefaultVoiceAsFallback(
+            fallbackHeaderValue: httpResponse.value(forHTTPHeaderField: EzraTextToSpeechRequestBody.voiceFallbackHeaderName)
         )
         if usedDefaultVoiceAsFallback, let requestedVoiceID = voiceSettings.voiceIDToSend {
             voiceFallbackHandler?(requestedVoiceID)
@@ -109,7 +109,7 @@ final class ElevenLabsTTSClient {
 
         return ElevenLabsFetchedSpeech(
             audioData: data,
-            fetchMilliseconds: ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: fetchStartedUptimeSeconds),
+            fetchMilliseconds: EzraTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: fetchStartedUptimeSeconds),
             usedDefaultVoiceAsFallback: usedDefaultVoiceAsFallback
         )
     }
@@ -117,7 +117,7 @@ final class ElevenLabsTTSClient {
     /// Starts playing audio returned by `fetchSpeechAudio`. Returns as soon as playback has begun.
     func playSpeechAudio(_ audioData: Data) throws {
         let player = try AVAudioPlayer(data: audioData)
-        // Round 20: Clicky's own speech wins over a voice sample in the settings tab.
+        // Round 20: Ezra's own speech wins over a voice sample in the settings tab.
         speechPlaybackWillStartHandler?()
         self.audioPlayer = player
         player.play()
@@ -145,7 +145,7 @@ final class ElevenLabsTTSClient {
 /// Fetches the speech for a reply early, while Claude is still writing the reply's tags.
 ///
 /// The words before the first tag are the whole spoken answer and cannot change, but the stream
-/// keeps going for the tags (and `ClickyTurnFinisher` only decides the final spoken text after the
+/// keeps going for the tags (and `EzraTurnFinisher` only decides the final spoken text after the
 /// stream ends). This starts downloading the audio for those words straight away, so it is
 /// usually ready by the time the finisher is done. Nothing here ever plays audio: the caller plays
 /// only what `speechAudioForFinalSpokenText` returns, after the finisher has decided.
@@ -160,13 +160,13 @@ final class ElevenLabsSpeechPrefetch {
     /// object makes (the early one, a fixed sentence, the final one) uses this same value, so a
     /// change in the settings tab mid-turn can never give early audio in one voice and a final fetch
     /// in another; the change applies from the next turn.
-    let voiceSettingsForThisTurn: ClickyVoiceSettings
+    let voiceSettingsForThisTurn: EzraVoiceSettings
 
     private var pendingFetch: Task<ElevenLabsFetchedSpeech, Error>?
     private var hasLookedPastTheFirstReplyTag = false
-    private var outcomeWhenNothingWasFetched: ClickySpeechPrefetchOutcome = .notStarted
+    private var outcomeWhenNothingWasFetched: EzraSpeechPrefetchOutcome = .notStarted
 
-    init(voiceSettings voiceSettingsForThisTurn: ClickyVoiceSettings) {
+    init(voiceSettings voiceSettingsForThisTurn: EzraVoiceSettings) {
         self.voiceSettingsForThisTurn = voiceSettingsForThisTurn
     }
 
@@ -175,7 +175,7 @@ final class ElevenLabsSpeechPrefetch {
     /// turn simply takes the normal path.
     func startIfFirstReplyTagHasOpened(accumulatedReplyText: String, userTranscript: String, ttsClient: ElevenLabsTTSClient) {
         guard !hasLookedPastTheFirstReplyTag else { return }
-        guard case .spokenTextIsComplete(let spokenTextBeforeFirstTag) = ClickySpeechPrefetch.replyTextBeforeFirstTag(in: accumulatedReplyText) else {
+        guard case .spokenTextIsComplete(let spokenTextBeforeFirstTag) = EzraSpeechPrefetch.replyTextBeforeFirstTag(in: accumulatedReplyText) else {
             return
         }
         hasLookedPastTheFirstReplyTag = true
@@ -183,7 +183,7 @@ final class ElevenLabsSpeechPrefetch {
         // A reply that begins with a tag has no words before it to fetch.
         guard !spokenTextBeforeFirstTag.isEmpty else { return }
 
-        guard ClickySpeechPrefetch.transcriptAllowsSpeechPrefetch(userTranscript) else {
+        guard EzraSpeechPrefetch.transcriptAllowsSpeechPrefetch(userTranscript) else {
             outcomeWhenNothingWasFetched = .skippedForMemoryRequest
             return
         }
@@ -202,7 +202,7 @@ final class ElevenLabsSpeechPrefetch {
     func startFetchingFixedSentence(_ fixedSentence: String, userTranscript: String, ttsClient: ElevenLabsTTSClient) {
         hasLookedPastTheFirstReplyTag = true
         guard !fixedSentence.isEmpty else { return }
-        guard ClickySpeechPrefetch.transcriptAllowsSpeechPrefetch(userTranscript) else {
+        guard EzraSpeechPrefetch.transcriptAllowsSpeechPrefetch(userTranscript) else {
             outcomeWhenNothingWasFetched = .skippedForMemoryRequest
             return
         }
@@ -222,11 +222,11 @@ final class ElevenLabsSpeechPrefetch {
 
     /// The outcome to record when the early audio is not played: it was made for different text
     /// than the final spoken text (or the final spoken text is empty), or no early fetch happened.
-    var outcomeWhenPrefetchedAudioIsNotUsed: ClickySpeechPrefetchOutcome {
+    var outcomeWhenPrefetchedAudioIsNotUsed: EzraSpeechPrefetchOutcome {
         pendingFetch == nil ? outcomeWhenNothingWasFetched : .textChanged
     }
 
-    /// Returns the audio for `finalSpokenText`, the text `ClickyTurnFinisher` decided on.
+    /// Returns the audio for `finalSpokenText`, the text `EzraTurnFinisher` decided on.
     /// - If the early fetch was made for exactly this text, its audio is used (waiting for it if
     ///   it is still downloading). If that fetch failed, the failure is silent and the final text
     ///   is fetched the normal way.
@@ -236,8 +236,8 @@ final class ElevenLabsSpeechPrefetch {
     func speechAudioForFinalSpokenText(
         _ finalSpokenText: String,
         ttsClient: ElevenLabsTTSClient
-    ) async throws -> (fetchedSpeech: ElevenLabsFetchedSpeech, prefetchOutcome: ClickySpeechPrefetchOutcome) {
-        guard ClickySpeechPrefetch.prefetchedAudioMatchesFinalSpokenText(
+    ) async throws -> (fetchedSpeech: ElevenLabsFetchedSpeech, prefetchOutcome: EzraSpeechPrefetchOutcome) {
+        guard EzraSpeechPrefetch.prefetchedAudioMatchesFinalSpokenText(
             prefetchedSpokenText: prefetchedSpokenText,
             finalSpokenText: finalSpokenText
         ), let pendingFetch else {

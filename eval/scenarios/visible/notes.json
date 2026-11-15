@@ -5,7 +5,7 @@
     "dimension": "notes",
     "category": "save-by-voice-fact",
     "kind": "save",
-    "userPrompt": "Take a note: the deploy token for the clicky worker rotates every thirty days.",
+    "userPrompt": "Take a note: the deploy token for the ezra worker rotates every thirty days.",
     "screens": [
       "terminal_main.jpg"
     ],
@@ -57,7 +57,7 @@
       {
         "title": "Deploy token rotation",
         "date": "2026-11-03",
-        "body": "The deploy token for the clicky worker rotates every thirty days."
+        "body": "The deploy token for the ezra worker rotates every thirty days."
       },
       {
         "title": "Onboarding ideas",
