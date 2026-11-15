@@ -402,6 +402,10 @@ swiftc -O -o /tmp/metrics_summary eval/metrics_summary/main.swift leanring-buddy
 
 Both type-check against ClickyCore. Neither was run against the Worker while round 19 was built (no network was allowed); the summary was run on a synthetic 50-line turn log and a 21-line follow-up log written with the app's own record types (every table printed).
 
+## Look and sound (round 20)
+
+This round has no model eval and adds no scenario, because nothing the model sees changed: the static base prompt and the per-turn block are byte-stable (the existing prompt checks of the smoke program still pass), the cursor style and the voice settings never reach the prompt or a metrics line (a smoke guard reads the prompt assembler and the base prompt for their names), and the request to Claude is untouched. The proof is offline and visual: the smoke program's round 20 parts (the cursor's numbers and outlines, the colour parser, the `/tts` body against today's bytes, the `/voices` decoding, the picker's rows, the sample cache, the settings snapshot), `voice_check` (the app's own speech client, prefetch, voice list client and sample player against an in-process fake Worker on an `.invalid` host), `round20_render` (the cursor shapes, the LOOK preview, the pill's accent, the settings tab in the app's own panel controller), and the orchestrator's two self tests (`CLICKY_DRAW_SELF_TEST_CURSOR_STYLE` for the styled cursor and the pill's colour; the panel self test for the LOOK and VOICE rows). The only live calls are the tester's handful of `/voices` and `/tts` requests through the Worker after the orchestrator's deploy (about $0.01 at ElevenLabs flash prices, no Anthropic cost).
+
 ## Files
 
 ```

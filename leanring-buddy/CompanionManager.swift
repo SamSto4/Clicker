@@ -290,7 +290,8 @@ final class CompanionManager: ObservableObject {
         }
 
         if isStatusPillEnabled, !isChatPanelOpen, let statusPillContent, let screenUnderCursor = Self.screenUnderCursor() {
-            statusPillController.show(statusPillContent, onScreen: screenUnderCursor)
+            // Round 20 (Sam's decision 6): the listening and asking accent is the cursor's colour.
+            statusPillController.show(statusPillContent, onScreen: screenUnderCursor, askingAccentColourHex: cursorStyle.colourHex)
         } else {
             statusPillController.hide()
         }
@@ -477,6 +478,214 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(choice.rawValue, forKey: ClickyPanelSettingsDefaults.drawingLifetimeScaleKey)
         overlayWindowManager.drawingOverlayController.drawingLifetimes = ClickyDrawingLifetimes.lifetimes(for: choice)
     }
+
+    // MARK: - Look and sound (round 20): the cursor studio and the voice picker
+
+    /// The cursor's look: colour, shape, size and glow (the LOOK section of the settings tab). With
+    /// nothing stored it is today's blue triangle exactly. The overlay watches this object, so a change
+    /// shows on the real cursor at once. Never sent to the model and never logged.
+    @Published private(set) var cursorStyle: ClickyCursorStyle = ClickyPanelSettingsDefaults.cursorStyle(
+        storedColourHex: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.cursorColourHexKey),
+        storedShape: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.cursorShapeKey),
+        storedSize: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.cursorSizeKey),
+        storedGlow: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.cursorGlowKey)
+    )
+
+    /// A colour typed in the hex field or picked from the palette. Text that is not a colour changes
+    /// nothing (the field puts the stored colour back and says how to write one).
+    func setCursorColourHex(_ typedColourText: String) {
+        guard let colourHex = ClickyCursorColour.parse(typedColourText) else { return }
+        cursorStyle.colourHex = colourHex
+        UserDefaults.standard.set(colourHex, forKey: ClickyPanelSettingsDefaults.cursorColourHexKey)
+    }
+
+    func setCursorShape(_ shape: ClickyCursorShape) {
+        cursorStyle.shape = shape
+        UserDefaults.standard.set(shape.rawValue, forKey: ClickyPanelSettingsDefaults.cursorShapeKey)
+    }
+
+    func setCursorSize(_ size: ClickyCursorSize) {
+        cursorStyle.size = size
+        UserDefaults.standard.set(size.rawValue, forKey: ClickyPanelSettingsDefaults.cursorSizeKey)
+    }
+
+    func setCursorGlow(_ glow: ClickyCursorGlow) {
+        cursorStyle.glow = glow
+        UserDefaults.standard.set(glow.rawValue, forKey: ClickyPanelSettingsDefaults.cursorGlowKey)
+    }
+
+    /// Which ElevenLabs voice speaks and how fast (the VOICE section). With nothing chosen and the
+    /// normal speed, the /tts body is exactly the one Clicky has always sent. A turn reads this once,
+    /// at its start, and every fetch of that turn uses the same value.
+    @Published private(set) var voiceSettings: ClickyVoiceSettings = ClickyPanelSettingsDefaults.voiceSettings(
+        storedVoiceID: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.chosenVoiceIDKey),
+        storedVoiceName: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.chosenVoiceNameKey),
+        storedSpeedPercent: UserDefaults.standard.object(forKey: ClickyPanelSettingsDefaults.speechSpeedPercentKey)
+    )
+
+    /// A voice of the account with its name, or (nil, nil) for the Worker's default voice. An id the
+    /// app could not send counts as the default. The name is kept so the tab can say it offline.
+    func setChosenVoice(id voiceID: String?, name voiceName: String?) {
+        let chosenSettings = ClickyVoiceSettings.settings(storedVoiceID: voiceID, storedVoiceName: voiceName, storedSpeedPercent: voiceSettings.speedPercent)
+        voiceSettings.chosenVoiceID = chosenSettings.chosenVoiceID
+        voiceSettings.chosenVoiceName = chosenSettings.chosenVoiceName
+        if let chosenVoiceID = chosenSettings.chosenVoiceID {
+            UserDefaults.standard.set(chosenVoiceID, forKey: ClickyPanelSettingsDefaults.chosenVoiceIDKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: ClickyPanelSettingsDefaults.chosenVoiceIDKey)
+        }
+        if let chosenVoiceName = chosenSettings.chosenVoiceName {
+            UserDefaults.standard.set(chosenVoiceName, forKey: ClickyPanelSettingsDefaults.chosenVoiceNameKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: ClickyPanelSettingsDefaults.chosenVoiceNameKey)
+        }
+        // Fixed words only: never the voice's name or id.
+        print("🔊 Clicky \(voiceSettings.consoleWords)")
+    }
+
+    /// One of the five speed steps (80 to 120). Anything else is the normal pace.
+    func setSpeechSpeedPercent(_ speedPercent: Int) {
+        voiceSettings.speedPercent = ClickyVoiceSettings.speedStep(forPercent: speedPercent)
+        UserDefaults.standard.set(voiceSettings.speedPercent, forKey: ClickyPanelSettingsDefaults.speechSpeedPercentKey)
+        print("🔊 Clicky \(voiceSettings.consoleWords)")
+    }
+
+    /// The panel self test promises no model and no network: it never asks the Worker for the voice
+    /// list and never fetches a sample (it shows six made-up voices from a temporary folder).
+    private var isPanelSelfTestRun: Bool {
+        ProcessInfo.processInfo.environment[ClickyChatStore.panelSelfTestEnvironmentVariable] == "1"
+    }
+
+    /// Asks the Worker's /voices route for the account's voices. Only when the settings tab opens or
+    /// "refresh" is pressed, never at launch.
+    private lazy var voiceListClient = ClickyVoiceListClient(
+        workerBaseURL: ClickyWorkerConfiguration.workerBaseURL,
+        appTokenHeaderName: ClickyWorkerConfiguration.appTokenHeaderName,
+        appToken: ClickyWorkerConfiguration.workerAppToken
+    )
+    private var voiceListFetchTask: Task<Void, Never>?
+
+    /// Plays the voice samples of the settings tab with its own audio player; the samples are kept in
+    /// the voices folder of this run (a temporary one in a self test).
+    private lazy var voiceSamplePlayer = ClickyVoiceSamplePlayer(
+        samplesDirectoryURL: panelDataLocations.voicesDirectoryURL.map { ClickyVoiceListCache.samplesDirectoryURL(inVoicesDirectory: $0) },
+        fetchSampleAudio: { [weak self] sampleVoiceSettings in
+            guard let self else { throw CancellationError() }
+            return try await self.elevenLabsTTSClient.fetchSpeechAudio(for: ClickyVoiceSample.sentence, voiceSettings: sampleVoiceSettings)
+        }
+    )
+
+    /// The settings tab opened or "refresh" was pressed. One request at a time; the answer replaces
+    /// the list in the tab and the kept copy on disk. A failure keeps what the tab shows and says so.
+    private func refreshVoiceListFromTheWorker() {
+        guard !isPanelSelfTestRun else {
+            print("🔊 Clicky voice list: not asked for in the panel self test")
+            return
+        }
+        guard voiceListFetchTask == nil else { return }
+        chatPanelViewModel.voiceListFetchDidStart()
+        let voiceListClientForThisFetch = voiceListClient
+        let voicesDirectoryURL = panelDataLocations.voicesDirectoryURL
+        voiceListFetchTask = Task { @MainActor [weak self] in
+            let fetchedVoiceList = await Task.detached(priority: .utility) {
+                await voiceListClientForThisFetch.fetchVoiceList()
+            }.value
+            guard let self else { return }
+            self.voiceListFetchTask = nil
+            guard let fetchedVoiceList else {
+                self.chatPanelViewModel.voiceListFetchDidFail()
+                print("🔊 Clicky voice list: couldn't load it")
+                return
+            }
+            self.chatPanelViewModel.applyFetchedVoiceList(fetchedVoiceList)
+            // A count only, never a voice's name or id.
+            print("🔊 Clicky voice list: \(fetchedVoiceList.voices.count) voices")
+            if let voicesDirectoryURL {
+                Task.detached(priority: .utility) {
+                    ClickyVoiceListCache.saveVoiceList(fetchedVoiceList, toVoicesDirectory: voicesDirectoryURL)
+                }
+            }
+        }
+    }
+
+    /// A row's sample button. Clicky's own speech wins: no sample starts while Clicky speaks or the
+    /// microphone is listening (the sample would be heard as words), and a reply that starts speaking
+    /// stops a sample (see `speechPlaybackWillStartHandler`).
+    private func toggleVoiceSample(for voicePickerRow: ClickyVoicePickerRow) {
+        if voiceSamplePlayer.playbackState.rowIdentifier == voicePickerRow.id {
+            voiceSamplePlayer.stop()
+            return
+        }
+        guard !isPanelSelfTestRun else {
+            print("🔊 Clicky voice sample: not fetched in the panel self test")
+            return
+        }
+        guard !elevenLabsTTSClient.isPlaying, !buddyDictationManager.isDictationInProgress, !isFollowUpWindowOpen else {
+            return
+        }
+        voiceSamplePlayer.toggleSample(
+            rowIdentifier: voicePickerRow.id,
+            voiceIDToSend: voicePickerRow.voiceIDToChoose,
+            sampleCacheVoiceID: voicePickerRow.sampleCacheVoiceID,
+            speedPercent: voiceSettings.speedPercent
+        )
+    }
+
+    /// The Worker spoke with its default voice because the voice asked for is not in the account (it
+    /// was removed, or the list changed). Speech worked, so nothing is spoken about it; the settings
+    /// tab says so. When that voice is the chosen one the choice is cleared, so the next request is
+    /// today's body again.
+    private func handleVoiceFallback(forRequestedVoiceID requestedVoiceID: String) {
+        if voiceSettings.chosenVoiceID == requestedVoiceID {
+            voiceIDClearedAfterAFallback = requestedVoiceID
+            setChosenVoice(id: nil, name: nil)
+            chatPanelViewModel.showVoicePickerNotice(ClickyVoicePickerNotices.chosenVoiceFellBackToDefault)
+        } else if requestedVoiceID == voiceIDClearedAfterAFallback {
+            // The same turn's other fetch (the early one and the final one can both report it), or a
+            // sample of the voice that was just cleared: the tab already says what happened.
+            return
+        } else {
+            chatPanelViewModel.showVoicePickerNotice(ClickyVoicePickerNotices.otherVoiceIsNoLongerInTheAccount)
+        }
+        // Fixed words only, never the voice's name or id.
+        print("🔊 Clicky voice: the worker spoke with its default voice instead")
+    }
+
+    /// The chosen voice that was cleared after the Worker said it is gone, so a second report of the
+    /// same voice does not replace the notice that explains it.
+    private var voiceIDClearedAfterAFallback: String?
+
+    /// The handlers that tie the voice picker, the sample player and the speech client together.
+    private func bindVoicePicker() {
+        chatPanelViewModel.voiceListRefreshHandler = { [weak self] in
+            self?.refreshVoiceListFromTheWorker()
+        }
+        chatPanelViewModel.voiceSampleHandler = { [weak self] voicePickerRow in
+            self?.toggleVoiceSample(for: voicePickerRow)
+        }
+        voiceSamplePlayer.playbackStateChangedHandler = { [weak self] playbackState in
+            self?.chatPanelViewModel.mirrorVoiceSamplePlaybackState(playbackState)
+        }
+        voiceSamplePlayer.sampleFetchFailedHandler = { [weak self] in
+            self?.chatPanelViewModel.showVoicePickerNotice(ClickyVoicePickerNotices.couldNotFetchTheSample)
+        }
+        elevenLabsTTSClient.speechPlaybackWillStartHandler = { [weak self] in
+            self?.voiceSamplePlayer.stop()
+        }
+        elevenLabsTTSClient.voiceFallbackHandler = { [weak self] requestedVoiceID in
+            self?.handleVoiceFallback(forRequestedVoiceID: requestedVoiceID)
+        }
+        // The microphone starting (asking, dictating, a follow-up window) stops a sample, so the
+        // sample is never heard as the user's words.
+        voiceSampleStopWhenMicrophoneStartsCancellable = buddyDictationManager.$isPreparingToRecord
+            .filter { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.voiceSamplePlayer.stop()
+            }
+    }
+
+    private var voiceSampleStopWhenMicrophoneStartsCancellable: AnyCancellable?
 
     /// User preference for whether the Clicky cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
@@ -739,6 +948,13 @@ final class CompanionManager: ObservableObject {
     /// It does nothing in normal use.
     private func runDrawingSelfTestIfRequested() {
         guard ProcessInfo.processInfo.environment["CLICKY_DRAW_SELF_TEST"] == "1" else { return }
+        // Round 20: CLICKY_DRAW_SELF_TEST_CURSOR_STYLE="#FF4D5E,ring,large,strong" gives the cursor (and
+        // the pill's accent) a style for this run only. It is never stored, so the user's own look
+        // comes back at the next launch. Only the style words are printed.
+        if let selfTestCursorStyleDescription = ProcessInfo.processInfo.environment[ClickyCursorStyle.drawSelfTestEnvironmentVariable] {
+            cursorStyle = ClickyCursorStyle.parse(selfTestDescription: selfTestCursorStyleDescription)
+            print("✏️ draw self test: cursor style for this run: \(cursorStyle.consoleWords)")
+        }
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             if !isOverlayVisible {
@@ -778,7 +994,8 @@ final class CompanionManager: ObservableObject {
                         indicator: .thinkingDots,
                         accent: .asking
                     ),
-                    onScreen: mainDisplayScreen
+                    onScreen: mainDisplayScreen,
+                    askingAccentColourHex: cursorStyle.colourHex
                 )
                 print("✏️ draw self test: status pill shown saying \"\(ClickyStatusPillContent.thinkingWord)\" notch=\(mainDisplayScreen.safeAreaInsets.top > 0)")
             }
@@ -819,7 +1036,8 @@ final class CompanionManager: ObservableObject {
                let sampleNoticeText = ClickyActionNoticeText.notice(forResultText: "opened Safari.", kind: .openApp) {
                 statusPillController.show(
                     ClickyStatusPillContent(word: sampleNoticeText, indicator: .none, accent: .asking),
-                    onScreen: mainDisplayScreen
+                    onScreen: mainDisplayScreen,
+                    askingAccentColourHex: cursorStyle.colourHex
                 )
                 print("✏️ draw self test: status pill shown with the sample action notice \"\(sampleNoticeText)\"")
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -901,7 +1119,10 @@ final class CompanionManager: ObservableObject {
             // temporary folders only (never into a real folder, and never over files that are there).
             let writtenSampleData = ClickyPanelSelfTestSamples.writeSamples(into: panelDataLocations)
             let wroteSampleMemories = ClickyPanelSelfTestSamples.writeSampleMemories(into: panelDataLocations)
-            print("💬 panel self test: sample memory written=\(writtenSampleData.wroteNotes) sample metrics written=\(writtenSampleData.wroteMetrics) sample memories written=\(wroteSampleMemories) realFolders=\(panelDataLocations.touchesARealFolder)")
+            // Round 20: six made-up voices as the kept voice list, so the settings tab's voice picker
+            // shows a list with no request to the Worker (the self test never asks for one).
+            let wroteSampleVoices = ClickyPanelSelfTestSamples.writeSampleVoices(into: panelDataLocations)
+            print("💬 panel self test: sample memory written=\(writtenSampleData.wroteNotes) sample metrics written=\(writtenSampleData.wroteMetrics) sample memories written=\(wroteSampleMemories) sample voices written=\(wroteSampleVoices) realFolders=\(panelDataLocations.touchesARealFolder)")
 
             let selfTestImagePathFromEnvironment = ProcessInfo.processInfo.environment["CLICKY_PANEL_SELF_TEST_IMAGE"]
             chatPanelController.screenProvider = { mainDisplayScreen }
@@ -1310,6 +1531,8 @@ final class CompanionManager: ObservableObject {
                 }
             }
         }
+        // The voice picker of the settings tab (round 20).
+        bindVoicePicker()
         // The settings tab and the menu bar panel's switches show the same state. Whatever
         // changes it, in either place, reaches the tab here. The mirror compares before it
         // publishes, so the frequent changes of unrelated state cost nothing.
@@ -1492,10 +1715,12 @@ final class CompanionManager: ObservableObject {
             counter: ignoringTheChainCap ? ClickyFollowUpTurnCounter() : followUpTurnCounter
         )
         // Also never over another turn or another voice, and only where the microphone may be used.
+        // Round 20: nor over a voice sample, which the microphone would hear as words.
         return gateAllows
             && activeResponseTurnIdentifier == nil
             && !elevenLabsTTSClient.isPlaying
             && !spokenErrorSpeechSynthesizer.isSpeaking
+            && !voiceSamplePlayer.isActive
             && !showOnboardingVideo
             && hasMicrophonePermission
             && hasSpeechRecognitionPermission
@@ -1713,7 +1938,8 @@ final class CompanionManager: ObservableObject {
             guard self.activeResponseTurnIdentifier == nil, !self.elevenLabsTTSClient.isPlaying, !self.buddyDictationManager.isDictationInProgress else { return }
 
             do {
-                try await self.elevenLabsTTSClient.speakText(alertSentence)
+                // Round 20: in the chosen voice and speed, as they are when the alert speaks.
+                try await self.elevenLabsTTSClient.speakText(alertSentence, voiceSettings: self.voiceSettings)
                 self.refreshStatusPill()
                 while self.elevenLabsTTSClient.isPlaying, !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 100_000_000)
@@ -1850,7 +2076,11 @@ final class CompanionManager: ObservableObject {
             personaAssistantName: personaAssistantName,
             personaStyle: personaStyle,
             personaUserAddress: personaUserAddress,
-            isQuickCommandsEnabled: isQuickCommandsEnabled
+            isQuickCommandsEnabled: isQuickCommandsEnabled,
+            cursorStyle: cursorStyle,
+            chosenVoiceID: voiceSettings.chosenVoiceID,
+            chosenVoiceName: voiceSettings.chosenVoiceName,
+            speechSpeedPercent: voiceSettings.speedPercent
         ))
         // The first three are the checks the menu bar panel already shows; the speech recognition
         // one is the status call `BuddyDictationManager` already uses.
@@ -1893,6 +2123,18 @@ final class CompanionManager: ObservableObject {
             setPersonaUserAddress(address)
         case .quickCommandsEnabled(let isEnabled):
             setQuickCommandsEnabled(isEnabled)
+        case .cursorColourHex(let typedColourText):
+            setCursorColourHex(typedColourText)
+        case .cursorShape(let shape):
+            setCursorShape(shape)
+        case .cursorSize(let size):
+            setCursorSize(size)
+        case .cursorGlow(let glow):
+            setCursorGlow(glow)
+        case .chosenVoice(let voiceID, let voiceName):
+            setChosenVoice(id: voiceID, name: voiceName)
+        case .speechSpeedPercent(let speedPercent):
+            setSpeechSpeedPercent(speedPercent)
         }
     }
 
@@ -2083,6 +2325,13 @@ final class CompanionManager: ObservableObject {
         // Escape always wipes Clicky's drawing at once, whatever else it does or does not stop.
         overlayWindowManager.drawingOverlayController.clearAllMarks(fadeOutSeconds: 0)
 
+        // Round 20: Escape stops a voice sample of the settings tab, like Clicky's own speech. With
+        // nothing else running it is used up by that and the panel stays open.
+        let escapeStoppedAVoiceSample = voiceSamplePlayer.isActive
+        if escapeStoppedAVoiceSample {
+            voiceSamplePlayer.stop()
+        }
+
         // An open follow-up window is closed by Escape (no model call, no line in the metrics) and
         // Escape is used up by it.
         if closeFollowUpListeningWindow(because: .escape) {
@@ -2105,6 +2354,11 @@ final class CompanionManager: ObservableObject {
         let isResponseTurnRunning = activeResponseTurnIdentifier != nil
         let isSpeechAudioPlaying = elevenLabsTTSClient.isPlaying
         guard isWaitingForFinalTranscript || isResponseTurnRunning || isSpeechAudioPlaying else {
+            // Round 20: the press stopped a voice sample; that was all it was for.
+            if escapeStoppedAVoiceSample {
+                print("⎋ Clicky: Escape stopped the voice sample")
+                return
+            }
             // Nothing is running. A change that waits for an answer is cancelled first ("okay, i
             // left it." in the panel, not spoken) and the panel stays open; with no change waiting,
             // Escape closes the panel. When something is running, the lines below stop it first.
@@ -2367,7 +2621,11 @@ final class CompanionManager: ObservableObject {
         // A window that was about to open for the last reply never opens over this turn.
         closeFollowUpListeningWindow(because: .newTurnStarted)
 
-        let speechPrefetch = ElevenLabsSpeechPrefetch()
+        // Round 20: the voice and speed are read once, here, like the decision to speak. The early
+        // fetch, a fixed sentence and the final fetch of this turn all use this one value (the
+        // prefetch keeps it), so a change in the settings tab mid-turn applies from the next turn.
+        let voiceSettingsForThisTurn = voiceSettings
+        let speechPrefetch = ElevenLabsSpeechPrefetch(voiceSettings: voiceSettingsForThisTurn)
         activeResponseTurnIdentifier = turnIdentifier
         currentSpeechPrefetch?.cancel()
         currentSpeechPrefetch = speechPrefetch
@@ -2789,7 +3047,7 @@ final class CompanionManager: ObservableObject {
                                 // as a small working line, and nothing of it is ever spoken.
                                 toolUseFlag.markToolUsed()
                                 speechPrefetch.cancel()
-                                chatPanelViewModel.showWorkingNote(
+                                self.chatPanelViewModel.showWorkingNote(
                                     ClickyReplyTagParser.parse(toolUseFlag.latestRequestText).spokenText,
                                     turnIdentifier: turnIdentifier
                                 )
@@ -3372,7 +3630,8 @@ final class CompanionManager: ObservableObject {
             var answerWasSpokenToTheEnd = false
             if shouldSpeakThisAnswer {
                 do {
-                    try await elevenLabsTTSClient.speakText(answerSentence)
+                    // Round 20: one fetch, in the chosen voice and speed as they are now.
+                    try await elevenLabsTTSClient.speakText(answerSentence, voiceSettings: voiceSettings)
                     // Wait for the audio to end, so a follow-up window can open after it (a spoken
                     // "yes" to a change card is a natural place for one).
                     while elevenLabsTTSClient.isPlaying && !Task.isCancelled {
@@ -3428,6 +3687,8 @@ final class CompanionManager: ObservableObject {
         let actionExecutorForThisTurn = actionExecutor
         let runningTimersNow = timerController.runningTimers
         let personaForThisTurn = persona
+        // Round 20: read once for this turn, like the decision to speak.
+        let voiceSettingsForThisTurn = voiceSettings
         let shouldSpeakThisReply = ClickyReplySpeechDecision.shouldSpeakReply(
             inputMode: inputMode,
             isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
@@ -3583,7 +3844,7 @@ final class CompanionManager: ObservableObject {
                 turnStepInProgress = .textToSpeech
                 let textToSpeechStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
                 do {
-                    let fetchedSpeech = try await elevenLabsTTSClient.fetchSpeechAudio(for: fixedSentence)
+                    let fetchedSpeech = try await elevenLabsTTSClient.fetchSpeechAudio(for: fixedSentence, voiceSettings: voiceSettingsForThisTurn)
                     turnMetrics.textToSpeechFetchMilliseconds = fetchedSpeech.fetchMilliseconds
                     try Task.checkCancellation()
                     try elevenLabsTTSClient.playSpeechAudio(fetchedSpeech.audioData)

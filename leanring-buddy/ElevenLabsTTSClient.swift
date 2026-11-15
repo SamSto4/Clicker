@@ -14,6 +14,9 @@ import Foundation
 struct ElevenLabsFetchedSpeech {
     let audioData: Data
     let fetchMilliseconds: Int
+    /// Round 20: the Worker answered with `X-Clicky-Voice-Fallback: 1`, so the audio is in its
+    /// default voice, not the one asked for (that voice is no longer in the account).
+    var usedDefaultVoiceAsFallback: Bool = false
 }
 
 @MainActor
@@ -25,10 +28,20 @@ final class ElevenLabsTTSClient {
     /// audio finishes playing even if the caller doesn't hold a reference.
     private var audioPlayer: AVAudioPlayer?
 
-    init(proxyURL: String) {
+    /// Round 20: called just before Clicky's own speech starts playing, so a voice sample playing in
+    /// the settings tab stops (the reply wins).
+    var speechPlaybackWillStartHandler: (() -> Void)?
+
+    /// Round 20: called with the voice id that was asked for when the Worker spoke with its default
+    /// voice instead (the voice is no longer in the account). Nothing is spoken about it; the
+    /// settings tab says so.
+    var voiceFallbackHandler: ((String) -> Void)?
+
+    /// `sessionConfiguration` is only for the offline checks, which answer the requests in-process.
+    init(proxyURL: String, sessionConfiguration: URLSessionConfiguration? = nil) {
         self.proxyURL = URL(string: proxyURL)!
 
-        let configuration = URLSessionConfiguration.default
+        let configuration = sessionConfiguration ?? URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 60
         self.session = URLSession(configuration: configuration)
@@ -36,8 +49,9 @@ final class ElevenLabsTTSClient {
 
     /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
     /// Throws on network or decoding errors. Cancellation-safe.
-    func speakText(_ text: String) async throws {
-        let fetchedSpeech = try await fetchSpeechAudio(for: text)
+    /// `voiceSettings` is the voice and speed to speak with (round 20).
+    func speakText(_ text: String, voiceSettings: ClickyVoiceSettings) async throws {
+        let fetchedSpeech = try await fetchSpeechAudio(for: text, voiceSettings: voiceSettings)
 
         try Task.checkCancellation()
 
@@ -47,7 +61,12 @@ final class ElevenLabsTTSClient {
     /// Downloads the audio for `text` without playing it. Nothing is heard until the caller passes
     /// the audio to `playSpeechAudio`, which is what lets the audio be fetched while the final
     /// spoken text is still being decided. Throws on network errors and when cancelled.
-    func fetchSpeechAudio(for text: String) async throws -> ElevenLabsFetchedSpeech {
+    ///
+    /// Round 20: every spoken word goes through here, so the chosen voice and speed apply to all of
+    /// them. With nothing chosen and the normal speed the body is today's (see
+    /// `ClickyTextToSpeechRequestBody.make`); a chosen voice adds `voice_id` and a speed adds
+    /// `voice_settings.speed`.
+    func fetchSpeechAudio(for text: String, voiceSettings: ClickyVoiceSettings) async throws -> ElevenLabsFetchedSpeech {
         let fetchStartedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
 
         var request = URLRequest(url: proxyURL)
@@ -56,14 +75,7 @@ final class ElevenLabsTTSClient {
         request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
         ClickyWorkerConfiguration.addAppTokenHeader(to: &request)
 
-        let body: [String: Any] = [
-            "text": text,
-            "model_id": "eleven_flash_v2_5",
-            "voice_settings": [
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            ]
-        ]
+        let body = ClickyTextToSpeechRequestBody.make(text: text, voiceSettings: voiceSettings)
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -85,15 +97,28 @@ final class ElevenLabsTTSClient {
                           ])
         }
 
+        // Round 20: the Worker spoke with its default voice because the voice asked for is not in
+        // the account (or its id was malformed). The audio is still good; the settings tab is told,
+        // and only when a voice was actually asked for.
+        let usedDefaultVoiceAsFallback = ClickyTextToSpeechRequestBody.responseUsedDefaultVoiceAsFallback(
+            fallbackHeaderValue: httpResponse.value(forHTTPHeaderField: ClickyTextToSpeechRequestBody.voiceFallbackHeaderName)
+        )
+        if usedDefaultVoiceAsFallback, let requestedVoiceID = voiceSettings.voiceIDToSend {
+            voiceFallbackHandler?(requestedVoiceID)
+        }
+
         return ElevenLabsFetchedSpeech(
             audioData: data,
-            fetchMilliseconds: ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: fetchStartedUptimeSeconds)
+            fetchMilliseconds: ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: fetchStartedUptimeSeconds),
+            usedDefaultVoiceAsFallback: usedDefaultVoiceAsFallback
         )
     }
 
     /// Starts playing audio returned by `fetchSpeechAudio`. Returns as soon as playback has begun.
     func playSpeechAudio(_ audioData: Data) throws {
         let player = try AVAudioPlayer(data: audioData)
+        // Round 20: Clicky's own speech wins over a voice sample in the settings tab.
+        speechPlaybackWillStartHandler?()
         self.audioPlayer = player
         player.play()
         print("🔊 ElevenLabs TTS: playing \(audioData.count / 1024)KB audio")
@@ -131,9 +156,19 @@ final class ElevenLabsSpeechPrefetch {
     /// The text the early fetch was made for. Nil until an early fetch has started.
     private(set) var prefetchedSpokenText: String?
 
+    /// Round 20: the voice and speed of this turn, read once when the turn began. Every fetch this
+    /// object makes (the early one, a fixed sentence, the final one) uses this same value, so a
+    /// change in the settings tab mid-turn can never give early audio in one voice and a final fetch
+    /// in another; the change applies from the next turn.
+    let voiceSettingsForThisTurn: ClickyVoiceSettings
+
     private var pendingFetch: Task<ElevenLabsFetchedSpeech, Error>?
     private var hasLookedPastTheFirstReplyTag = false
     private var outcomeWhenNothingWasFetched: ClickySpeechPrefetchOutcome = .notStarted
+
+    init(voiceSettings voiceSettingsForThisTurn: ClickyVoiceSettings) {
+        self.voiceSettingsForThisTurn = voiceSettingsForThisTurn
+    }
 
     /// Called with the reply text received so far, on every chunk. Does nothing until the first
     /// reply tag has opened, then starts the early fetch once. A failure to start is silent: the
@@ -154,8 +189,9 @@ final class ElevenLabsSpeechPrefetch {
         }
 
         prefetchedSpokenText = spokenTextBeforeFirstTag
+        let voiceSettingsForThisFetch = voiceSettingsForThisTurn
         pendingFetch = Task {
-            try await ttsClient.fetchSpeechAudio(for: spokenTextBeforeFirstTag)
+            try await ttsClient.fetchSpeechAudio(for: spokenTextBeforeFirstTag, voiceSettings: voiceSettingsForThisFetch)
         }
     }
 
@@ -172,8 +208,9 @@ final class ElevenLabsSpeechPrefetch {
         }
         pendingFetch?.cancel()
         prefetchedSpokenText = fixedSentence
+        let voiceSettingsForThisFetch = voiceSettingsForThisTurn
         pendingFetch = Task {
-            try await ttsClient.fetchSpeechAudio(for: fixedSentence)
+            try await ttsClient.fetchSpeechAudio(for: fixedSentence, voiceSettings: voiceSettingsForThisFetch)
         }
     }
 
@@ -206,7 +243,7 @@ final class ElevenLabsSpeechPrefetch {
         ), let pendingFetch else {
             let outcome = outcomeWhenPrefetchedAudioIsNotUsed
             cancel()
-            let fetchedSpeech = try await ttsClient.fetchSpeechAudio(for: finalSpokenText)
+            let fetchedSpeech = try await ttsClient.fetchSpeechAudio(for: finalSpokenText, voiceSettings: voiceSettingsForThisTurn)
             return (fetchedSpeech, outcome)
         }
 
@@ -222,7 +259,7 @@ final class ElevenLabsSpeechPrefetch {
         } catch {
             // A cancelled turn is not a failed fetch; let the cancellation through.
             try Task.checkCancellation()
-            let fetchedSpeech = try await ttsClient.fetchSpeechAudio(for: finalSpokenText)
+            let fetchedSpeech = try await ttsClient.fetchSpeechAudio(for: finalSpokenText, voiceSettings: voiceSettingsForThisTurn)
             return (fetchedSpeech, .failed)
         }
     }

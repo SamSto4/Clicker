@@ -121,6 +121,14 @@ nonisolated enum ClickyPanelSettingsDefaults {
     static let personaUserAddressKey = "personaUserAddress"
     // Round 19 (Jarvis tuning).
     static let isQuickCommandsEnabledKey = "isQuickCommandsEnabled"
+    // Round 20 (look and sound): the cursor studio's four keys and the voice picker's three.
+    static let cursorColourHexKey = "cursorColourHex"
+    static let cursorShapeKey = "cursorShape"
+    static let cursorSizeKey = "cursorSize"
+    static let cursorGlowKey = "cursorGlow"
+    static let chosenVoiceIDKey = "chosenVoiceID"
+    static let chosenVoiceNameKey = "chosenVoiceName"
+    static let speechSpeedPercentKey = "speechSpeedPercent"
 
     static let defaultModelIdentifier = ClickyPanelModelOption.sonnet.modelIdentifier
     static let defaultIsClickyCursorEnabled = true
@@ -182,6 +190,24 @@ nonisolated enum ClickyPanelSettingsDefaults {
         }
         return storedChoice
     }
+
+    /// The cursor's look from its four stored values (round 20). Each value is read on its own: a
+    /// missing or unreadable one falls back to that field's default only, so a bad hex keeps the
+    /// chosen shape, size and glow. With nothing stored this is today's cursor.
+    static func cursorStyle(storedColourHex: Any?, storedShape: Any?, storedSize: Any?, storedGlow: Any?) -> ClickyCursorStyle {
+        let defaultStyle = ClickyCursorStyle.default
+        return ClickyCursorStyle(
+            colourHex: (storedColourHex as? String).flatMap { ClickyCursorColour.parse($0) } ?? defaultStyle.colourHex,
+            shape: (storedShape as? String).flatMap { ClickyCursorShape(rawValue: $0) } ?? defaultStyle.shape,
+            size: (storedSize as? String).flatMap { ClickyCursorSize(rawValue: $0) } ?? defaultStyle.size,
+            glow: (storedGlow as? String).flatMap { ClickyCursorGlow(rawValue: $0) } ?? defaultStyle.glow
+        )
+    }
+
+    /// The voice and speed from their three stored values (round 20); see `ClickyVoiceSettings.settings`.
+    static func voiceSettings(storedVoiceID: Any?, storedVoiceName: Any?, storedSpeedPercent: Any?) -> ClickyVoiceSettings {
+        ClickyVoiceSettings.settings(storedVoiceID: storedVoiceID, storedVoiceName: storedVoiceName, storedSpeedPercent: storedSpeedPercent)
+    }
 }
 
 /// Every setting the settings tab shows, as one value the panel can compare and redraw from.
@@ -202,10 +228,21 @@ nonisolated struct ClickyPanelSettingsSnapshot: Equatable, Sendable {
     var personaUserAddress: String = ""
     // Round 19. Last, with its default, like the round 18 fields.
     var isQuickCommandsEnabled: Bool = ClickyPanelSettingsDefaults.defaultIsQuickCommandsEnabled
+    // Round 20 (look and sound). Last, with their defaults (today's cursor, the Worker's default
+    // voice at its own pace), like the fields before them.
+    var cursorStyle: ClickyCursorStyle = .default
+    var chosenVoiceID: String? = nil
+    var chosenVoiceName: String? = nil
+    var speechSpeedPercent: Int = ClickyVoiceSettings.normalSpeedPercent
 
     /// The persona the three persona settings make.
     var persona: ClickyPersona {
         ClickyPersona(assistantName: personaAssistantName, style: personaStyle, userAddress: personaUserAddress)
+    }
+
+    /// The voice settings the three voice fields make.
+    var voiceSettings: ClickyVoiceSettings {
+        ClickyVoiceSettings(chosenVoiceID: chosenVoiceID, chosenVoiceName: chosenVoiceName, speedPercent: speechSpeedPercent)
     }
 
     /// What every setting is when nothing has been stored.
@@ -248,6 +285,24 @@ nonisolated struct ClickyPanelSettingsSnapshot: Equatable, Sendable {
             changedSnapshot.personaUserAddress = ClickyPersona.cleanedName(address)
         case .quickCommandsEnabled(let isEnabled):
             changedSnapshot.isQuickCommandsEnabled = isEnabled
+        case .cursorColourHex(let typedColourText):
+            // Only a colour that parses is taken; anything else leaves the colour as it was.
+            if let colourHex = ClickyCursorColour.parse(typedColourText) {
+                changedSnapshot.cursorStyle.colourHex = colourHex
+            }
+        case .cursorShape(let shape):
+            changedSnapshot.cursorStyle.shape = shape
+        case .cursorSize(let size):
+            changedSnapshot.cursorStyle.size = size
+        case .cursorGlow(let glow):
+            changedSnapshot.cursorStyle.glow = glow
+        case .chosenVoice(let voiceID, let voiceName):
+            // A usable id with its (cleaned) name, or nothing at all: back to the Worker's default.
+            let chosenSettings = ClickyVoiceSettings.settings(storedVoiceID: voiceID, storedVoiceName: voiceName, storedSpeedPercent: nil)
+            changedSnapshot.chosenVoiceID = chosenSettings.chosenVoiceID
+            changedSnapshot.chosenVoiceName = chosenSettings.chosenVoiceName
+        case .speechSpeedPercent(let speedPercent):
+            changedSnapshot.speechSpeedPercent = ClickyVoiceSettings.speedStep(forPercent: speedPercent)
         }
         return changedSnapshot
     }
@@ -269,6 +324,15 @@ nonisolated enum ClickyPanelSettingChange: Equatable, Sendable {
     case personaStyle(ClickyPersonaStyle)
     case personaUserAddress(String)
     case quickCommandsEnabled(Bool)
+    // Round 20 (look and sound).
+    /// What was typed in the hex field or picked from the palette; only a colour that parses is taken.
+    case cursorColourHex(String)
+    case cursorShape(ClickyCursorShape)
+    case cursorSize(ClickyCursorSize)
+    case cursorGlow(ClickyCursorGlow)
+    /// A voice of the account with its name, or (nil, nil) for the Worker's default voice.
+    case chosenVoice(id: String?, name: String?)
+    case speechSpeedPercent(Int)
 }
 
 // MARK: - Whether a reply is spoken
