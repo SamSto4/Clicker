@@ -317,6 +317,8 @@ final class ClickyChatPanelViewModel: ObservableObject {
     func showSettings() {
         leaveChatScreens()
         screen = .settings
+        // Round 20: the voice list is asked for only here (and on "refresh"), never at launch.
+        refreshVoiceList()
     }
 
     /// What every screen of the chat tabs holds that must not survive a move to another tab.
@@ -653,6 +655,148 @@ final class ClickyChatPanelViewModel: ObservableObject {
 
     func openPermissionSettings(for permissionKind: ClickyPermissionKind) {
         openPermissionSettingsHandler?(permissionKind)
+    }
+
+    // MARK: - The LOOK section (round 20, the cursor studio)
+
+    /// "use #RRGGBB", shown for two seconds under "colour" after something that is not a colour was
+    /// entered in the hex field. Nil otherwise.
+    @Published private(set) var cursorColourEntryHintText: String?
+    private var cursorColourEntryHintClearTask: Task<Void, Never>?
+
+    static let cursorColourEntryHint = "use #RRGGBB"
+
+    /// What was entered in the hex field (on Return, or when the field loses the keyboard). A colour
+    /// ("#abc", "3380ff", ...) is applied; anything else changes nothing, the field shows the stored
+    /// colour again, and the hint says how to write one.
+    func submitCursorColourText(_ enteredText: String) {
+        guard ClickyCursorColour.parse(enteredText) != nil else {
+            showCursorColourEntryHint()
+            return
+        }
+        cursorColourEntryHintClearTask?.cancel()
+        cursorColourEntryHintText = nil
+        applyPanelSettingChange(.cursorColourHex(enteredText))
+    }
+
+    private func showCursorColourEntryHint() {
+        cursorColourEntryHintClearTask?.cancel()
+        cursorColourEntryHintText = Self.cursorColourEntryHint
+        cursorColourEntryHintClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(DS.ChatPanel.cursorColourHexHintSeconds * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.cursorColourEntryHintText = nil
+        }
+    }
+
+    /// "reset look": today's blue triangle, medium, soft glow, through the same four changes the
+    /// controls make.
+    func resetCursorLook() {
+        let defaultStyle = ClickyCursorStyle.default
+        applyPanelSettingChange(.cursorColourHex(defaultStyle.colourHex))
+        applyPanelSettingChange(.cursorShape(defaultStyle.shape))
+        applyPanelSettingChange(.cursorSize(defaultStyle.size))
+        applyPanelSettingChange(.cursorGlow(defaultStyle.glow))
+        cursorColourEntryHintClearTask?.cancel()
+        cursorColourEntryHintText = nil
+    }
+
+    // MARK: - The voice picker (round 20)
+
+    /// The account's voices: the kept copy first (read from disk when the tab opens), then the
+    /// Worker's answer, which always wins. Nil until one of them has arrived.
+    @Published private(set) var voiceList: ClickyVoiceList?
+    /// How far the request to the Worker has come this run.
+    @Published private(set) var voiceListFetchState: ClickyVoiceListFetchState = .notStarted
+    /// "that voice is no longer in the account, so i'm using the default." and the like, shown in the
+    /// VOICE section until the next pick. Set by the manager.
+    @Published private(set) var voicePickerNoticeText: String?
+    /// Which row's sample is loading or playing. Mirrored from the manager's sample player.
+    @Published private(set) var voiceSamplePlaybackState: ClickyVoiceSamplePlaybackState = .idle
+
+    /// The tab opened or "refresh" was pressed: the manager asks the Worker for the list (never in
+    /// the panel self test, which promises no network).
+    var voiceListRefreshHandler: (() -> Void)?
+    /// A row's sample button was pressed: the manager plays or stops that row's sample.
+    var voiceSampleHandler: ((ClickyVoicePickerRow) -> Void)?
+
+    /// Counts the reads of the kept list, so an older read cannot replace a newer list.
+    private var voiceListCacheLoadGeneration = 0
+
+    /// The picker's rows, worked out from the list and the chosen voice (see `ClickyVoicePickerRows`).
+    var voiceListRows: [ClickyVoicePickerRow] {
+        ClickyVoicePickerRows.rows(voiceList: voiceList, chosenVoiceID: panelSettings.chosenVoiceID)
+    }
+
+    /// The hint under "voice": the chosen voice's name, or "the worker's default".
+    var voicePickerHintText: String {
+        ClickyVoicePickerRows.hintText(chosenVoiceID: panelSettings.chosenVoiceID, chosenVoiceName: panelSettings.chosenVoiceName)
+    }
+
+    /// Why no new list was loaded: nothing to show at all, or an older list is shown. Nil otherwise.
+    var voiceListLoadNoticeText: String? {
+        guard voiceListFetchState == .failed else { return nil }
+        return voiceList == nil ? ClickyVoicePickerNotices.couldNotLoadTheVoices : ClickyVoicePickerNotices.couldNotRefreshTheVoices
+    }
+
+    func samplePlaybackState(forVoiceRowIdentifier rowIdentifier: String) -> ClickyVoiceSampleRowState {
+        ClickyVoiceSampleRowState.state(forRowIdentifier: rowIdentifier, in: voiceSamplePlaybackState)
+    }
+
+    /// Shows the kept list at once when there is no list yet (read off the main thread), then asks
+    /// the manager to fetch a fresh one.
+    func refreshVoiceList() {
+        if voiceList == nil, let voicesDirectoryURL = panelDataLocations.voicesDirectoryURL {
+            voiceListCacheLoadGeneration += 1
+            let loadGeneration = voiceListCacheLoadGeneration
+            Task.detached(priority: .utility) { [weak self] in
+                let keptVoiceList = ClickyVoiceListCache.loadVoiceList(fromVoicesDirectory: voicesDirectoryURL)
+                await self?.applyKeptVoiceList(keptVoiceList, loadGeneration: loadGeneration)
+            }
+        }
+        voiceListRefreshHandler?()
+    }
+
+    private func applyKeptVoiceList(_ keptVoiceList: ClickyVoiceList?, loadGeneration: Int) {
+        // A list the Worker sent (or one shown already) wins over the kept one, whenever they arrive.
+        guard let keptVoiceList, voiceList == nil, loadGeneration == voiceListCacheLoadGeneration else { return }
+        voiceList = keptVoiceList
+    }
+
+    /// A row was clicked: its voice is chosen (the Worker's default voice stores nothing). A pick
+    /// clears the notice.
+    func chooseVoice(_ voicePickerRow: ClickyVoicePickerRow) {
+        voicePickerNoticeText = nil
+        applyPanelSettingChange(.chosenVoice(id: voicePickerRow.voiceIDToChoose, name: voicePickerRow.voiceNameToChoose))
+    }
+
+    func toggleVoiceSample(for voicePickerRow: ClickyVoicePickerRow) {
+        voiceSampleHandler?(voicePickerRow)
+    }
+
+    // What the manager tells the tab.
+
+    func voiceListFetchDidStart() {
+        voiceListFetchState = .loading
+    }
+
+    func applyFetchedVoiceList(_ fetchedVoiceList: ClickyVoiceList) {
+        voiceListCacheLoadGeneration += 1
+        voiceList = fetchedVoiceList
+        voiceListFetchState = .loaded
+    }
+
+    func voiceListFetchDidFail() {
+        voiceListFetchState = .failed
+    }
+
+    func showVoicePickerNotice(_ noticeText: String?) {
+        voicePickerNoticeText = noticeText
+    }
+
+    func mirrorVoiceSamplePlaybackState(_ playbackState: ClickyVoiceSamplePlaybackState) {
+        guard voiceSamplePlaybackState != playbackState else { return }
+        voiceSamplePlaybackState = playbackState
     }
 
     // MARK: - The timer alert line (round 18)

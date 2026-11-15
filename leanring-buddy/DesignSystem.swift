@@ -310,6 +310,23 @@ enum DS {
         static let chatPanelDiffRemovedText = Color(hex: "#FF9A9F")
         static let chatPanelDiffContextText = Color(hex: "#8A928E")
 
+        /// The LOOK section (round 20, the cursor studio): the ring around the chosen colour swatch,
+        /// in the panel's primary text colour, and the faint edge every swatch has so a dark colour
+        /// still shows its outline on the dark panel.
+        static let chatPanelColourSwatchRing = chatPanelPrimaryText
+        static let chatPanelColourSwatchEdge = Color(hex: "#3A403D")
+
+        /// The two halves of the cursor preview: the panel's dark input colour and a light page, so a
+        /// near-black or near-white cursor colour shows how hard it is to see on one of them.
+        static let chatPanelCursorPreviewDarkBackground = chatPanelInputBackground
+        static let chatPanelCursorPreviewLightBackground = Color(hex: "#F2F4F5")
+
+        /// The voice picker (round 20): the "default" tag on the Worker's default voice, and the
+        /// chosen voice's mark.
+        static let chatPanelVoiceDefaultTagText = Color(hex: "#ADB5B2")
+        static let chatPanelVoiceDefaultTagBackground = Color(hex: "#232726")
+        static let chatPanelVoiceChosenMark = Color(hex: "#7EB0FF")
+
         // ── Floating Button Gradient ─────────────────────────────────
 
         /// The floating session button gradient colors (unchanged from original —
@@ -579,6 +596,44 @@ enum DS {
         /// The line that says a timer has ended, under the messages of the chat tab.
         static let timerAlertLineFontSizeInPoints: CGFloat = 12
         static let timerAlertLineVerticalPaddingInPoints: CGFloat = 4
+
+        // The LOOK section of the settings tab (round 20, the cursor studio)
+        /// The preview of the cursor: a dark half and a light half, each with the shape at its rest
+        /// angle and, under it, the waveform and the spinner.
+        static let cursorPreviewWidthInPoints: CGFloat = 220
+        static let cursorPreviewHeightInPoints: CGFloat = 64
+        static let cursorPreviewCornerRadiusInPoints: CGFloat = 8
+        /// The space between the shape and the waveform-and-spinner row in each half of the preview.
+        static let cursorPreviewRowSpacingInPoints: CGFloat = 8
+        /// The space between the waveform and the spinner.
+        static let cursorPreviewFeedbackSpacingInPoints: CGFloat = 6
+        /// The square the waveform and the spinner each get in the preview at the medium size (it
+        /// grows with the size).
+        static let cursorPreviewFeedbackFrameSideInPoints: CGFloat = 20
+        /// The level the preview's waveform is drawn at, so it shows bars without a microphone.
+        static let cursorPreviewAudioPowerLevel: CGFloat = 0.4
+        /// The ten colour swatches: their size, the space between them, and the ring around the chosen one.
+        static let colourSwatchDiameterInPoints: CGFloat = 18
+        static let colourSwatchSpacingInPoints: CGFloat = 5
+        static let colourSwatchRingWidthInPoints: CGFloat = 2
+        /// The ring sits this far outside the swatch, so the chosen colour stays fully visible.
+        static let colourSwatchRingGapInPoints: CGFloat = 2
+        /// The hex field next to the swatches: wide enough for "#RRGGBB".
+        static let cursorColourHexFieldWidthInPoints: CGFloat = 84
+        /// How long "use #RRGGBB" stays after a colour that could not be read.
+        static let cursorColourHexHintSeconds: Double = 2
+
+        // The voice picker of the settings tab (round 20)
+        static let voiceRowVerticalPaddingInPoints: CGFloat = 5
+        static let voiceRowMarkWidthInPoints: CGFloat = 16
+        static let voiceDefaultTagFontSizeInPoints: CGFloat = 9
+        static let voiceDefaultTagHorizontalPaddingInPoints: CGFloat = 5
+        static let voiceDefaultTagVerticalPaddingInPoints: CGFloat = 1
+        static let voiceDefaultTagCornerRadiusInPoints: CGFloat = 4
+        static let voiceSampleButtonSizeInPoints: CGFloat = 24
+        static let voiceSampleSymbolFontSizeInPoints: CGFloat = 15
+        /// The voice list is indented under the "voice" row's title, past its icon.
+        static let voiceListLeadingIndentInPoints: CGFloat = 24
     }
 
     // MARK: - Animation Durations
@@ -1215,6 +1270,23 @@ extension View {
         } else {
             return AnyView(self)
         }
+    }
+}
+
+// MARK: - The cursor's colour (round 20)
+
+extension DS.Colors {
+    /// The cursor's colour for a stored "#RRGGBB" (the cursor studio). Today's blue gives the
+    /// `overlayCursorBlue` token itself, so the default cursor, its bubbles and the pill's accent are
+    /// drawn with exactly the colour they always were (the token stays the default's definition).
+    /// Any other colour is the same sRGB numbers `Color(hex:)` would make, read through
+    /// `ClickyCursorColour`, which never turns text that is not a colour into black.
+    static func overlayCursorColour(forHex colourHex: String) -> Color {
+        guard let validHex = ClickyCursorColour.parse(colourHex), validHex != ClickyCursorStyle.defaultColourHex else {
+            return overlayCursorBlue
+        }
+        let colourComponents = ClickyCursorColour.components(hex: validHex)
+        return Color(.sRGB, red: colourComponents.red, green: colourComponents.green, blue: colourComponents.blue, opacity: 1)
     }
 }
 

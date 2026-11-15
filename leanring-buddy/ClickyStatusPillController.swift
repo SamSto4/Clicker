@@ -107,6 +107,8 @@ final class ClickyStatusPillController {
     /// What the pill shows right now. nil while it is hidden (or fading out).
     private var shownContent: ClickyStatusPillContent?
     private var shownPlacement: ClickyStatusPillPlacement?
+    /// The cursor colour the shown pill's asking accent was drawn in (round 20).
+    private var shownAskingAccentColourHex: String?
 
     /// The bars of the listening indicator, kept so the microphone level can move them.
     private var listeningBarLayers: [CALayer] = []
@@ -120,7 +122,10 @@ final class ClickyStatusPillController {
 
     /// Shows the pill with this content on this screen, fading it in if it was hidden. Called
     /// again with other content while visible, it changes the word and indicator in place.
-    func show(_ content: ClickyStatusPillContent, onScreen screen: NSScreen) {
+    /// `askingAccentColourHex` is the cursor's colour (round 20): the listening and asking accent
+    /// follows it, and a new colour rebuilds the pill at the next call even when the words are the
+    /// same. Left out, it is today's blue.
+    func show(_ content: ClickyStatusPillContent, onScreen screen: NSScreen, askingAccentColourHex: String = ClickyCursorStyle.defaultColourHex) {
         let screenGeometry = Self.screenGeometry(for: screen)
         let attributedWord = ClickyStatusPillLayerBuilder.attributedWord(for: content.word)
         let pillSize = ClickyStatusPillLayout.pillSize(
@@ -135,15 +140,16 @@ final class ClickyStatusPillController {
         )
 
         let wasHidden = shownContent == nil
-        // The same word in the same place needs no rebuilding. Rebuilding anyway would restart
-        // the indicator's animation and make it stutter.
-        guard wasHidden || content != shownContent || placement != shownPlacement else {
+        // The same word in the same place in the same colour needs no rebuilding. Rebuilding
+        // anyway would restart the indicator's animation and make it stutter.
+        guard wasHidden || content != shownContent || placement != shownPlacement || askingAccentColourHex != shownAskingAccentColourHex else {
             return
         }
 
         visibilityGeneration += 1
         shownContent = content
         shownPlacement = placement
+        shownAskingAccentColourHex = askingAccentColourHex
 
         let statusPillPanel = existingOrNewStatusPillPanel()
         statusPillPanel.setFrame(placement.frame, display: false)
@@ -153,7 +159,8 @@ final class ClickyStatusPillController {
                 content: content,
                 pillSize: placement.frame.size,
                 hangsFromNotch: placement.hangsFromNotch,
-                backingScaleFactor: screen.backingScaleFactor
+                backingScaleFactor: screen.backingScaleFactor,
+                askingAccentColor: NSColor(DS.Colors.overlayCursorColour(forHex: askingAccentColourHex)).cgColor
             )
         }
 
@@ -169,6 +176,7 @@ final class ClickyStatusPillController {
         guard shownContent != nil else { return }
         shownContent = nil
         shownPlacement = nil
+        shownAskingAccentColourHex = nil
         visibilityGeneration += 1
         let generationWhenHidden = visibilityGeneration
 
@@ -282,14 +290,16 @@ enum ClickyStatusPillLayerBuilder {
 
     /// Lays the pill out for new content: the dark shape, the indicator, the word. Returns
     /// the bars of the listening indicator (empty for every other indicator), so the caller can
-    /// move them with the microphone level.
+    /// move them with the microphone level. `askingAccentColor` is the cursor's colour (round 20);
+    /// left out (nil), it is today's blue.
     @discardableResult
     static func layOutPill(
         on pillContainerLayer: CALayer,
         content: ClickyStatusPillContent,
         pillSize: CGSize,
         hangsFromNotch: Bool,
-        backingScaleFactor: CGFloat
+        backingScaleFactor: CGFloat,
+        askingAccentColor: CGColor? = nil
     ) -> [CALayer] {
         // Laying out must not start Core Animation's automatic animations: the word would slide
         // to its new place instead of simply being there.
@@ -315,7 +325,7 @@ enum ClickyStatusPillLayerBuilder {
             )
             pillContainerLayer.addSublayer(indicatorContainerLayer)
 
-            let indicatorAccentColor = accentColor(for: content.accent)
+            let indicatorAccentColor = accentColor(for: content.accent, askingAccentColor: askingAccentColor ?? defaultAskingAccentColor)
             switch content.indicator {
             case .listeningBars:
                 listeningBarLayers = addListeningBars(to: indicatorContainerLayer, accentColor: indicatorAccentColor)
@@ -534,10 +544,17 @@ enum ClickyStatusPillLayerBuilder {
 
     // MARK: - Helpers
 
-    private static func accentColor(for accent: ClickyStatusPillAccent) -> CGColor {
+    /// Today's asking blue, the accent a pill gets when nobody passes the cursor's colour.
+    static var defaultAskingAccentColor: CGColor {
+        NSColor(DS.Colors.overlayCursorBlue).cgColor
+    }
+
+    /// The listening and asking accent follows the cursor's colour (round 20, Sam's decision 6); the
+    /// dictating accent stays the dictation green, so dictating is never mistaken for asking.
+    private static func accentColor(for accent: ClickyStatusPillAccent, askingAccentColor: CGColor) -> CGColor {
         switch accent {
         case .asking:
-            return NSColor(DS.Colors.overlayCursorBlue).cgColor
+            return askingAccentColor
         case .dictating:
             return NSColor(DS.Colors.overlayDictationAccent).cgColor
         }

@@ -52,23 +52,8 @@ class OverlayWindow: NSWindow {
     }
 }
 
-// Cursor-like triangle shape (equilateral)
-struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let size = min(rect.width, rect.height)
-        let height = size * sqrt(3.0) / 2.0
-
-        // Top vertex
-        path.move(to: CGPoint(x: rect.midX, y: rect.midY - height / 1.5))
-        // Bottom left vertex
-        path.addLine(to: CGPoint(x: rect.midX - size / 2, y: rect.midY + height / 3))
-        // Bottom right vertex
-        path.addLine(to: CGPoint(x: rect.midX + size / 2, y: rect.midY + height / 3))
-        path.closeSubpath()
-        return path
-    }
-}
+// The cursor's shapes (round 20): today's triangle became `ClickyCursorShapeView` with the
+// triangle's very same points, next to the arrow, chevron, dot and ring (ClickyCursorViews.swift).
 
 // PreferenceKey for tracking bubble size
 struct SizePreferenceKey: PreferenceKey {
@@ -137,7 +122,9 @@ struct BlueCursorView: View {
 
     /// The rotation angle of the triangle in degrees. Default is -35° (cursor-like).
     /// Changes to face the direction of travel when navigating to a target.
-    @State private var triangleRotationDegrees: Double = -35.0
+    /// Since round 20 it is the pointer angle of every pointed shape (they all rest at -35°); a round
+    /// shape (dot, ring) is drawn at its own rest angle whatever this says, see `displayedRotationDegrees`.
+    @State private var triangleRotationDegrees: Double = ClickyCursorShape.pointedShapeRestAngleDegrees
 
     /// Speech bubble text shown when pointing at a detected element.
     @State private var navigationBubbleText: String = ""
@@ -210,8 +197,22 @@ struct BlueCursorView: View {
         case .listening, .listeningHandsFree, .working:
             return DS.Colors.overlayDictationAccent
         case .hidden, .notice:
-            return DS.Colors.overlayCursorBlue
+            return cursorColour
         }
+    }
+
+    // MARK: - Cursor Style (round 20, the cursor studio)
+
+    /// The cursor's look from the LOOK section: colour, shape, size and glow. The default is today's
+    /// blue triangle exactly.
+    private var cursorStyle: ClickyCursorStyle {
+        companionManager.cursorStyle
+    }
+
+    /// The cursor's colour. The default gives the design system's own blue token, so today's cursor,
+    /// its bubbles and its waveform and spinner are drawn in exactly the colour they always were.
+    private var cursorColour: Color {
+        DS.Colors.overlayCursorColour(forHex: cursorStyle.colourHex)
     }
 
     /// The label sits in a container this wide, anchored to the cursor, so it can be positioned
@@ -243,8 +244,8 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
+                            .fill(cursorColour)
+                            .shadow(color: cursorColour.opacity(ClickyCursorStyle.bubbleShadowOpacity), radius: ClickyCursorStyle.bubbleShadowRadius, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -287,8 +288,8 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
+                            .fill(cursorColour)
+                            .shadow(color: cursorColour.opacity(ClickyCursorStyle.bubbleShadowOpacity), radius: ClickyCursorStyle.bubbleShadowRadius, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -317,10 +318,10 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
+                            .fill(cursorColour)
                             .shadow(
-                                color: DS.Colors.overlayCursorBlue.opacity(0.5 + (1.0 - navigationBubbleScale) * 1.0),
-                                radius: 6 + (1.0 - navigationBubbleScale) * 16,
+                                color: cursorColour.opacity(ClickyCursorStyle.bubbleShadowOpacity + (1.0 - navigationBubbleScale) * 1.0),
+                                radius: ClickyCursorStyle.bubbleShadowRadius + (1.0 - navigationBubbleScale) * 16,
                                 x: 0, y: 0
                             )
                     )
@@ -350,11 +351,15 @@ struct BlueCursorView: View {
             // During cursor following: fast spring animation for snappy tracking.
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
-            Triangle()
-                .fill(DS.Colors.overlayCursorBlue)
-                .frame(width: 16, height: 16)
-                .rotationEffect(.degrees(triangleRotationDegrees))
-                .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
+            //
+            // Round 20: the shape, colour, size and glow come from the cursor style. The default
+            // style draws today's cursor exactly: the triangle filled with the blue token in a
+            // 16-point frame, turned to the pointer angle, with one glow of radius
+            // 8 + (flight scale − 1) × 20 (the glow's second shadow is clear, radius 0). A round
+            // shape is never turned (its displayed angle is always 0°).
+            ClickyStyledCursorShapeView(cursorStyle: cursorStyle, cursorColour: cursorColour)
+                .rotationEffect(.degrees(cursorStyle.shape.displayedRotationDegrees(pointerRotationDegrees: triangleRotationDegrees)))
+                .modifier(ClickyCursorGlowModifier(cursorGlow: cursorStyle.glow, cursorColour: cursorColour, flightScale: buddyFlightScale))
                 .scaleEffect(buddyFlightScale)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
@@ -370,15 +375,28 @@ struct BlueCursorView: View {
                     value: triangleRotationDegrees
                 )
 
-            // Blue waveform — replaces the triangle while listening (green while dictating)
-            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel, barColor: cursorFeedbackColor)
+            // Blue waveform — replaces the triangle while listening (green while dictating). Its
+            // glow and size follow the cursor style (today's at the default).
+            ClickyCursorWaveformView(
+                audioPowerLevel: companionManager.currentAudioPowerLevel,
+                barColor: cursorFeedbackColor,
+                glowRadius: cursorStyle.glow.feedbackGlowRadius,
+                glowOpacity: cursorStyle.glow.feedbackGlowOpacity,
+                scale: cursorStyle.size.scale
+            )
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
-            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
-            BlueCursorSpinnerView(spinnerColor: cursorFeedbackColor)
+            // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS).
+            // Its glow and size follow the cursor style (today's at the default).
+            ClickyCursorSpinnerView(
+                spinnerColor: cursorFeedbackColor,
+                glowRadius: cursorStyle.glow.feedbackGlowRadius,
+                glowOpacity: cursorStyle.glow.feedbackGlowOpacity,
+                scale: cursorStyle.size.scale
+            )
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
@@ -390,7 +408,8 @@ struct BlueCursorView: View {
                 DictationLabelView(
                     labelText: dictationLabelText,
                     isNotice: isShowingDictationNotice,
-                    isPlacedLeftOfCursor: isDictationLabelPlacedLeftOfCursor
+                    isPlacedLeftOfCursor: isDictationLabelPlacedLeftOfCursor,
+                    noticeColour: cursorColour
                 )
                 .frame(
                     width: dictationLabelContainerWidth,
@@ -637,8 +656,9 @@ struct BlueCursorView: View {
     private func startPointingAtElement() {
         buddyNavigationMode = .pointingAtTarget
 
-        // Rotate back to default pointer angle now that we've arrived
-        triangleRotationDegrees = -35.0
+        // Rotate back to default pointer angle now that we've arrived (-35°, the rest angle of every
+        // pointed shape; a round shape shows 0° whatever this says)
+        triangleRotationDegrees = ClickyCursorShape.pointedShapeRestAngleDegrees
 
         // Reset navigation bubble state — start small for the scale-bounce entrance
         navigationBubbleText = ""
@@ -729,7 +749,7 @@ struct BlueCursorView: View {
         navigationAnimationTimer = nil
         buddyNavigationMode = .followingCursor
         isReturningToCursor = false
-        triangleRotationDegrees = -35.0
+        triangleRotationDegrees = ClickyCursorShape.pointedShapeRestAngleDegrees
         buddyFlightScale = 1.0
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
@@ -767,46 +787,8 @@ struct BlueCursorView: View {
     }
 }
 
-// MARK: - Blue Cursor Waveform
-
-/// A small blue waveform that replaces the triangle cursor while
-/// the user is holding the push-to-talk shortcut and speaking.
-private struct BlueCursorWaveformView: View {
-    let audioPowerLevel: CGFloat
-    var barColor: Color = DS.Colors.overlayCursorBlue
-
-    private let barCount = 5
-    private let listeningBarProfile: [CGFloat] = [0.4, 0.7, 1.0, 0.7, 0.4]
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { timelineContext in
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<barCount, id: \.self) { barIndex in
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(barColor)
-                        .frame(
-                            width: 2,
-                            height: barHeight(
-                                for: barIndex,
-                                timelineDate: timelineContext.date
-                            )
-                        )
-                }
-            }
-            .shadow(color: barColor.opacity(0.6), radius: 6, x: 0, y: 0)
-            .animation(.linear(duration: 0.08), value: audioPowerLevel)
-        }
-    }
-
-    private func barHeight(for barIndex: Int, timelineDate: Date) -> CGFloat {
-        let animationPhase = CGFloat(timelineDate.timeIntervalSinceReferenceDate * 3.6) + CGFloat(barIndex) * 0.35
-        let normalizedAudioPowerLevel = max(audioPowerLevel - 0.008, 0)
-        let easedAudioPowerLevel = pow(min(normalizedAudioPowerLevel * 2.85, 1), 0.76)
-        let reactiveHeight = easedAudioPowerLevel * 10 * listeningBarProfile[barIndex]
-        let idlePulse = (sin(animationPhase) + 1) / 2 * 1.5
-        return 3 + reactiveHeight + idlePulse
-    }
-}
+// The cursor's waveform and spinner moved to ClickyCursorViews.swift in round 20
+// (`ClickyCursorWaveformView`, `ClickyCursorSpinnerView`), so the LOOK preview can show them too.
 
 // MARK: - Dictation Label
 
@@ -816,6 +798,8 @@ private struct DictationLabelView: View {
     let labelText: String
     let isNotice: Bool
     let isPlacedLeftOfCursor: Bool
+    /// The notice's colour: the cursor's colour (round 20). The dictating label stays the dictation green.
+    var noticeColour: Color = DS.Colors.overlayCursorBlue
 
     var body: some View {
         Text(labelText)
@@ -828,45 +812,13 @@ private struct DictationLabelView: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isNotice ? DS.Colors.overlayCursorBlue : DS.Colors.overlayDictationAccent)
+                    .fill(isNotice ? noticeColour : DS.Colors.overlayDictationAccent)
                     .shadow(
-                        color: (isNotice ? DS.Colors.overlayCursorBlue : DS.Colors.overlayDictationAccent).opacity(0.5),
-                        radius: 6, x: 0, y: 0
+                        color: (isNotice ? noticeColour : DS.Colors.overlayDictationAccent).opacity(ClickyCursorStyle.bubbleShadowOpacity),
+                        radius: ClickyCursorStyle.bubbleShadowRadius, x: 0, y: 0
                     )
             )
             .frame(maxWidth: 340, alignment: isPlacedLeftOfCursor ? .trailing : .leading)
-    }
-}
-
-// MARK: - Blue Cursor Spinner
-
-/// A small blue spinning indicator that replaces the triangle cursor
-/// while the AI is processing a voice input.
-private struct BlueCursorSpinnerView: View {
-    var spinnerColor: Color = DS.Colors.overlayCursorBlue
-    @State private var isSpinning = false
-
-    var body: some View {
-        Circle()
-            .trim(from: 0.15, to: 0.85)
-            .stroke(
-                AngularGradient(
-                    colors: [
-                        spinnerColor.opacity(0.0),
-                        spinnerColor
-                    ],
-                    center: .center
-                ),
-                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-            )
-            .frame(width: 14, height: 14)
-            .rotationEffect(.degrees(isSpinning ? 360 : 0))
-            .shadow(color: spinnerColor.opacity(0.6), radius: 6, x: 0, y: 0)
-            .onAppear {
-                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
-                    isSpinning = true
-                }
-            }
     }
 }
 

@@ -219,11 +219,16 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
     /// folder is never touched. The callers that predate memories pass nothing and get nil, so none
     /// of them can reach the user's real memories by accident.
     let memoriesDirectoryURL: URL?
+    /// The voices folder of the settings tab's voice picker (round 20): the kept voice list and the
+    /// cached samples. Nil, like `memoriesDirectoryURL`, for every caller that predates it, so none
+    /// of them can reach the real folder by accident.
+    let voicesDirectoryURL: URL?
 
-    init(notesDirectoryURL: URL, metricsDirectoryURL: URL, memoriesDirectoryURL: URL? = nil) {
+    init(notesDirectoryURL: URL, metricsDirectoryURL: URL, memoriesDirectoryURL: URL? = nil, voicesDirectoryURL: URL? = nil) {
         self.notesDirectoryURL = notesDirectoryURL
         self.metricsDirectoryURL = metricsDirectoryURL
         self.memoriesDirectoryURL = memoriesDirectoryURL
+        self.voicesDirectoryURL = voicesDirectoryURL
     }
 
     static let notesDirectoryOverrideEnvironmentVariable = "CLICKY_NOTES_DIRECTORY"
@@ -234,7 +239,8 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
         ClickyPanelDataLocations(
             notesDirectoryURL: ClickyNoteStore.defaultNotesDirectoryURL,
             metricsDirectoryURL: ClickyTurnMetricsLog.defaultLogFileURL.deletingLastPathComponent(),
-            memoriesDirectoryURL: ClickyMemoryStore.defaultMemoriesDirectoryURL
+            memoriesDirectoryURL: ClickyMemoryStore.defaultMemoriesDirectoryURL,
+            voicesDirectoryURL: ClickyVoiceListCache.defaultVoicesDirectoryURL
         )
     }
 
@@ -273,7 +279,10 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
                 environment: environment,
                 temporaryDirectoryURL: temporaryDirectoryURL,
                 uniqueFolderNameForSelfTest: "clicky-panel-self-test-memories-" + uniqueFolderNameSuffix
-            )
+            ),
+            // Round 20: a self test's voice list and samples live in a new temporary folder (there is
+            // no override variable), and the self test never asks the Worker for the list.
+            voicesDirectoryURL: temporaryDirectoryURL.appendingPathComponent("clicky-panel-self-test-voices-" + uniqueFolderNameSuffix, isDirectory: true)
         )
     }
 
@@ -282,11 +291,15 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
         let realLocations = Self.real
         let notesOrMetricsAreReal = notesDirectoryURL.standardizedFileURL.path == realLocations.notesDirectoryURL.standardizedFileURL.path
             || metricsDirectoryURL.standardizedFileURL.path == realLocations.metricsDirectoryURL.standardizedFileURL.path
-        guard let memoriesDirectoryURL, let realMemoriesDirectoryURL = realLocations.memoriesDirectoryURL else {
-            return notesOrMetricsAreReal
-        }
-        return notesOrMetricsAreReal
-            || memoriesDirectoryURL.standardizedFileURL.path == realMemoriesDirectoryURL.standardizedFileURL.path
+        let memoriesAreReal: Bool = {
+            guard let memoriesDirectoryURL, let realMemoriesDirectoryURL = realLocations.memoriesDirectoryURL else { return false }
+            return memoriesDirectoryURL.standardizedFileURL.path == realMemoriesDirectoryURL.standardizedFileURL.path
+        }()
+        let voicesAreReal: Bool = {
+            guard let voicesDirectoryURL, let realVoicesDirectoryURL = realLocations.voicesDirectoryURL else { return false }
+            return voicesDirectoryURL.standardizedFileURL.path == realVoicesDirectoryURL.standardizedFileURL.path
+        }()
+        return notesOrMetricsAreReal || memoriesAreReal || voicesAreReal
     }
 }
 
@@ -354,6 +367,42 @@ nonisolated enum ClickyPanelSelfTestSamples {
             )
         }
         return true
+    }
+
+    /// The fake id of the sample voice that stands for the Worker's default in the self test and the
+    /// offscreen pictures. Every sample id is made up and starts with "sample-voice-".
+    static let sampleWorkerDefaultVoiceID = "sample-voice-harbor"
+
+    /// Six made-up voices for the panel self test and the offscreen pictures (round 20): two of the
+    /// account's own (cloned and generated) and four premade ones, one of which stands for the
+    /// Worker's default. No real voice id or name of any account. Their describing label is
+    /// "descriptive", the key the account's own voices carry.
+    static let sampleVoiceList = ClickyVoiceList(
+        voices: [
+            ClickyVoice(id: "sample-voice-studio-me", name: "my studio voice", category: "cloned", labels: ["accent": "dutch", "descriptive": "warm"]),
+            ClickyVoice(id: "sample-voice-night-reader", name: "night reader", category: "generated", labels: ["gender": "female", "age": "middle aged", "descriptive": "soft"]),
+            ClickyVoice(id: "sample-voice-juniper", name: "Juniper", category: "premade", labels: ["accent": "american", "gender": "female", "age": "young", "descriptive": "calm"]),
+            ClickyVoice(id: sampleWorkerDefaultVoiceID, name: "Harbor", category: "premade", labels: ["accent": "british", "gender": "male", "age": "middle aged", "descriptive": "steady"]),
+            ClickyVoice(id: "sample-voice-maple", name: "Maple", category: "premade", labels: ["accent": "australian", "gender": "female", "descriptive": "bright"]),
+            ClickyVoice(id: "sample-voice-quill", name: "Quill", category: "premade", labels: ["accent": "american", "gender": "male", "age": "old", "descriptive": "deep"]),
+        ],
+        defaultVoiceID: sampleWorkerDefaultVoiceID,
+        fetchedAt: Date(timeIntervalSince1970: 1_794_700_000)
+    )
+
+    /// Writes the six sample voices as the kept voice list (round 20), so the settings tab shows a
+    /// list without asking the Worker. Only into an empty voices folder, and never when any folder
+    /// of `locations` is a real one. Returns whether it wrote.
+    @discardableResult
+    static func writeSampleVoices(into locations: ClickyPanelDataLocations, now: Date = Date()) -> Bool {
+        guard !locations.touchesARealFolder,
+              let voicesDirectoryURL = locations.voicesDirectoryURL,
+              directoryHasNoFiles(voicesDirectoryURL) else {
+            return false
+        }
+        var sampleVoiceListFetchedNow = sampleVoiceList
+        sampleVoiceListFetchedNow.fetchedAt = now
+        return ClickyVoiceListCache.saveVoiceList(sampleVoiceListFetchedNow, toVoicesDirectory: voicesDirectoryURL)
     }
 
     private static func directoryHasNoFiles(_ directoryURL: URL) -> Bool {
