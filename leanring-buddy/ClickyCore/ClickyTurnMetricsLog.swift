@@ -132,6 +132,25 @@ nonisolated struct ClickyTurnMetrics: Equatable {
     var noteCount: Int?
     var usedPointing: Bool?
 
+    // Round 21 (explaining on screen), numbers, flags and one enum of fixed identifiers. Each is left
+    // out of the line until it is set, so a line of a turn that did none of these is what it was in
+    // round 20. There is deliberately no field that could hold an element's role or title, a plan
+    // line or a transcript.
+    /// The characters of the skill bodies this turn's prompt carried (0 when none was selected), so
+    /// the trade of moving the formats out of the cached base prompt can be measured.
+    var skillCharacterCount: Int?
+    /// True when the reply drew a spotlight (written only when true).
+    var spotlightDrawn: Bool?
+    /// On a walkthrough step turn: the step the reply gave (k of `[STEP:k of n]`) and the step count
+    /// (n), set when the walkthrough took the step (it began, moved, or was repeated).
+    var walkthroughStep: Int?
+    var walkthroughStepCount: Int?
+    /// What became of the reply's `[POINT:]` target: one of `ClickyPointSnapOutcome`'s fixed words
+    /// (an enum, so no role or title can be written by accident). nil when the reply did not point.
+    var pointSnapOutcome: ClickyPointSnapOutcome?
+    /// How far the snap moved the point, in whole display points (0 when it did not move it).
+    var pointSnapDistancePoints: Int?
+
     init(turnStartedAt: Date, modelName: String) {
         self.turnStartedAt = turnStartedAt
         self.modelName = modelName
@@ -236,6 +255,12 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         if let skillCount { jsonObject["skillCount"] = skillCount }
         if let noteCount { jsonObject["noteCount"] = noteCount }
         if let usedPointing { jsonObject["usedPointing"] = usedPointing }
+        if let skillCharacterCount { jsonObject["skillCharacterCount"] = skillCharacterCount }
+        if let spotlightDrawn { jsonObject["spotlightDrawn"] = spotlightDrawn }
+        if let walkthroughStep { jsonObject["walkthroughStep"] = walkthroughStep }
+        if let walkthroughStepCount { jsonObject["walkthroughStepCount"] = walkthroughStepCount }
+        if let pointSnapOutcome { jsonObject["pointSnapOutcome"] = pointSnapOutcome.rawValue }
+        if let pointSnapDistancePoints { jsonObject["pointSnapDistancePoints"] = pointSnapDistancePoints }
 
         guard let jsonData = try? JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys]) else {
             return nil
@@ -275,6 +300,8 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         summaryLine += " cacheRead \(countText(tokenUsage.cacheReadInputTokens))"
         summaryLine += " | spoken \(countText(spokenReplyCharacterCount)) chars"
         summaryLine += " skills \(countText(skillCount))"
+        // Round 21: the skill text this turn carried, so an ordinary question can be seen to carry none.
+        summaryLine += " skillCharacterCount \(countText(skillCharacterCount))"
         summaryLine += " notes \(countText(noteCount))"
         summaryLine += " point \(usedPointing.map { $0 ? "yes" : "no" } ?? "-")"
         summaryLine += " | \(Self.sanitizedModelName(modelName)), \(countText(screenCount)) screen(s), \(countText(totalImageBytes)) image bytes"
@@ -294,6 +321,13 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         }
         if startedByFollowUpListening {
             summaryLine += " | follow-up"
+        }
+        if let walkthroughStep, let walkthroughStepCount {
+            summaryLine += " | walkthrough step \(walkthroughStep) of \(walkthroughStepCount)"
+        }
+        if let pointSnapOutcome {
+            // Round 21: the fixed outcome word and the distance only, never the element's role.
+            summaryLine += " | snap \(pointSnapOutcome.rawValue)" + (pointSnapDistancePoints.map { " \($0)pt" } ?? "")
         }
         if localFastPath == true {
             summaryLine += " | quick command"

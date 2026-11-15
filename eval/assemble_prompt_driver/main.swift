@@ -76,6 +76,15 @@
 //               after the honesty rule (`ClickyFileEditingHonesty`) and, when `transcript` is given, what
 //               the words mean to a pending change (`confirm`, `cancel`, `undo` or null).
 //
+// Round 21 (explaining on screen): `prepare` also reads an optional `walkthrough` object (`{ stepCount,
+// currentStep, planTexts, userWord }`, userWord "next", "back", "repeat" or null) and builds the prompt the app
+// builds mid-walkthrough (output: `walkthroughSectionText`, `walkthroughStepTurnTranscript`,
+// `walkthroughRequestedStep`), and reports `skillBodyCharacterCount`. `finish` also reports `walkthroughStep`,
+// `walkthroughStepCount`, `planTexts` and `walkthroughHistoryAssistantText`, and with an optional `elementBoxes`
+// array (fixture pixels, with optional `screenshotSizeInPixels` and `displaySizeInPoints`) the app's
+// Accessibility snap: `pointSnapOutcome`, `pointTargetAfterSnap` and `pointSnapDistancePoints`. `intent` also
+// reports `walkthroughWord`. See "Explaining on screen (round 21)" in eval/README.md.
+//
 // SAFETY: every note and profile operation goes to a directory under notesRootDirectory. That directory must be
 // a folder whose name starts with "clicky-eval-notes-" and must not be the real Clicky notes folder.
 // The harness creates notesRootDirectory with mkdtemp under the OS temp folder.
@@ -205,6 +214,13 @@ func explanationCardRowRecord(_ row: ClickyExplanationCardRow) -> [String: Any] 
         partTexts = nodeTexts
     case .timeline(let points):
         partTexts = points.map { "\($0.whenText)=\($0.whatText)" }
+    case .code(let codeText):
+        // Round 21: the line of code as the parser cut it.
+        partTexts = [codeText]
+    case .table(let tableRows):
+        // Round 21: one part per table row, its cells joined by "|" (the cells themselves are in tableRows).
+        partTexts = tableRows.map { $0.joined(separator: "|") }
+        return ["rowKind": row.tagKindName, "partTexts": partTexts, "canonicalTagBody": row.canonicalTagBody, "tableRows": tableRows]
     }
     return ["rowKind": row.tagKindName, "partTexts": partTexts, "canonicalTagBody": row.canonicalTagBody]
 }
@@ -233,6 +249,10 @@ func drawingShapeRecord(_ shape: ClickyDrawingShape) -> [String: Any] {
     case .scene(let scene):
         // Round 11: a simple 3D scene. Only its size is reported; the visual rubric does not score scenes yet.
         return ["shapeKind": "scene", "title": scene.title, "partCount": scene.parts.count]
+    case .spotlight(let center, let radius):
+        // Round 21: the brief's x, y and radius, and the same centre as a circle's record ("center"), so the
+        // harness can score a spotlight like a circle.
+        return ["shapeKind": "spotlight", "x": center.x, "y": center.y, "center": drawingPointRecord(center), "radius": radius]
     }
 }
 
@@ -399,6 +419,36 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             frontmostWindowTitle: screenContextNow?["windowTitle"] as? String,
             screenOfLastExchange: screenOfLastExchange
         )
+        // Round 21: the walkthrough in progress, `{ "stepCount": 3, "currentStep": 1, "planTexts": [...],
+        // "userWord": "next" | "back" | "repeat" | null }`, gives the prompt exactly the app's walkthrough
+        // section (and the draw skill, which a walkthrough always selects). `userWord` null means the user
+        // asked something else. Without the object the prompt is exactly what it was.
+        var walkthroughOutputFields: [String: Any] = [:]
+        if let walkthroughInput = scenarioInput["walkthrough"] as? [String: Any] {
+            guard let stepCount = walkthroughInput["stepCount"] as? Int, stepCount >= 1, stepCount <= ClickyWalkthroughState.maximumStepCount,
+                  let currentStep = walkthroughInput["currentStep"] as? Int, currentStep >= 1, currentStep <= stepCount else {
+                failWithMessage("walkthrough needs stepCount 1 to 12 and currentStep 1 to stepCount (\(scenarioIdentifier))")
+            }
+            let givenPlanTexts = (walkthroughInput["planTexts"] as? [String]) ?? []
+            let planTexts = (1...stepCount).map { stepNumber in stepNumber <= givenPlanTexts.count ? givenPlanTexts[stepNumber - 1] : "step \(stepNumber)" }
+            var walkthroughUserWord: ClickyWalkthroughUserWord?
+            if let userWordText = walkthroughInput["userWord"] as? String {
+                guard let parsedUserWord = ClickyWalkthroughUserWord(rawValue: userWordText), parsedUserWord != .stop else {
+                    failWithMessage("walkthrough userWord must be next, back, repeat or null (\(scenarioIdentifier))")
+                }
+                walkthroughUserWord = parsedUserWord
+            }
+            let walkthroughState = ClickyWalkthroughState(stepCount: stepCount, planTexts: planTexts, currentStep: currentStep, startedAt: Date(), lastStepAt: Date())
+            turnContext.walkthroughPromptContext = ClickyWalkthroughPromptContext(state: walkthroughState, userWord: walkthroughUserWord)
+            walkthroughOutputFields = [
+                "walkthroughSectionText": walkthroughState.promptSectionText(forUserWord: walkthroughUserWord),
+                // The transcript the app sends for this step word (send it as the user's message).
+                "walkthroughStepTurnTranscript": walkthroughUserWord?.stepTurnTranscript ?? NSNull(),
+            ]
+            if let walkthroughUserWord, case .giveStep(let requestedStepNumber) = walkthroughState.advancing(byUserWord: walkthroughUserWord) {
+                walkthroughOutputFields["walkthroughRequestedStep"] = requestedStepNumber
+            }
+        }
         var fileEditingOutputFields: [String: Any] = [:]
         if let editableFolderNames = scenarioInput["editableFolders"] as? [String], !editableFolderNames.isEmpty {
             let workspace = seedFilesWorkspace(
@@ -455,6 +505,8 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
                 dynamicText: preparedPrompt.dynamicSystemPromptText
             ),
             "selectedSkillNames": preparedPrompt.selectedSkillNames,
+            // Round 21: the characters of the selected skill bodies (0 when none was selected).
+            "skillBodyCharacterCount": preparedPrompt.skillBodyCharacterCount,
             "includedNoteTexts": preparedPrompt.includedNotes.map(\.text),
             // Round 16: the memory lines the assembler selected for this question (empty when none
             // was relevant, and then the prompt has no memories section), and every memory in the store.
@@ -463,12 +515,90 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             // Round 6: the seeded marks, and the lines the app's "marks on screen" section lists for them.
             "drawingMarksOnScreen": drawingMarksOnScreen.map { drawingMarkRecord($0) },
             "drawingMarksOnScreenLineTexts": drawingMarksOnScreen.map { ClickyDrawingMarksOnScreenText.lineText(for: $0) },
-        ].merging(fileEditingOutputFields) { current, _ in current })
+        ].merging(fileEditingOutputFields) { current, _ in current }.merging(walkthroughOutputFields) { current, _ in current })
     }
     writeJSON(outputRecords, toPath: outputPath)
 }
 
 // MARK: - finish
+
+/// Round 21: what the app's Accessibility snap would do with the reply's `[POINT:]` target, with the
+/// scenario's element boxes standing in for what Accessibility reports. The boxes are in the fixture's
+/// screenshot pixels, `[{ "x", "y", "width", "height", "role"?, "screen"? }]` (role defaults to AXButton,
+/// screen to 1). They are mapped to display points with the app's own `ClickyScreenshotToDisplayMapping`
+/// (`screenshotSizeInPixels` and `displaySizeInPoints`, each `{ "width", "height" }`; without them pixels
+/// are taken as points), because the snap's limits (200 x 80, 6 points, 60 points) are in display points.
+/// The element under the point is the smallest box that holds it, as Accessibility answers with the
+/// deepest element there. Without `elementBoxes` the fields are null.
+func pointSnapRecord(
+    pointTarget: ClickyPointTarget?,
+    elementBoxInputs: [[String: Any]]?,
+    screenshotSizeInput: [String: Any]?,
+    displaySizeInput: [String: Any]?
+) -> [String: Any] {
+    guard let elementBoxInputs else {
+        return ["pointSnapOutcome": NSNull(), "pointTargetAfterSnap": NSNull(), "pointSnapDistancePoints": NSNull()]
+    }
+    guard let pointTarget else {
+        return ["pointSnapOutcome": NSNull(), "pointTargetAfterSnap": NSNull(), "pointSnapDistancePoints": NSNull()]
+    }
+    func number(_ value: Any?) -> Double? { (value as? NSNumber)?.doubleValue }
+    let screenshotWidth = number(screenshotSizeInput?["width"]) ?? 10_000
+    let screenshotHeight = number(screenshotSizeInput?["height"]) ?? 10_000
+    let mapping = ClickyScreenshotToDisplayMapping(
+        screenshotWidthInPixels: screenshotWidth,
+        screenshotHeightInPixels: screenshotHeight,
+        displayWidthInPoints: number(displaySizeInput?["width"]) ?? screenshotWidth,
+        displayHeightInPoints: number(displaySizeInput?["height"]) ?? screenshotHeight
+    )
+    let modelDisplayPoint = mapping.displayPointFromTopLeft(forScreenshotPixel: ClickyDrawingPoint(x: pointTarget.x, y: pointTarget.y))
+    let modelPoint = CGPoint(x: modelDisplayPoint.x, y: modelDisplayPoint.y)
+    let targetScreenNumber = pointTarget.screenNumber ?? 1
+
+    var elementUnderPoint: (frame: CGRect, role: String)?
+    for elementBoxInput in elementBoxInputs {
+        guard let boxX = number(elementBoxInput["x"]), let boxY = number(elementBoxInput["y"]),
+              let boxWidth = number(elementBoxInput["width"]), let boxHeight = number(elementBoxInput["height"]) else {
+            failWithMessage("an element box needs x, y, width and height")
+        }
+        guard (elementBoxInput["screen"] as? Int ?? 1) == targetScreenNumber else { continue }
+        let boxFrame = CGRect(
+            x: boxX * mapping.horizontalPointsPerScreenshotPixel,
+            y: boxY * mapping.verticalPointsPerScreenshotPixel,
+            width: boxWidth * mapping.horizontalPointsPerScreenshotPixel,
+            height: boxHeight * mapping.verticalPointsPerScreenshotPixel
+        )
+        let boxHoldsThePoint = modelPoint.x >= boxFrame.minX && modelPoint.x <= boxFrame.maxX && modelPoint.y >= boxFrame.minY && modelPoint.y <= boxFrame.maxY
+        guard boxHoldsThePoint else { continue }
+        if let elementSoFar = elementUnderPoint, elementSoFar.frame.width * elementSoFar.frame.height <= boxFrame.width * boxFrame.height { continue }
+        elementUnderPoint = (boxFrame, (elementBoxInput["role"] as? String) ?? "AXButton")
+    }
+
+    let snapOutcome: ClickyPointSnapOutcome
+    var pointAfterSnap = modelPoint
+    var distancePoints = 0
+    if let elementUnderPoint {
+        switch ClickyPointSnap.decide(modelPointInDisplayPoints: modelPoint, elementFrameInDisplayPoints: elementUnderPoint.frame, elementRole: elementUnderPoint.role, elementBelongsToClicky: false) {
+        case .snapped(let snappedPoint, let distance):
+            snapOutcome = .snapped
+            pointAfterSnap = snappedPoint
+            distancePoints = Int(distance.rounded())
+        case .notSnapped(let reason):
+            snapOutcome = reason
+        }
+    } else {
+        snapOutcome = .noElement
+    }
+    return [
+        "pointSnapOutcome": snapOutcome.rawValue,
+        // Back in the screenshot's pixels, so it compares with the fixture's element boxes.
+        "pointTargetAfterSnap": [
+            "x": Double(pointAfterSnap.x) / mapping.horizontalPointsPerScreenshotPixel,
+            "y": Double(pointAfterSnap.y) / mapping.verticalPointsPerScreenshotPixel,
+        ],
+        "pointSnapDistancePoints": distancePoints,
+    ]
+}
 
 func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
     let notesRootDirectoryURL = URL(fileURLWithPath: notesRootPath, isDirectory: true)
@@ -523,6 +653,15 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
                 "screenNumber": pointTarget.screenNumber ?? NSNull(),
             ] as [String: Any]
         }
+        // Round 21: the walkthrough tags of the reply ([STEP:k of n] and [PLAN:k:text]), read by the app's own parser.
+        let walkthroughReplyTags = ClickyWalkthroughTags.parse(rawReplyText: rawReplyText)
+        // Round 21 (stage 4): the point after the Accessibility snap, when the input gives element boxes.
+        let pointSnapOutputFields = pointSnapRecord(
+            pointTarget: finishedTurn.parsedReply.pointTarget,
+            elementBoxInputs: replyInput["elementBoxes"] as? [[String: Any]],
+            screenshotSizeInput: replyInput["screenshotSizeInPixels"] as? [String: Any],
+            displaySizeInput: replyInput["displaySizeInPoints"] as? [String: Any]
+        )
         outputRecords.append([
             "id": scenarioIdentifier,
             "spokenText": finishedTurn.spokenText,
@@ -556,7 +695,13 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             "drawingMarksBeforeReply": drawingMarksBeforeReply.map { drawingMarkRecord($0) },
             "drawingMarksAfterReply": drawingBoardForReply.marks.map { drawingMarkRecord($0) },
             "drawHistoryAssistantText": drawHistoryAssistantText,
-        ])
+            // Round 21: the walkthrough tags as the app reads them (null and [] for a reply without them),
+            // and the history text with the step tag first and the plan lines after the draw tags.
+            "walkthroughStep": walkthroughReplyTags.stepNumber ?? NSNull(),
+            "walkthroughStepCount": walkthroughReplyTags.stepCount ?? NSNull(),
+            "planTexts": walkthroughReplyTags.planTexts,
+            "walkthroughHistoryAssistantText": ClickyWalkthroughTags.historyText(appending: walkthroughReplyTags, to: drawHistoryAssistantText),
+        ].merging(pointSnapOutputFields) { current, _ in current })
     }
     writeJSON(outputRecords, toPath: outputPath)
 }
@@ -686,6 +831,8 @@ func runIntent(inputPath: String, outputPath: String) {
             "noteSaveText": ClickyNoteIntentDetector.explicitSaveRequestNoteText(in: transcript) ?? NSNull(),
             "noteSavingIntent": ClickyNoteIntentDetector.transcriptMentionsSavingIntent(transcript),
             "asksToRecallNotes": ClickyNoteIntentDetector.transcriptAsksToRecallNotes(transcript),
+            // Round 21: what the words mean to a walkthrough in progress ("next", "back", "repeat", "stop" or null).
+            "walkthroughWord": ClickyWalkthroughWords.userWord(forTranscript: transcript)?.rawValue ?? NSNull(),
         ])
     }
     writeJSON(outputRecords, toPath: outputPath)
@@ -868,6 +1015,69 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
         for: ClickyTurnContext(userTranscript: "what's the weather", frontmostApplicationBundleIdentifier: "com.apple.Safari", frontmostApplicationName: "Safari", screenCount: 1, currentDate: Date()),
         promptsDirectoryURL: skillsDirectoryURL, noteStore: emptyStore)
     check("skills: body absent when not selected", !safariWeatherPrompt.systemPromptText.contains("skill guidance for this question"))
+
+    // Round 21: the drawing, card and 3D scene formats are skills (draw, card, scene), always included
+    // when they match, so they never push an app skill out. The brief's seven cases first.
+    func round21SelectedNames(_ transcript: String, _ bundleIdentifier: String?, _ applicationName: String?, marksOnScreen: Bool = false, sceneOnScreen: Bool = false, walkthroughActive: Bool = false) -> [String] {
+        ClickySkillLibrary.selectSkills(
+            from: loadedSkills,
+            for: ClickySkillSelectionContext(
+                userTranscript: transcript,
+                frontmostApplicationBundleIdentifier: bundleIdentifier,
+                frontmostApplicationName: applicationName,
+                drawingMarksAreOnScreen: marksOnScreen,
+                sceneIsOnScreen: sceneOnScreen,
+                walkthroughIsActive: walkthroughActive
+            )
+        ).map(\.skillName)
+    }
+    check("round 21 skills: the three format skills load and are always included", ["draw", "card", "scene"].allSatisfy { formatSkillName in loadedSkills.first { $0.skillName == formatSkillName }?.isAlwaysIncludedWhenSelected == true })
+    check("round 21 skills: safari \"what's the weather\" selects nothing", round21SelectedNames("what's the weather", "com.apple.Safari", "Safari").isEmpty)
+    check("round 21 skills: xcode \"why does the build fail\" selects xcode and coding_general and no format skill", Set(round21SelectedNames("why does the build fail", "com.apple.dt.Xcode", "Xcode")) == ["xcode", "coding_general"])
+    check("round 21 skills: xcode \"circle the error\" selects draw, xcode and coding_general", Set(round21SelectedNames("circle the error", "com.apple.dt.Xcode", "Xcode")) == ["draw", "xcode", "coding_general"])
+    check("round 21 skills: finder \"explain how git branches work\" selects card", round21SelectedNames("explain how git branches work", "com.apple.finder", "Finder") == ["card"])
+    check("round 21 skills: \"show me a 3d model of a jet engine\" selects scene", round21SelectedNames("show me a 3d model of a jet engine", "com.apple.finder", "Finder") == ["scene"])
+    check("round 21 skills: a mark on screen and no keyword selects draw and card, not scene", Set(round21SelectedNames("make it bigger", "com.apple.finder", "Finder", marksOnScreen: true)) == ["draw", "card"])
+    check("round 21 skills: a mark and a scene on screen select scene too", Set(round21SelectedNames("add the wheels", "com.apple.finder", "Finder", marksOnScreen: true, sceneOnScreen: true)) == ["draw", "card", "scene"])
+    check("round 21 skills: a walkthrough in progress selects draw for \"back\"", round21SelectedNames("go back a step please", "com.apple.Terminal", "Terminal", walkthroughActive: true).contains("draw") && round21SelectedNames("repeat that step please", "com.apple.finder", "Finder", walkthroughActive: true) == ["draw"])
+    // The phrasings a review of the eval plan named.
+    for drawPhrase in ["focus on the run button", "walk me through pushing this branch", "talk me through the setup", "give me a walkthrough of git", "step by step please", "dim everything but the search field", "spotlight the run button"] {
+        check("round 21 skills: \"\(drawPhrase)\" selects draw", round21SelectedNames(drawPhrase, "com.apple.finder", "Finder") == ["draw"])
+    }
+    for scenePhrase in ["a 3-d view of an engine", "a 3 d view of an engine", "a 3D view of an engine"] {
+        check("round 21 skills: \"\(scenePhrase)\" selects scene", round21SelectedNames(scenePhrase, "com.apple.finder", "Finder") == ["scene"])
+    }
+    for cardPhrase in ["draw me a diagram of dns", "use diagrams for this"] {
+        check("round 21 skills: \"\(cardPhrase)\" selects card", round21SelectedNames(cardPhrase, "com.apple.finder", "Finder").contains("card"))
+    }
+    // The worst cases of the cap: with marks on the screen in Xcode, both format skills and both app
+    // skills come in together; with a scene on the screen as well, all five do. A third ordinary skill
+    // is still refused by the two-skill rule.
+    let xcodeWorstCaseNames = round21SelectedNames("make it bigger", "com.apple.dt.Xcode", "Xcode", marksOnScreen: true)
+    let xcodeWorstCaseCharacters = loadedSkills.filter { xcodeWorstCaseNames.contains($0.skillName) }.reduce(0) { $0 + $1.bodyText.count }
+    check("round 21 skills: draw, card, xcode and coding_general fit together under the cap", Set(xcodeWorstCaseNames) == ["draw", "card", "xcode", "coding_general"] && xcodeWorstCaseCharacters < ClickySkillLibrary.maximumSkillBodyCharacterCountPerTurn, "\(xcodeWorstCaseNames) \(xcodeWorstCaseCharacters)")
+    let xcodeSceneWorstCaseNames = round21SelectedNames("make it bigger", "com.apple.dt.Xcode", "Xcode", marksOnScreen: true, sceneOnScreen: true)
+    check("round 21 skills: with a scene on screen too, all five fit", Set(xcodeSceneWorstCaseNames) == ["draw", "card", "scene", "xcode", "coding_general"], "\(xcodeSceneWorstCaseNames)")
+    check("round 21 skills: a third ordinary skill is still refused", round21SelectedNames("swiftui build failed in xcode terminal", "com.apple.dt.Xcode", "Xcode", marksOnScreen: true).filter { !["draw", "card", "scene"].contains($0) }.count == 2)
+    // Round 21: walkthroughs. The tags are never spoken, the plan comes back in history, and the section
+    // says which step to give.
+    let walkthroughReplyText = "[STEP:1 of 3] first, stage the file. [DRAW:circle:120,400:30] [PLAN:1:stage the file] [PLAN:2:write the message] [PLAN:3:press commit] [POINT:none]"
+    let walkthroughTags = ClickyWalkthroughTags.parse(rawReplyText: walkthroughReplyText)
+    check("round 21 walkthrough: the step and plan tags are read and never spoken", walkthroughTags.stepNumber == 1 && walkthroughTags.stepCount == 3 && walkthroughTags.planTexts == ["stage the file", "write the message", "press commit"]
+          && ClickyReplyTagParser.parse(walkthroughReplyText).spokenText == "first, stage the file." && ClickyReplyTagParser.parse("ok. [STEP:2 o").spokenText == "ok.")
+    if let begunWalkthrough = ClickyWalkthroughState.beginning(fromReplyTags: walkthroughTags, now: Date()) {
+        check("round 21 walkthrough: \"next\" asks for step 2 with the brief's words", begunWalkthrough.promptSectionText(forUserWord: .next) == "walkthrough in progress (the user is following your steps one at a time):\n- plan: 1. stage the file; 2. write the message; 3. press commit.\n- step 1 is done. the user said \"next\": give step 2 now, starting with [STEP:2 of 3].")
+    } else {
+        check("round 21 walkthrough: the reply begins a walkthrough", false)
+    }
+    check("round 21 walkthrough: the control words", ClickyWalkthroughWords.userWord(forTranscript: "Next.") == .next && ClickyWalkthroughWords.userWord(forTranscript: "next step please") == .next && ClickyWalkthroughWords.userWord(forTranscript: "go back a step please") == .back
+          && ClickyWalkthroughWords.userWord(forTranscript: "repeat that step please") == .repeatStep && ClickyWalkthroughWords.userWord(forTranscript: "stop") == .stop && ClickyWalkthroughWords.userWord(forTranscript: "what does staged mean") == nil)
+    // Round 21: the snap with element boxes standing in for Accessibility.
+    let snapRecord = pointSnapRecord(pointTarget: ClickyPointTarget(x: 140, y: 40, label: "run", screenNumber: nil), elementBoxInputs: [["x": 136, "y": 33, "width": 28, "height": 26, "role": "AXButton"], ["x": 0, "y": 0, "width": 800, "height": 60, "role": "AXToolbar"]], screenshotSizeInput: nil, displaySizeInput: nil)
+    check("round 21 snap: a point on a small button in the fixture snaps to its centre", snapRecord["pointSnapOutcome"] as? String == "snapped" && (snapRecord["pointTargetAfterSnap"] as? [String: Double]) == ["x": 150, "y": 46])
+    check("round 21 snap: without element boxes the fields are null", pointSnapRecord(pointTarget: ClickyPointTarget(x: 1, y: 1, label: nil, screenNumber: nil), elementBoxInputs: nil, screenshotSizeInput: nil, displaySizeInput: nil)["pointSnapOutcome"] is NSNull)
+    let baseFileTextForRound21 = (try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("clicky_base_system_prompt.md"), encoding: .utf8)) ?? ""
+    check("round 21 prompt: the base prompt holds no draw, card or scene tag", !baseFileTextForRound21.contains("[DRAW:") && !baseFileTextForRound21.contains("[CARD:") && !baseFileTextForRound21.contains("[SCENE:"))
 
     // Prompt: base file loads, right-now block present, budget.
     let xcodePrompt = ClickyPromptAssembler.prepareSystemPrompt(

@@ -963,7 +963,9 @@ final class CompanionManager: ObservableObject {
                 isOverlayVisible = true
             }
             // The sticky note sits left of the right third of the screen, where the card goes.
-            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [DRAW:sticky:560,120:self test: pen-drawn marks, a handwriting label and this sticky note] [CARD:how the self test works] [ROW:boxes:launch|wait -> draw] [ROW:flow:marks > card > picture] [ROW:timeline:0s=app starts|4s=marks appear|10s=picture taken] [DRAW:callout:250,180:first callout] [DRAW:callout:520,640:second callout] [SCENE:self test model] [PART:cylinder:body:0,0,0:0.8,3:blue:x] [PART:cone:nose:2.2,0,0:0.8,1.4:red:x] [PART:box::-0.4,0,0:1,0.12,3.4:gray] [PART:sphere:window:1,0.55,0:0.4:glass] [PART:tube::-1.9,0,0:0.7,0.6:orange:x] [PART:capsule::-0.4,-0.9,0.9:0.22,1.2:yellow:x] [POINT:none]"
+            // Round 21: the sample also shows a spotlight (eight draw tags in all, the limit) and a
+            // code row and a table row on the card (five rows, the limit).
+            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [DRAW:sticky:560,120:self test: pen-drawn marks, a handwriting label and this sticky note] [CARD:how the self test works] [ROW:boxes:launch|wait -> draw] [ROW:flow:marks > card > picture] [ROW:timeline:0s=app starts|4s=marks appear|10s=picture taken] [ROW:code:git push -u origin main] [ROW:table:plan|price;free|0;pro|12] [DRAW:callout:250,180:first callout] [DRAW:callout:520,640:second callout] [DRAW:spotlight:900,400:120] [SCENE:self test model] [PART:cylinder:body:0,0,0:0.8,3:blue:x] [PART:cone:nose:2.2,0,0:0.8,1.4:red:x] [PART:box::-0.4,0,0:1,0.12,3.4:gray] [PART:sphere:window:1,0.55,0:0.4:glass] [PART:tube::-1.9,0,0:0.7,0.6:orange:x] [PART:capsule::-0.4,-0.9,0.9:0.22,1.2:yellow:x] [POINT:none]"
             let parsedSampleReply = ClickyDrawTagParser.parse(sampleReplyText)
             // A user who scrolls or switches apps in these few seconds must not spoil the picture.
             let drawingOverlayController = overlayWindowManager.drawingOverlayController
@@ -1008,12 +1010,13 @@ final class CompanionManager: ObservableObject {
 
             // Optional proof picture: only Clicky's own windows, saved where the launcher asked.
             if let selfTestImagePath = selfTestImagePathFromEnvironment {
-                // Eighteen marks, rows and scene parts follow each other 0.35 seconds apart (the
-                // last starts after 5.95 seconds) and the last is then still appearing, so the
-                // picture waits until all of them are done. The 3D scene is a Metal layer in
-                // Clicky's own overlay window, which ScreenCaptureKit captures like any other
-                // layer, so no separate snapshot of it is needed.
-                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                // Twenty-one marks, rows and scene parts (round 21 added the spotlight and two
+                // rows) follow each other 0.35 seconds apart (the last starts after 7 seconds) and
+                // the last is then still appearing, so the picture waits until all of them are
+                // done. The 3D scene is a Metal layer in Clicky's own overlay window, which
+                // ScreenCaptureKit captures like any other layer, so no separate snapshot of it is
+                // needed.
+                try? await Task.sleep(nanoseconds: 9_000_000_000)
                 do {
                     if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
                         try ownWindowsPNGData.write(to: URL(fileURLWithPath: selfTestImagePath))
@@ -1650,6 +1653,310 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Sharper pointing (round 21)
+
+    /// Where the blue cursor should fly for a `[POINT:]` target: the model's point (in the display's
+    /// own points, from its top-left corner), or the centre of the small control under it when
+    /// `ClickyPointSnap` says so. Returns the point to fly to, the outcome word and how far the point
+    /// moved, in whole points.
+    ///
+    /// The two conversions sit together here on purpose. The display frames the app has are AppKit's:
+    /// from the primary display's bottom-left corner, y growing upwards. Accessibility measures from
+    /// the primary display's top-left corner, y growing downwards, so the point goes out converted one
+    /// way (`globalTopLeftPoint`) and the element's frame comes back converted the other way
+    /// (`displayLocalFrame`). The primary display is the one whose frame starts at (0, 0).
+    ///
+    /// Only the role, frame and process of the one element under the point are read, off the main
+    /// thread, waiting at most a quarter second per read for an app that does not answer.
+    private func snappedDisplayLocalPoint(
+        forDisplayLocalPoint modelDisplayLocalPoint: CGPoint,
+        displayFrame: CGRect
+    ) async -> (point: CGPoint, outcome: ClickyPointSnapOutcome, distancePoints: Int) {
+        guard WindowPositionManager.hasAccessibilityPermission() else {
+            return (modelDisplayLocalPoint, .noPermission, 0)
+        }
+        guard let primaryScreenHeight = (NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first)?.frame.height else {
+            return (modelDisplayLocalPoint, .notAttempted, 0)
+        }
+        let globalTopLeftPoint = ClickyAccessibilityCoordinates.globalTopLeftPoint(
+            forDisplayLocalPoint: modelDisplayLocalPoint,
+            displayFrame: displayFrame,
+            primaryScreenHeight: Double(primaryScreenHeight)
+        )
+        let elementReadResult = await Task.detached(priority: .userInitiated) {
+            ClickyAccessibilityElementReader.elementUnderPoint(globalTopLeftPoint: globalTopLeftPoint)
+        }.value
+        switch elementReadResult {
+        case .noElement:
+            return (modelDisplayLocalPoint, .noElement, 0)
+        case .timedOut:
+            return (modelDisplayLocalPoint, .timedOut, 0)
+        case .found(let elementFacts):
+            let elementFrameInDisplayPoints = ClickyAccessibilityCoordinates.displayLocalFrame(
+                forGlobalTopLeftFrame: elementFacts.frameInGlobalTopLeftPoints,
+                displayFrame: displayFrame,
+                primaryScreenHeight: Double(primaryScreenHeight)
+            )
+            let snapDecision = ClickyPointSnap.decide(
+                modelPointInDisplayPoints: modelDisplayLocalPoint,
+                elementFrameInDisplayPoints: elementFrameInDisplayPoints,
+                elementRole: elementFacts.role,
+                elementBelongsToClicky: elementFacts.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            )
+            switch snapDecision {
+            case .snapped(let snappedPoint, let distance):
+                return (snappedPoint, .snapped, Int(distance.rounded()))
+            case .notSnapped(let reason):
+                return (modelDisplayLocalPoint, reason, 0)
+            }
+        }
+    }
+
+    // MARK: - Walkthroughs (round 21)
+
+    /// The step-by-step walkthrough in progress, or nil. A reply with `[STEP:1 of n]` begins one; the
+    /// user's "next", "back", "repeat" and "stop" steer it (spoken, typed or in the follow-up window);
+    /// "stop", Escape with nothing running, a new chat, continuing another chat, or ten minutes
+    /// without a step end it. A switch to another app does not: the steps may be about that app.
+    private var walkthroughState: ClickyWalkthroughState?
+
+    /// The walkthrough in progress, ended first when ten minutes passed without a step.
+    private func walkthroughStillInProgress(now: Date = Date()) -> ClickyWalkthroughState? {
+        guard let walkthroughState else { return nil }
+        if walkthroughState.isStale(now: now) {
+            endWalkthrough(because: "ten minutes without a step")
+            return nil
+        }
+        return walkthroughState
+    }
+
+    /// Ends the walkthrough in progress, if there is one. Only a fixed reason is printed, never a plan line.
+    private func endWalkthrough(because reasonDescription: String) {
+        guard walkthroughState != nil else { return }
+        walkthroughState = nil
+        print("🧭 Clicky: walkthrough ended (\(reasonDescription))")
+    }
+
+    /// A step word while a walkthrough is in progress. "next", "back" and "repeat" become a step turn
+    /// (the fixed transcript "next step please" and the like, with the step to ask for); "next" after
+    /// the last step and "stop" end the walkthrough with a fixed sentence and no model call.
+    private func steerWalkthrough(
+        _ walkthroughInProgress: ClickyWalkthroughState,
+        byUserWord walkthroughWord: ClickyWalkthroughUserWord,
+        transcript: String,
+        inputMode: ClickyTurnInputMode,
+        keyReleaseUptimeSeconds: TimeInterval?,
+        finalTranscriptReceivedUptimeSeconds: TimeInterval,
+        startedByFollowUpListening: Bool,
+        turnIdentifier: UUID
+    ) {
+        switch walkthroughInProgress.advancing(byUserWord: walkthroughWord) {
+        case .giveStep(let requestedStepNumber):
+            print("🧭 Clicky: walkthrough \(walkthroughWord.rawValue): asking for step \(requestedStepNumber) of \(walkthroughInProgress.stepCount)")
+            sendTranscriptToClaudeWithScreenshot(
+                transcript: walkthroughWord.stepTurnTranscript ?? transcript,
+                inputMode: inputMode,
+                keyReleaseUptimeSeconds: keyReleaseUptimeSeconds,
+                startedByFollowUpListening: startedByFollowUpListening,
+                turnIdentifier: turnIdentifier,
+                quickCommandWasAlreadyTried: true,
+                finalTranscriptReceivedAtUptimeSeconds: finalTranscriptReceivedUptimeSeconds,
+                walkthroughStepRequest: ClickyWalkthroughStepRequest(userWord: walkthroughWord, requestedStepNumber: requestedStepNumber)
+            )
+        case .finished:
+            endWalkthrough(because: "next after the last step")
+            answerWalkthroughWithAFixedSentence(
+                ClickyWalkthroughState.lastStepSentence,
+                transcript: transcript,
+                inputMode: inputMode,
+                keyReleaseUptimeSeconds: keyReleaseUptimeSeconds,
+                finalTranscriptReceivedUptimeSeconds: finalTranscriptReceivedUptimeSeconds,
+                startedByFollowUpListening: startedByFollowUpListening,
+                turnIdentifier: turnIdentifier
+            )
+        case .stopped:
+            endWalkthrough(because: "stop")
+            answerWalkthroughWithAFixedSentence(
+                ClickyWalkthroughState.stoppedSentence,
+                transcript: transcript,
+                inputMode: inputMode,
+                keyReleaseUptimeSeconds: keyReleaseUptimeSeconds,
+                finalTranscriptReceivedUptimeSeconds: finalTranscriptReceivedUptimeSeconds,
+                startedByFollowUpListening: startedByFollowUpListening,
+                turnIdentifier: turnIdentifier
+            )
+        }
+    }
+
+    /// Applies a finished reply's walkthrough tags to the walkthrough. Returns the step it took, for
+    /// the metrics line, or nil.
+    ///
+    /// A step turn moves the walkthrough only when its reply carries exactly the step that was asked
+    /// for; otherwise nothing changes and the next "next" asks for the same step again. On any other
+    /// turn a reply with `[STEP:1 of n]` begins a walkthrough (a new plan replaces the one in
+    /// progress), and a reply that gives a step of the walkthrough in progress (the user said "ok,
+    /// what now?" instead of "next") moves it there, so it follows what the user was shown.
+    private func takeWalkthroughStep(
+        from walkthroughReplyTags: ClickyWalkthroughReplyTags,
+        stepRequest walkthroughStepRequest: ClickyWalkthroughStepRequest?,
+        walkthroughAtTurnStart: ClickyWalkthroughState?
+    ) -> (stepNumber: Int, stepCount: Int)? {
+        guard let replyStepNumber = walkthroughReplyTags.stepNumber, let replyStepCount = walkthroughReplyTags.stepCount else {
+            return nil
+        }
+        let now = Date()
+        if let walkthroughStepRequest {
+            guard let walkthroughAtTurnStart,
+                  walkthroughState == walkthroughAtTurnStart,
+                  replyStepNumber == walkthroughStepRequest.requestedStepNumber else {
+                return nil
+            }
+            walkthroughState = walkthroughAtTurnStart.recordingStepGiven(replyStepNumber, at: now)
+            return (replyStepNumber, walkthroughAtTurnStart.stepCount)
+        }
+        let replyBeginsANewWalkthrough = walkthroughAtTurnStart == nil
+            || !walkthroughReplyTags.planTextsByStepNumber.isEmpty
+            || replyStepCount != walkthroughAtTurnStart?.stepCount
+        if replyBeginsANewWalkthrough, let begunWalkthrough = ClickyWalkthroughState.beginning(fromReplyTags: walkthroughReplyTags, now: now) {
+            walkthroughState = begunWalkthrough
+            print("🧭 Clicky: walkthrough began with \(begunWalkthrough.stepCount) steps")
+            return (1, begunWalkthrough.stepCount)
+        }
+        if let walkthroughAtTurnStart, walkthroughState == walkthroughAtTurnStart, replyStepCount == walkthroughAtTurnStart.stepCount {
+            walkthroughState = walkthroughAtTurnStart.recordingStepGiven(replyStepNumber, at: now)
+            return (replyStepNumber, replyStepCount)
+        }
+        return nil
+    }
+
+    /// "that was the last step." or "okay, i stopped the walkthrough.": one fixed sentence, said
+    /// without a model call (spoken when replies to this kind of turn are), recorded in the chat and
+    /// the model's history like any exchange, with one metrics line. Shaped like the answer to a
+    /// change card (`answerAChangeWithoutAskingTheModel`).
+    private func answerWalkthroughWithAFixedSentence(
+        _ answerSentence: String,
+        transcript: String,
+        inputMode: ClickyTurnInputMode,
+        keyReleaseUptimeSeconds: TimeInterval?,
+        finalTranscriptReceivedUptimeSeconds: TimeInterval,
+        startedByFollowUpListening: Bool,
+        turnIdentifier: UUID
+    ) {
+        // Like a quick command, these words are an ordinary turn: a later "yes" no longer answers an
+        // older change card.
+        fileEditingController.noteAnOrdinaryTurnStarted()
+        currentResponseTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        stopTellingUserAboutTurnFailure()
+        clearActionNoticeInStatusPill()
+        closeFollowUpListeningWindow(because: .newTurnStarted)
+        currentSpeechPrefetch?.cancel()
+        currentSpeechPrefetch = nil
+        activeResponseTurnIdentifier = turnIdentifier
+        let drawingOverlayController = overlayWindowManager.drawingOverlayController
+        drawingOverlayController.cancelCommandsNotYetDrawn()
+        let keepMarksGeneration = drawingOverlayController.beginKeepingMarks()
+
+        // Read once for this turn, like the decision to speak.
+        let voiceSettingsForThisTurn = voiceSettings
+        let shouldSpeakThisAnswer = ClickyReplySpeechDecision.shouldSpeakReply(
+            inputMode: inputMode,
+            isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
+            isSpeakingTypedRepliesEnabled: isSpeakingTypedRepliesEnabled
+        )
+        let answerIsOnlyShownAsText = ClickyReplySpeechDecision.shouldShowReplyAsTextInPanel(
+            inputMode: inputMode,
+            isSpeakingRepliesEnabled: isSpeakingRepliesEnabled,
+            isSpeakingTypedRepliesEnabled: isSpeakingTypedRepliesEnabled
+        )
+        let messageStartedAtDate = Date()
+        let messageStartsNewChat = chatSession.messageWouldStartNewChat(at: messageStartedAtDate)
+        if messageStartsNewChat && ClickyChatBoundary.idleBoundaryAlsoClearsConversationHistory {
+            conversationHistory.removeAll()
+        }
+        if answerIsOnlyShownAsText && !chatPanelController.isOpen {
+            chatPanelController.open(takingKeyboard: false)
+        }
+        chatPanelViewModel.beginPendingExchange(
+            turnIdentifier: turnIdentifier,
+            userText: transcript,
+            inputMode: inputMode,
+            replyIsOnlyShownAsText: answerIsOnlyShownAsText
+        )
+
+        currentResponseTask = Task {
+            voiceState = .processing
+            var turnMetrics = ClickyTurnMetrics(turnStartedAt: Date(), modelName: selectedModel)
+            turnMetrics.inputMode = inputMode
+            turnMetrics.startedByFollowUpListening = startedByFollowUpListening
+            turnMetrics.turnId = turnIdentifier
+            turnMetrics.keyReleaseToFinalTranscriptMilliseconds = ClickyTurnMetrics.millisecondsBetweenIfStartIsKnown(
+                startUptimeSeconds: keyReleaseUptimeSeconds,
+                endUptimeSeconds: finalTranscriptReceivedUptimeSeconds
+            )
+            var exchangeWasHandedToChat = false
+            defer {
+                if !exchangeWasHandedToChat {
+                    chatPanelViewModel.cancelPendingExchange(turnIdentifier: turnIdentifier)
+                }
+                drawingOverlayController.finishKeepingMarks(keepMarksGeneration: keepMarksGeneration)
+                if activeResponseTurnIdentifier == turnIdentifier {
+                    activeResponseTurnIdentifier = nil
+                }
+                print(turnMetrics.makeConsoleSummaryLine())
+                ClickyTurnMetricsLog.recordInBackground(turnMetrics)
+            }
+
+            // No screenshot was taken: the exchange keeps the last exchange's screen, as a quick
+            // command does, so the next turn sees no change of screen it did not look at.
+            let screenOfLastExchange = conversationHistory.last?.screenOfExchange
+            conversationHistory.append((
+                userTranscript: transcript,
+                assistantResponse: answerSentence,
+                screenOfExchange: screenOfLastExchange
+            ))
+            if conversationHistory.count > ClickyConversationHistoryLoader.maximumConversationHistoryExchangeCount {
+                conversationHistory.removeFirst(conversationHistory.count - ClickyConversationHistoryLoader.maximumConversationHistoryExchangeCount)
+            }
+            exchangeWasHandedToChat = true
+            chatSession.recordExchange(
+                userText: transcript,
+                inputMode: inputMode,
+                replyDisplayText: answerSentence,
+                replyHistoryText: answerSentence,
+                messageStartedAt: messageStartedAtDate,
+                projectForNewChat: ClickyChatProject.unknown,
+                screenOfExchange: screenOfLastExchange
+            )
+            chatPanelViewModel.finishPendingExchange(turnIdentifier: turnIdentifier)
+            memoryCompactionController.exchangeWasRecorded(startedANewChat: messageStartsNewChat)
+
+            var answerWasSpokenToTheEnd = false
+            turnMetrics.spokenReplyCharacterCount = answerSentence.count
+            if shouldSpeakThisAnswer {
+                do {
+                    try await elevenLabsTTSClient.speakText(answerSentence, voiceSettings: voiceSettingsForThisTurn)
+                    while elevenLabsTTSClient.isPlaying && !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                    }
+                    answerWasSpokenToTheEnd = !Task.isCancelled
+                } catch {
+                    if !Task.isCancelled {
+                        // The sentence is already in the panel; only the voice failed.
+                        print("⚠️ ElevenLabs TTS error while ending a walkthrough: \(error)")
+                    }
+                }
+            }
+            if !Task.isCancelled {
+                voiceState = .idle
+                scheduleTransientHideIfNeeded()
+                if inputMode == .spoken, answerWasSpokenToTheEnd {
+                    scheduleFollowUpListeningWindowAfterSpokenReply()
+                }
+            }
+        }
+    }
+
     // MARK: - Follow-up listening (round 18)
 
     // Why a follow-up window was closed or never opened is a `ClickyFollowUpCloseReason` (round 19
@@ -1683,7 +1990,9 @@ final class CompanionManager: ObservableObject {
         followUpWindowOpenTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(ClickyFollowUpListeningConstants.secondsAfterReplyBeforeTheWindowOpens * 1_000_000_000))
             guard let self, !Task.isCancelled else { return }
-            guard self.followUpWindowMayOpenNow() else {
+            // Round 21: while a walkthrough is in progress the cap on follow-up turns in a row does not
+            // apply: the user is saying "next" step after step, which is the point of the window.
+            guard self.followUpWindowMayOpenNow(ignoringTheChainCap: self.walkthroughStillInProgress() != nil) else {
                 // Round 19: when the cap on follow-up turns in a row is the only thing that keeps
                 // the window shut, the follow-up log says so (a line with no measurements).
                 if self.followUpWindowMayOpenNow(ignoringTheChainCap: true) {
@@ -1762,10 +2071,15 @@ final class CompanionManager: ObservableObject {
     /// key release; with nothing said in six seconds the window closes without a sound.
     private func listenForTheEndOfTheFollowUp(windowIdentifier: UUID) {
         followUpWindowListenTask?.cancel()
+        // Round 21: during a walkthrough the window waits 45 seconds for the user to do the step and
+        // say "next"; otherwise the usual 6.
+        let noSpeechGiveUpSeconds = walkthroughStillInProgress() != nil
+            ? ClickyWalkthroughState.followUpWindowSeconds
+            : ClickyFollowUpListeningConstants.noSpeechGiveUpSeconds
         followUpWindowListenTask = Task { @MainActor [weak self] in
             var stateMachine = ClickyFollowUpListeningStateMachine()
             let windowOpenedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
-            stateMachine.begin(at: windowOpenedUptimeSeconds)
+            stateMachine.begin(at: windowOpenedUptimeSeconds, noSpeechGiveUpSeconds: noSpeechGiveUpSeconds)
             self?.followUpWindowMeasurement = ClickyFollowUpWindowMeasurement(
                 windowOpenedAtUptimeSeconds: windowOpenedUptimeSeconds,
                 chainPosition: (self?.followUpTurnCounter.followUpTurnsInARow ?? 0) + 1
@@ -1823,20 +2137,42 @@ final class CompanionManager: ObservableObject {
         followUpWindowListenTask?.cancel()
         followUpWindowListenTask = nil
 
-        let transcriptDecision = ClickyFollowUpTranscriptDecision.decide(forTranscript: finalTranscript)
+        // Round 21: while a walkthrough is in progress its step words are told apart.
+        let transcriptDecision = ClickyFollowUpTranscriptDecision.decide(
+            forTranscript: finalTranscript,
+            walkthroughIsActive: walkthroughStillInProgress() != nil
+        )
         // The turn these words start, if any; its own metrics line carries the same identifier.
         let followUpTurnIdentifier = UUID()
+        let transcriptStartsATurn = [.sendToModel, .walkthroughNext, .walkthroughBack, .walkthroughRepeat].contains(transcriptDecision)
         recordFollowUpWindowLine(
             closeReason: ClickyFollowUpCloseReason.reason(forTranscriptDecision: transcriptDecision, transcript: finalTranscript),
-            turnIdentifier: transcriptDecision == .sendToModel ? followUpTurnIdentifier : nil
+            turnIdentifier: transcriptStartsATurn ? followUpTurnIdentifier : nil
         )
         switch transcriptDecision {
-        case .closeSilently, .endPhrase:
+        case .closeSilently:
+            scheduleTransientHideIfNeeded()
+        case .endPhrase:
+            // Round 21: "stop" (or "thanks", "that's all") also ends a walkthrough in progress.
+            endWalkthrough(because: "an end phrase in the follow-up window")
             scheduleTransientHideIfNeeded()
         case .sendToModel:
             followUpTurnCounter.recordFollowUpTurn()
             lastTranscript = finalTranscript
             print("🗣️ Companion received follow-up transcript")
+            sendTranscriptToClaudeWithScreenshot(
+                transcript: finalTranscript,
+                inputMode: .spoken,
+                keyReleaseUptimeSeconds: followUpEndOfSpeechUptimeSeconds,
+                startedByFollowUpListening: true,
+                turnIdentifier: followUpTurnIdentifier
+            )
+        case .walkthroughNext, .walkthroughBack, .walkthroughRepeat:
+            // Round 21: a step word. It does not count towards the cap on follow-up turns in a row
+            // (and no step word is a quick command); the turn below makes it the step turn ("next
+            // step please" and the step to give).
+            lastTranscript = finalTranscript
+            print("🗣️ Companion received a walkthrough step word in the follow-up window")
             sendTranscriptToClaudeWithScreenshot(
                 transcript: finalTranscript,
                 inputMode: .spoken,
@@ -2246,6 +2582,8 @@ final class CompanionManager: ObservableObject {
     private func handleUserChoseNewChat() {
         stopCurrentTurnBecauseTheChatChanged()
         conversationHistory.removeAll()
+        // Round 21: a new chat ends a walkthrough in progress.
+        endWalkthrough(because: "a new chat")
         // The chat the user was in has ended: compact it into memories.
         memoryCompactionController.userStartedANewChat()
     }
@@ -2255,6 +2593,8 @@ final class CompanionManager: ObservableObject {
     private func handleUserContinuedChat(_ chatToContinue: ClickyChat) {
         stopCurrentTurnBecauseTheChatChanged()
         conversationHistory = ClickyConversationHistoryLoader.conversationHistoryEntries(from: chatToContinue)
+        // Round 21: the conversation the walkthrough's steps belonged to is gone from the model's history.
+        endWalkthrough(because: "another chat was continued")
     }
 
     private func handleDictationChordAction(_ chordAction: ClickyDictationChordAction) {
@@ -2333,8 +2673,10 @@ final class CompanionManager: ObservableObject {
         }
 
         // An open follow-up window is closed by Escape (no model call, no line in the metrics) and
-        // Escape is used up by it.
+        // Escape is used up by it. Round 21: during a walkthrough the open window is the walkthrough
+        // waiting for "next", so Escape ends the walkthrough too.
         if closeFollowUpListeningWindow(because: .escape) {
+            endWalkthrough(because: "escape")
             return
         }
 
@@ -2357,6 +2699,11 @@ final class CompanionManager: ObservableObject {
             // Round 20: the press stopped a voice sample; that was all it was for.
             if escapeStoppedAVoiceSample {
                 print("⎋ Clicky: Escape stopped the voice sample")
+                return
+            }
+            // Round 21: with nothing running, Escape ends a walkthrough in progress, and is used up by it.
+            if walkthroughState != nil {
+                endWalkthrough(because: "escape")
                 return
             }
             // Nothing is running. A change that waits for an answer is cancelled first ("okay, i
@@ -2568,7 +2915,8 @@ final class CompanionManager: ObservableObject {
         startedByFollowUpListening: Bool = false,
         turnIdentifier: UUID = UUID(),
         quickCommandWasAlreadyTried: Bool = false,
-        finalTranscriptReceivedAtUptimeSeconds: TimeInterval? = nil
+        finalTranscriptReceivedAtUptimeSeconds: TimeInterval? = nil,
+        walkthroughStepRequest: ClickyWalkthroughStepRequest? = nil
     ) {
         // The final transcript has just been handed to the app: this is the end of the dictation
         // finalisation that began at the key release. A turn handed over by a quick command that was
@@ -2609,6 +2957,27 @@ final class CompanionManager: ObservableObject {
             )
             return
         }
+        // Round 21: while a walkthrough is in progress its words ("next", "back", "repeat", "stop", see
+        // `ClickyWalkthroughWords`) steer it, whether they were spoken with the ask keys, typed in the
+        // panel or heard in the follow-up window. They come after a yes, no or undo and after the quick
+        // commands, and before anything else is done for the turn. Any other words are a normal turn,
+        // and the walkthrough stays (the prompt says which step is current). A step turn arrives here
+        // again with its request set, and goes on below.
+        if walkthroughStepRequest == nil,
+           let walkthroughInProgress = walkthroughStillInProgress(),
+           let walkthroughWord = ClickyWalkthroughWords.userWord(forTranscript: transcript) {
+            steerWalkthrough(
+                walkthroughInProgress,
+                byUserWord: walkthroughWord,
+                transcript: transcript,
+                inputMode: inputMode,
+                keyReleaseUptimeSeconds: keyReleaseUptimeSeconds,
+                finalTranscriptReceivedUptimeSeconds: finalTranscriptReceivedUptimeSeconds,
+                startedByFollowUpListening: startedByFollowUpListening,
+                turnIdentifier: turnIdentifier
+            )
+            return
+        }
 
         // These words go to the model, so a later yes or no could answer something it asks now:
         // from here on only return or the card's buttons answer a change that is still waiting.
@@ -2620,6 +2989,10 @@ final class CompanionManager: ObservableObject {
         clearActionNoticeInStatusPill()
         // A window that was about to open for the last reply never opens over this turn.
         closeFollowUpListeningWindow(because: .newTurnStarted)
+
+        // Round 21: the walkthrough in progress as this turn starts. Its section goes into this turn's
+        // prompt (with the step word of a step turn), and the reply's tags are applied to it at the end.
+        let walkthroughAtTurnStart = walkthroughStillInProgress()
 
         // Round 20: the voice and speed are read once, here, like the decision to speak. The early
         // fetch, a fixed sentence and the final fetch of this turn all use this one value (the
@@ -2756,6 +3129,10 @@ final class CompanionManager: ObservableObject {
             // Set once the finished exchange has been handed to the chat, so the "turn ended"
             // cleanup below does not take the message off the panel before the chat holds it.
             var exchangeWasHandedToChat = false
+            // Round 21: the Accessibility snap of the reply's [POINT:] target. It runs while the speech
+            // audio is fetched and starts the cursor's flight itself when it is done; the turn reads its
+            // outcome for the metrics line before it ends.
+            var pointSnapTask: Task<(outcome: ClickyPointSnapOutcome, distancePoints: Int), Never>?
 
             // Runs on every way out of this task (finished, failed, cancelled, early return),
             // so exactly one metrics line is written per turn. Writing happens on a
@@ -2766,6 +3143,8 @@ final class CompanionManager: ObservableObject {
                 speechPrefetch.cancel()
                 projectForNewChatTask?.cancel()
                 preparedTurnToolsTask?.cancel()
+                // A snap that has not finished never starts a flight for a turn that is over.
+                pointSnapTask?.cancel()
                 // A turn that ends without a reply (cancelled, or failed before the exchange was
                 // recorded) takes its pending message off the panel. A failed typed turn has
                 // already turned its pending message into an error and is not affected.
@@ -2916,6 +3295,14 @@ final class CompanionManager: ObservableObject {
                 turnContext.actionsAreEnabled = preparedTurnTools?.actionSession != nil
                 turnContext.runningTimers = timerController.runningTimers
                 turnContext.persona = persona
+                // Round 21: the walkthrough in progress, and the step word of a step turn (nil when the
+                // user asked something else: the prompt then says not to move on).
+                if let walkthroughAtTurnStart {
+                    turnContext.walkthroughPromptContext = ClickyWalkthroughPromptContext(
+                        state: walkthroughAtTurnStart,
+                        userWord: walkthroughStepRequest?.userWord
+                    )
+                }
                 // Recorded with this turn's exchange below, so the next turn can compare with it.
                 let screenOfThisTurn = turnContext.screenNow
                 let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
@@ -2932,6 +3319,9 @@ final class CompanionManager: ObservableObject {
                 // reading the prompt files, notes and profile).
                 print("⏱ assembly parts: stores \(ClickyTurnMetrics.millisecondsBetween(startUptimeSeconds: promptAssemblyStartedUptimeSeconds, endUptimeSeconds: storesCreatedUptimeSeconds))ms, marks+prepare \(ClickyTurnMetrics.millisecondsElapsed(sinceUptimeSeconds: storesCreatedUptimeSeconds))ms")
                 turnMetrics.skillCount = preparedPrompt.selectedSkillNames.count
+                // Round 21: how much skill text the prompt carried (0 on an ordinary question), now
+                // that the drawing, card and 3D formats are skills instead of base prompt text.
+                turnMetrics.skillCharacterCount = preparedPrompt.skillBodyCharacterCount
                 turnMetrics.noteCount = preparedPrompt.includedNotes.count
 
                 // Add what the memory server remembers (saved facts and a related past session) to
@@ -3208,6 +3598,28 @@ final class CompanionManager: ObservableObject {
                     // Counts only, never the text of a label or sticky note.
                     print("✏️ draw: commands=\(parsedDrawReply.commands.count) ignoredTags=\(parsedDrawReply.ignoredDrawTagCount)")
                 }
+                // Round 21: a flag only, set when the reply drew a spotlight.
+                if parsedDrawReply.commands.contains(where: { parsedDrawCommand in
+                    if case .addMark(let shape, _) = parsedDrawCommand.command { return shape.isSpotlight }
+                    return false
+                }) {
+                    turnMetrics.spotlightDrawn = true
+                }
+                // Round 21: the walkthrough's tags. A step reply moves the walkthrough (only to the step
+                // that was asked for), a [STEP:1 of n] reply begins one. Numbers only in the metrics.
+                let walkthroughReplyTags = ClickyWalkthroughTags.parse(rawReplyText: fullResponseText)
+                if let takenWalkthroughStep = takeWalkthroughStep(
+                    from: walkthroughReplyTags,
+                    stepRequest: walkthroughStepRequest,
+                    walkthroughAtTurnStart: walkthroughAtTurnStart
+                ) {
+                    turnMetrics.walkthroughStep = takenWalkthroughStep.stepNumber
+                    turnMetrics.walkthroughStepCount = takenWalkthroughStep.stepCount
+                } else if let walkthroughStepRequest {
+                    // The reply did not carry the step that was asked for: nothing moves, and the next
+                    // "next" asks for the same step again.
+                    print("🧭 Clicky: the reply did not give step \(walkthroughStepRequest.requestedStepNumber); the walkthrough stays where it was")
+                }
                 turnMetrics.usedPointing = finishedTurn.parsedReply.pointTarget != nil
                 // Counts only, never the text of a note or profile fact.
                 print("📚 prompt: skills=\(preparedPrompt.selectedSkillNames) notes=\(preparedPrompt.includedNotes.count) saved=\(finishedTurn.savedNoteTexts.count) profileFacts=\(preparedPrompt.includedProfileFactTexts.count) profileSaved=\(finishedTurn.savedProfileFactTexts.count) profileDropped=\(finishedTurn.droppedProfileTagCount) secretRefused=\(finishedTurn.secretRefusalCount) profileFull=\(finishedTurn.profileWasFull)")
@@ -3260,34 +3672,67 @@ final class CompanionManager: ObservableObject {
                     )
                     let displayLocalX = CGFloat(displayPointFromTopLeft.x)
                     let displayLocalY = CGFloat(displayPointFromTopLeft.y)
+                    let modelDisplayLocalPoint = CGPoint(x: displayLocalX, y: displayLocalY)
 
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
-                    )
-
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
                     ClickyAnalytics.trackElementPointed(elementLabel: pointTarget.label)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(pointTarget.label ?? "element")\"")
+
+                    // Round 21: the point may snap to the centre of the small control under it (read
+                    // through Accessibility, at most a quarter second twice). The read runs while the
+                    // speech audio is fetched; the flight starts as soon as it is done, from the
+                    // snapped point or, when nothing snaps, from the model's own point as before.
+                    // The turn's own task already holds the manager (which lives as long as the app),
+                    // so the snap task holds it the same way.
+                    pointSnapTask = Task { @MainActor in
+                        let snapResult = await self.snappedDisplayLocalPoint(forDisplayLocalPoint: modelDisplayLocalPoint, displayFrame: displayFrame)
+                        // The turn may have been stopped (Escape, a new press) or replaced while the
+                        // element was read: then the cursor is left where it is.
+                        guard !Task.isCancelled,
+                              self.activeResponseTurnIdentifier == turnIdentifier,
+                              self.currentResponseTask?.isCancelled == false else {
+                            return (outcome: snapResult.outcome, distancePoints: snapResult.distancePoints)
+                        }
+
+                        // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
+                        let appKitY = displayHeight - snapResult.point.y
+
+                        // Convert display-local coords to global screen coords
+                        let globalLocation = CGPoint(
+                            x: snapResult.point.x + displayFrame.origin.x,
+                            y: appKitY + displayFrame.origin.y
+                        )
+
+                        self.detectedElementScreenLocation = globalLocation
+                        self.detectedElementDisplayFrame = displayFrame
+                        // The outcome word and the distance only, never the element's role.
+                        print("🎯 Point snap: \(snapResult.outcome.rawValue), moved \(snapResult.distancePoints) points")
+                        return (outcome: snapResult.outcome, distancePoints: snapResult.distancePoints)
+                    }
                 } else {
                     print("🎯 Element pointing: \(finishedTurn.parsedReply.pointTarget?.label ?? "no element")")
+                    // A target with no screen to put it on was never tried.
+                    if finishedTurn.parsedReply.pointTarget != nil {
+                        turnMetrics.pointSnapOutcome = .notAttempted
+                        turnMetrics.pointSnapDistancePoints = 0
+                    }
                 }
 
                 // Save this exchange to conversation history. The point tag is stripped, but
                 // [NOTE:...] and [PROFILE:...] tags stay so the model keeps saving in the same format.
                 // The [DRAW:...] tags of a draw reply are kept for the same reason; for a reply
                 // without them this is exactly the finisher's history text.
-                let assistantHistoryTextWithoutProposals = ClickyDrawTagParser.historyAssistantText(
-                    rawReplyText: fullResponseText,
-                    finishedSpokenText: spokenText,
-                    finishedHistoryAssistantText: finisherHistoryAssistantText,
-                    rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
-                    partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
+                // Round 21: a walkthrough reply's [STEP:k of n] goes first and its [PLAN:] lines after the
+                // draw tags, so later steps stay consistent with the plan. A reply without them is
+                // exactly the draw history text.
+                let assistantHistoryTextWithoutProposals = ClickyWalkthroughTags.historyText(
+                    appending: walkthroughReplyTags,
+                    to: ClickyDrawTagParser.historyAssistantText(
+                        rawReplyText: fullResponseText,
+                        finishedSpokenText: spokenText,
+                        finishedHistoryAssistantText: finisherHistoryAssistantText,
+                        rowCountOfCardAlreadyOnScreen: rowCountOfCardAlreadyOnScreen,
+                        partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen
+                    )
                 )
                 // One short line per change that was queued ("[proposed: edit Foo.swift: rename the
                 // button]"), so the next turn knows what is waiting. The chat's display text, which
@@ -3442,6 +3887,14 @@ final class CompanionManager: ObservableObject {
                     // Nothing to say, so there is no speech step left to wait for.
                     turnMetrics.speechPrefetchOutcome = speechPrefetch.outcomeWhenPrefetchedAudioIsNotUsed
                     turnStepInProgress = nil
+                }
+                // Round 21: the snap ran while the speech was fetched (a typed turn waits for it here,
+                // at most about half a second), so its flight has started; its outcome goes on the
+                // metrics line.
+                if let pointSnapTask {
+                    let pointSnapResult = await pointSnapTask.value
+                    turnMetrics.pointSnapOutcome = pointSnapResult.outcome
+                    turnMetrics.pointSnapDistancePoints = pointSnapResult.distancePoints
                 }
             } catch is CancellationError {
                 // User spoke again or pressed Escape — response was interrupted

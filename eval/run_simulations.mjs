@@ -944,8 +944,11 @@ export function scorePersonalization(scenario, finishedTurn, assembled) {
 // "the model wrote a tag" apart from "the app accepted it".
 // ---------------------------------------------------------------------------------------------
 
-// Same tag shape as ClickyDrawTagParser.completeDrawTagPattern (counting and stripping only).
-const DRAW_FAMILY_TAG_PATTERN = /\[\s*(DRAW|CARD|ROW)\s*:([^\[\]]*)\]/gi;
+// Same tag shape as ClickyDrawTagParser.completeDrawTagPattern (counting and stripping only). Round 21
+// widened it to every tag the app removes from speech besides POINT, NOTE and PROFILE: SCENE and PART
+// (round 11) and the walkthrough's STEP and PLAN (round 21). A reply holding only DRAW, CARD or ROW tags
+// is counted and stripped exactly as before, so the visual scores of round 20 do not move.
+const DRAW_FAMILY_TAG_PATTERN = /\[\s*(DRAW|CARD|ROW|SCENE|PART|STEP|PLAN)\s*:([^\[\]]*)\]/gi;
 
 export function stripDrawFamilyTags(replyText) {
   if (!new RegExp(DRAW_FAMILY_TAG_PATTERN.source, "i").test(replyText)) return replyText;
@@ -1069,6 +1072,11 @@ export const VISUAL_TOLERANCES = {
   arrowMinimumLengthPixels: 20,
   calloutTargetPaddingPixels: 6,
   labelAnchorPaddingPixels: 48,
+  // Round 21: a spotlight lights its target when the target lies inside its circle. It is meant to be
+  // larger than the target, so only a circle far larger than any target counts against it.
+  spotlightEdgeTolerancePixels: 12,
+  spotlightMaximumRadiusTimesLongSide: 4,
+  spotlightMaximumRadiusExtraPixels: 150,
 };
 
 export function markGeometryQuality(shape, elementRectangle) {
@@ -1123,6 +1131,20 @@ export function markGeometryQuality(shape, elementRectangle) {
     }
     case "callout":
       return pointIsInside(shape.target, paddedRectangle(elementRectangle, tolerances.calloutTargetPaddingPixels)) ? { quality: 1, reason: null } : { quality: 0, reason: "callout points outside the element" };
+    case "spotlight": {
+      // Round 21: scored like a circle, but by the brief's rule for a spotlight: the target must be
+      // inside the radius (its centre inside the circle, and the whole element within the edge tolerance).
+      const elementCentre = { x: elementRectangle.x + elementRectangle.w / 2, y: elementRectangle.y + elementRectangle.h / 2 };
+      if (Math.hypot(shape.center.x - elementCentre.x, shape.center.y - elementCentre.y) > shape.radius) return { quality: 0, reason: "spotlight does not light the element" };
+      const elementCorners = [
+        { x: elementRectangle.x, y: elementRectangle.y }, { x: elementRectangle.x + elementRectangle.w, y: elementRectangle.y },
+        { x: elementRectangle.x, y: elementRectangle.y + elementRectangle.h }, { x: elementRectangle.x + elementRectangle.w, y: elementRectangle.y + elementRectangle.h },
+      ];
+      const farthestCornerDistance = Math.max(...elementCorners.map((corner) => Math.hypot(corner.x - shape.center.x, corner.y - shape.center.y)));
+      if (farthestCornerDistance > shape.radius + tolerances.spotlightEdgeTolerancePixels) return { quality: 0.6, reason: "spotlight cuts the element off" };
+      if (shape.radius > tolerances.spotlightMaximumRadiusTimesLongSide * Math.max(elementRectangle.w, elementRectangle.h) + tolerances.spotlightMaximumRadiusExtraPixels) return { quality: 0.6, reason: "spotlight far larger than the element" };
+      return { quality: 1, reason: null };
+    }
     case "label":
     case "sticky":
       return pointIsInside(shape.topLeftCorner, paddedRectangle(elementRectangle, tolerances.labelAnchorPaddingPixels)) ? { quality: 1, reason: null } : { quality: 0, reason: "label is not next to the element" };
@@ -2484,6 +2506,17 @@ function runSelfTest() {
   check("draw tags: stripped before the trailing POINT tag is read (no assembler)", parsePointTag(drawReplyText).isNone === true && parsePointTag(drawReplyText).spokenText === "the search field is up here.");
   check("draw tags: a tag after POINT does not hide the POINT tag", parsePointTag("up here. [POINT:640,52:search] [DRAW:circle:640,52:38]").x === 640);
   check("draw tags: a reply without them is left byte-identical", stripDrawFamilyTags("line one.\n  two  spaces. [POINT:none]") === "line one.\n  two  spaces. [POINT:none]");
+  // Round 21: the walkthrough's STEP and PLAN tags and the scene's SCENE and PART tags are stripped and counted
+  // too; a reply with only the round 20 tags is stripped exactly as before.
+  check("round 21 tags: STEP and PLAN are stripped before the trailing POINT tag is read", parsePointTag("[STEP:1 of 3] first, stage the file. [PLAN:1:stage the file] [PLAN:2:commit] [POINT:none]").isNone === true && parsePointTag("[STEP:1 of 3] first, stage the file. [PLAN:1:stage the file] [PLAN:2:commit] [POINT:none]").spokenText === "first, stage the file.");
+  check("round 21 tags: SCENE and PART are stripped too", stripDrawFamilyTags("a jet engine. [SCENE:jet engine] the fan. [PART:cylinder:fan:-2,0,0:1.2,0.3:blue:x] [POINT:none]") === "a jet engine. the fan. [POINT:none]");
+  check("round 21 tags: a round 20 draw reply is stripped as before", stripDrawFamilyTags("here. [DRAW:circle:640,52:38] and [CARD:t] [ROW:text:x] [POINT:none]") === "here. and [POINT:none]");
+  check("round 21 tags: a walkthrough reply counts its STEP and PLAN tags as tags", summarizeDrawUse("[STEP:1 of 2] first. [DRAW:circle:10,10:20] [PLAN:1:a] [PLAN:2:b] [POINT:none]", null).raw_tag_count === 4 && summarizeDrawUse("[STEP:1 of 2] first. [DRAW:circle:10,10:20] [POINT:none]", null).raw_draw_tag_count === 1);
+  const round21RunButtonRectangle = { x: 136, y: 32, w: 28, h: 28 };
+  check("round 21 spotlight: a circle around the target lights it", markGeometryQuality({ shapeKind: "spotlight", center: { x: 150, y: 46 }, radius: 40 }, round21RunButtonRectangle).quality === 1);
+  check("round 21 spotlight: a circle beside the target does not", markGeometryQuality({ shapeKind: "spotlight", center: { x: 300, y: 46 }, radius: 40 }, round21RunButtonRectangle).quality === 0);
+  check("round 21 spotlight: a circle that cuts the target off is partial", markGeometryQuality({ shapeKind: "spotlight", center: { x: 140, y: 40 }, radius: 14 }, round21RunButtonRectangle).quality === 0.6);
+  check("round 21 spotlight: a circle far larger than the target is partial", markGeometryQuality({ shapeKind: "spotlight", center: { x: 150, y: 46 }, radius: 900 }, round21RunButtonRectangle).quality === 0.6);
   const circleCommand = (x, y, radius, screenNumber = null) => ({ commandKind: "addMark", spokenFractionBeforeTag: 1, screenNumber, shape: { shapeKind: "circle", center: { x, y }, radius } });
   const finishedWith = (spokenText, drawCommands, extras = {}) => ({ spokenText, pointTarget: null, drawCommands, ignoredDrawTagCount: 0, drawingMarksBeforeReply: [], drawingMarksAfterReply: [], ...extras });
   const finishedCircle = finishedWith("the search field is up here.", [circleCommand(640, 52, 38)]);
@@ -2608,7 +2641,7 @@ function runSelfTest() {
     for (const exchange of scenario.history ?? []) {
       if (typeof exchange.user !== "string" || typeof exchange.assistant !== "string") contextShapeProblems.push(`${scenario.id}: history exchange needs user and assistant text`);
       if (!/\[POINT:[^\]]*\]\s*$/.test(exchange.assistant ?? "")) contextShapeProblems.push(`${scenario.id}: history assistant text must end with a POINT tag`);
-      if (/\[(NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART):/i.test(exchange.assistant ?? "")) contextShapeProblems.push(`${scenario.id}: history must not carry memory or draw tags`);
+      if (/\[(NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART|STEP|PLAN):/i.test(exchange.assistant ?? "")) contextShapeProblems.push(`${scenario.id}: history must not carry memory or draw tags`);
     }
     for (const field of ["screenContextOfHistory", "screenContextNow"]) {
       if (!scenario[field]?.app || !scenario[field]?.windowTitle) contextShapeProblems.push(`${scenario.id}: ${field} needs app and windowTitle`);

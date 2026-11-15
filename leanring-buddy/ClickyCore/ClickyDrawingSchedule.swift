@@ -66,6 +66,13 @@ nonisolated struct ClickyScreenshotToDisplayMapping: Equatable {
             return .stickyNote(topLeftCorner: displayPointFromTopLeft(forScreenshotPixel: topLeftCorner), text: text)
         case .callout(let target, let text, let calloutNumber):
             return .callout(target: displayPointFromTopLeft(forScreenshotPixel: target), text: text, calloutNumber: calloutNumber)
+        case .spotlight(let center, let radius):
+            // Like a circle: the average of the two scales keeps the hole round.
+            let averagePointsPerScreenshotPixel = (horizontalPointsPerScreenshotPixel + verticalPointsPerScreenshotPixel) / 2
+            return .spotlight(
+                center: displayPointFromTopLeft(forScreenshotPixel: center),
+                radius: radius * averagePointsPerScreenshotPixel
+            )
         case .explanationCard, .scene:
             // The card and the 3D scene hold no screenshot coordinates: the app places them on
             // the display.

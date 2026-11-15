@@ -39,6 +39,12 @@ final class ClickyDrawingSurfaceView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
     }
+
+    /// Round 21: a spotlight's shade goes under every other mark on this surface, so the card, the
+    /// callouts and the ink of the same reply stay bright on top of it.
+    func insertMarkLayerBelowOthers(_ markLayer: CALayer) {
+        layer?.insertSublayer(markLayer, at: 0)
+    }
 }
 
 /// Where one of this turn's screenshots sits: the display it shows and how its pixels map onto it.
@@ -771,7 +777,7 @@ final class ClickyDrawingOverlayController {
             // Shown above, as a view.
             return
 
-        case .arrow, .circle, .box, .underline, .highlight, .label, .stickyNote:
+        case .arrow, .circle, .box, .underline, .highlight, .label, .stickyNote, .spotlight:
             markLayer = ClickyDrawingMarkLayerBuilder.makeMarkLayer(
                 forMarkNumber: mark.markNumber,
                 shapeInDisplayPoints: shapeInDisplayPoints,
@@ -782,7 +788,12 @@ final class ClickyDrawingOverlayController {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        surfaceLayer.addSublayer(markLayer)
+        if shapeInDisplayPoints.isSpotlight {
+            // Round 21: the shade goes under every other mark, so what this reply draws stays bright.
+            drawingSurfaceView.insertMarkLayerBelowOthers(markLayer)
+        } else {
+            surfaceLayer.addSublayer(markLayer)
+        }
         CATransaction.commit()
         markLayersByMarkNumber[mark.markNumber] = markLayer
         let surfaceWindow = drawingSurfaceView.window
@@ -791,6 +802,9 @@ final class ClickyDrawingOverlayController {
         if case .callout = shapeInDisplayPoints {
             // The tag fades in while the pen draws the leader line.
             ClickyExplanationCardLayerBuilder.animateCalloutAppearance(of: markLayer, penDurationSeconds: penDurationSeconds)
+        } else if shapeInDisplayPoints.isSpotlight {
+            // The shade fades in; it has no ink for a pen to draw.
+            ClickyDrawingMarkLayerBuilder.animateSpotlightAppearance(of: markLayer)
         } else {
             // Ink is revealed with the pen; a label, a sticky note and the card fade and grow in.
             ClickyDrawingMarkLayerBuilder.animateAppearance(of: markLayer, penDurationSeconds: penDurationSeconds)

@@ -179,9 +179,10 @@ nonisolated enum ClickyHandDrawnPathGenerator {
                     highlighterBandWidthInPoints: size.height
                 ))
 
-            case .label, .stickyNote, .callout, .explanationCard, .scene:
+            case .label, .stickyNote, .callout, .explanationCard, .scene, .spotlight:
                 // Text on a pill or a card, or a 3D scene, not ink. The leader line of a callout and the ink on
-                // a card are built from arrows, boxes and lines by their own layouts.
+                // a card are built from arrows, boxes and lines by their own layouts. A spotlight (round 21)
+                // is a shade with a hole in it, not a stroke.
                 break
             }
         }
@@ -206,7 +207,9 @@ nonisolated enum ClickyHandDrawnPathGenerator {
         case .callout:
             // The leader line is always about this long, wherever the app puts the tag.
             return ClickyCalloutPlacement.distanceFromTargetInPoints
-        case .label, .stickyNote, .explanationCard, .scene:
+        case .label, .stickyNote, .explanationCard, .scene, .spotlight:
+            // A spotlight is not drawn with the pen: it fades in, and the schedule gives it the
+            // shortest pen time.
             return 0
         }
     }
