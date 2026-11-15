@@ -113,8 +113,34 @@ nonisolated struct ClickyUsageTurnRecord: Equatable, Sendable {
     /// as well, because the count is taken before the speech step, so the count alone is not enough.
     let audioStartedPlaying: Bool
 
+    // Round 19: the rest of a turn line, for the metrics summary (`eval/metrics_summary`). The usage
+    // tab reads only `localFastPath`. A field a line does not have keeps its default here, so lines
+    // written before round 19 read as they always did.
+    /// A quick command: carried out on this Mac with no model call.
+    var localFastPath = false
+    /// The loop ended after one simple action without asking the model for words.
+    var skippedFinalRequest = false
+    var startedByFollowUpListening = false
+    var wasInterruptedByEscape = false
+    var toolCallCount: Int?
+    var actionToolCallCount: Int?
+    /// Fixed identifiers only; a value that is not one of them is left out.
+    var actionKinds: [ClickyActionKind] = []
+    var roundTripMilliseconds: [Int] = []
+    var roundTripInputTokens: [Int] = []
+    var roundTripCacheReadTokens: [Int] = []
+    var roundTripCacheCreationTokens: [Int] = []
+    var parallelToolCalls: Int?
+    var interruptedWithinMilliseconds: Int?
+    var turnId: UUID?
+
     var hasAnyTokenCount: Bool {
         inputTokens != nil || outputTokens != nil || cacheCreationInputTokens != nil || cacheReadInputTokens != nil
+    }
+
+    /// A quick command's line (round 19), by its flag or by the fixed model name it carries.
+    var isQuickCommand: Bool {
+        localFastPath || modelName == ClickyTurnMetrics.quickCommandsModelName
     }
 }
 
@@ -168,13 +194,15 @@ nonisolated enum ClickyUsageLogParser {
               // Round 16: a memory compaction line has its own file, but if one ever lands here it is
               // not a question.
               (jsonObject["event"] as? String) != "memoryCompaction",
+              // Round 19: a follow-up window's line has its own file too, and is not a question either.
+              (jsonObject["event"] as? String) != ClickyFollowUpMetrics.eventName,
               let timestamp = timestamp(from: jsonObject["timestamp"]) else {
             return nil
         }
         // Lines written before round 13 have no input mode, and every one of them was spoken.
         let inputMode = (jsonObject["inputMode"] as? String).flatMap(ClickyTurnInputMode.init(rawValue:)) ?? .spoken
         let outcome = (jsonObject["outcome"] as? String).flatMap(ClickyTurnOutcome.init(rawValue:)) ?? .completed
-        return ClickyUsageTurnRecord(
+        var turnRecord = ClickyUsageTurnRecord(
             timestamp: timestamp,
             modelName: (jsonObject["model"] as? String) ?? "unknown",
             inputMode: inputMode,
@@ -188,6 +216,34 @@ nonisolated enum ClickyUsageLogParser {
             spokenReplyCharacterCount: nonNegativeInteger(jsonObject["spokenReplyCharacterCount"]),
             audioStartedPlaying: nonNegativeInteger(jsonObject["textToSpeechMs"]) != nil
         )
+        turnRecord.localFastPath = isTrue(jsonObject["localFastPath"])
+        turnRecord.skippedFinalRequest = isTrue(jsonObject["skippedFinalRequest"])
+        turnRecord.startedByFollowUpListening = isTrue(jsonObject["startedByFollowUpListening"])
+        turnRecord.wasInterruptedByEscape = isTrue(jsonObject["interruptedByEscape"])
+        turnRecord.toolCallCount = nonNegativeInteger(jsonObject["toolCalls"])
+        turnRecord.actionToolCallCount = nonNegativeInteger(jsonObject["actionToolCalls"])
+        turnRecord.actionKinds = ((jsonObject["actionKinds"] as? [Any]) ?? []).compactMap { ($0 as? String).flatMap(ClickyActionKind.init(rawValue:)) }
+        turnRecord.roundTripMilliseconds = nonNegativeIntegers(jsonObject["roundTripMs"])
+        turnRecord.roundTripInputTokens = nonNegativeIntegers(jsonObject["roundTripInputTokens"])
+        turnRecord.roundTripCacheReadTokens = nonNegativeIntegers(jsonObject["roundTripCacheReadTokens"])
+        turnRecord.roundTripCacheCreationTokens = nonNegativeIntegers(jsonObject["roundTripCacheCreationTokens"])
+        turnRecord.parallelToolCalls = nonNegativeInteger(jsonObject["parallelToolCalls"])
+        turnRecord.interruptedWithinMilliseconds = nonNegativeInteger(jsonObject["interruptedWithinMilliseconds"])
+        turnRecord.turnId = (jsonObject["turnId"] as? String).flatMap(UUID.init(uuidString:))
+        return turnRecord
+    }
+
+    /// True only for a JSON `true` (a number 1 or the text "true" is not a flag).
+    private static func isTrue(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+            return false
+        }
+        return number.boolValue
+    }
+
+    /// An array of counts or durations; an entry that is not one is left out.
+    private static func nonNegativeIntegers(_ value: Any?) -> [Int] {
+        ((value as? [Any]) ?? []).compactMap { nonNegativeInteger($0) }
     }
 
     static func parseDictationRecord(fromLine logLine: String) -> ClickyUsageDictationRecord? {
@@ -275,9 +331,19 @@ nonisolated struct ClickyModelUsage: Equatable, Sendable {
         inputTokens + outputTokens + cacheWriteTokens + cacheReadTokens
     }
 
-    /// Nil when the model is not in the price table ("price unknown").
+    /// The "quick commands" row (round 19): turns that asked no model at all. `requestCount` is then
+    /// the number of quick commands, and every token count is zero.
+    var isQuickCommands: Bool {
+        modelName == ClickyTurnMetrics.quickCommandsModelName
+    }
+
+    /// Nil when the model is not in the price table ("price unknown"). Quick commands cost nothing:
+    /// no request was made, so they are never counted as a model without a price.
     var estimatedCostInDollars: Decimal? {
-        ClickyModelPriceTable.estimatedCostInDollars(
+        if isQuickCommands {
+            return 0
+        }
+        return ClickyModelPriceTable.estimatedCostInDollars(
             modelName: modelName,
             inputTokens: inputTokens,
             outputTokens: outputTokens,
@@ -503,6 +569,16 @@ nonisolated enum ClickyUsageAggregator {
                     outputTokens: turnRecord.outputTokens ?? 0,
                     cacheWriteTokens: turnRecord.cacheCreationInputTokens ?? 0,
                     cacheReadTokens: turnRecord.cacheReadInputTokens ?? 0
+                )
+            } else if turnRecord.isQuickCommand {
+                // Round 19: a quick command is a question too, with no model and so no tokens. It gets
+                // its own row so the tab shows how many there were.
+                addTokens(
+                    modelName: ClickyTurnMetrics.quickCommandsModelName,
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    cacheWriteTokens: 0,
+                    cacheReadTokens: 0
                 )
             }
         }

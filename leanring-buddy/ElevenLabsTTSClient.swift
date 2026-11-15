@@ -76,8 +76,13 @@ final class ElevenLabsTTSClient {
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+            // Round 19: the body and the Worker's cap header travel with the error (see ClaudeAPI).
             throw NSError(domain: "ElevenLabsTTS", code: httpResponse.statusCode,
-                          userInfo: [NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)"])
+                          userInfo: [
+                              NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)",
+                              ClickyTurnFailureMessage.responseBodyUserInfoKey: errorBody,
+                              ClickyTurnFailureMessage.dailyCapHeaderUserInfoKey: httpResponse.value(forHTTPHeaderField: ClickyTurnFailureMessage.dailyCapHeaderName) ?? "",
+                          ])
         }
 
         return ElevenLabsFetchedSpeech(
@@ -151,6 +156,24 @@ final class ElevenLabsSpeechPrefetch {
         prefetchedSpokenText = spokenTextBeforeFirstTag
         pendingFetch = Task {
             try await ttsClient.fetchSpeechAudio(for: spokenTextBeforeFirstTag)
+        }
+    }
+
+    /// Round 19: starts fetching the audio of a fixed sentence the moment it is known (the turn
+    /// ended after one simple action, so there is no reply stream to wait for). It is played, like any
+    /// early fetch, only if the final spoken text is exactly this sentence. The transcript gate is the
+    /// same as for the words before a reply tag, so a memory turn never sends text early.
+    func startFetchingFixedSentence(_ fixedSentence: String, userTranscript: String, ttsClient: ElevenLabsTTSClient) {
+        hasLookedPastTheFirstReplyTag = true
+        guard !fixedSentence.isEmpty else { return }
+        guard ClickySpeechPrefetch.transcriptAllowsSpeechPrefetch(userTranscript) else {
+            outcomeWhenNothingWasFetched = .skippedForMemoryRequest
+            return
+        }
+        pendingFetch?.cancel()
+        prefetchedSpokenText = fixedSentence
+        pendingFetch = Task {
+            try await ttsClient.fetchSpeechAudio(for: fixedSentence)
         }
     }
 

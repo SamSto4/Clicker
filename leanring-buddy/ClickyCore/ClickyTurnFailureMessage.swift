@@ -22,6 +22,37 @@ nonisolated enum ClickyTurnFailureMessage {
     static let rateLimitedSentence = "i'm being rate limited. try again in a moment."
     static let aiServiceProblemSentence = "the ai service had a problem. try again."
     static let screenCaptureFailedSentence = "i couldn't see your screen. check screen recording permission."
+    /// Round 19: the Worker's daily spend cap was reached (Sam's decision of 14 Nov 2026: 600 chat
+    /// requests and 60,000 speech characters a day). The Worker answers HTTP 429 with the body
+    /// `{"error":{"type":"clicky_daily_cap","message":"daily cap reached"}}` and the header
+    /// `X-Clicky-Cap: daily`; any other 429 is a rate limit.
+    static let dailySpendingCapSentence = "i've hit today's spending cap."
+    static let dailyCapErrorType = "clicky_daily_cap"
+    static let dailyCapHeaderName = "X-Clicky-Cap"
+
+    /// The keys under which `ClaudeAPI` and `ElevenLabsTTSClient` put a failed response's body and its
+    /// `X-Clicky-Cap` header into the error they throw (round 19), so the cap can be told apart.
+    static let responseBodyUserInfoKey = "ClickyFailedResponseBody"
+    static let dailyCapHeaderUserInfoKey = "ClickyFailedResponseDailyCapHeader"
+
+    /// True for the Worker's daily cap: an HTTP 429 that carries the `X-Clicky-Cap` header, or whose
+    /// body says `"type":"clicky_daily_cap"` (read as JSON when it is JSON, else looked for as text).
+    static func isDailySpendingCap(httpStatusCode: Int?, responseBody: String?, dailyCapHeaderValue: String?) -> Bool {
+        guard httpStatusCode == 429 else {
+            return false
+        }
+        if let dailyCapHeaderValue, !dailyCapHeaderValue.trimmingCharacters(in: .whitespaces).isEmpty {
+            return true
+        }
+        guard let responseBody, !responseBody.isEmpty else {
+            return false
+        }
+        if let bodyObject = try? JSONSerialization.jsonObject(with: Data(responseBody.utf8)) as? [String: Any],
+           let errorObject = bodyObject["error"] as? [String: Any] {
+            return (errorObject["type"] as? String) == dailyCapErrorType
+        }
+        return responseBody.contains("\"\(dailyCapErrorType)\"")
+    }
 
     /// Put in front of the reply text in the status pill when the voice failed.
     static let voiceUnavailableNoticePrefix = "voice unavailable"
@@ -71,11 +102,15 @@ nonisolated enum ClickyTurnFailureMessage {
     ///   - errorDomain: `NSError.domain` of the error.
     ///   - errorCode: `NSError.code` of the error.
     ///   - errorMessage: the error's description. Only searched for billing words; never spoken.
+    ///   - responseBody, dailyCapHeaderValue: round 19, what the failed response carried (from the
+    ///     error's `userInfo`), to tell the Worker's daily cap from a rate limit. Never spoken.
     static func response(
         failingStep: ClickyTurnStep?,
         errorDomain: String,
         errorCode: Int,
-        errorMessage: String
+        errorMessage: String,
+        responseBody: String? = nil,
+        dailyCapHeaderValue: String? = nil
     ) -> ClickyTurnFailureResponse {
         // The answer was already written when the voice failed, whatever the reason (no network,
         // the speech service down, its own rate limit). The answer matters more than the reason.
@@ -102,6 +137,9 @@ nonisolated enum ClickyTurnFailureMessage {
             return .speakSentence(outOfCreditSentence)
         }
 
+        if isDailySpendingCap(httpStatusCode: httpStatusCode, responseBody: responseBody, dailyCapHeaderValue: dailyCapHeaderValue) {
+            return .speakSentence(dailySpendingCapSentence)
+        }
         if httpStatusCode == 429 {
             return .speakSentence(rateLimitedSentence)
         }
@@ -111,12 +149,17 @@ nonisolated enum ClickyTurnFailureMessage {
 
     /// What the status pill shows when the voice failed after a good reply. The pill cuts a notice
     /// that is too wide with an ellipsis, so a long reply shows its beginning.
-    static func voiceUnavailableNoticeText(forSpokenReplyText spokenReplyText: String) -> String {
+    ///
+    /// `dailyCapWasReached` (round 19): the speech request hit the Worker's daily cap, so the cap's
+    /// words come between the prefix and the reply: "voice unavailable · i've hit today's spending
+    /// cap. · <the reply>".
+    static func voiceUnavailableNoticeText(forSpokenReplyText spokenReplyText: String, dailyCapWasReached: Bool = false) -> String {
+        let prefix = dailyCapWasReached ? voiceUnavailableNoticePrefix + " · " + dailySpendingCapSentence : voiceUnavailableNoticePrefix
         let trimmedSpokenReplyText = spokenReplyText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSpokenReplyText.isEmpty else {
-            return voiceUnavailableNoticePrefix
+            return prefix
         }
-        return voiceUnavailableNoticePrefix + " · " + trimmedSpokenReplyText
+        return prefix + " · " + trimmedSpokenReplyText
     }
 
     /// How long a failure notice stays in the status pill: long enough to read it (about fifteen

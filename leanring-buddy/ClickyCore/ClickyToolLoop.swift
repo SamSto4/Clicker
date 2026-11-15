@@ -35,7 +35,14 @@ nonisolated enum ClickyClaudeChatRequestBuilder {
     }
 
     /// The content of the current user message: every labeled image, then the user's words.
-    static func currentUserContentBlocks(images: [(data: Data, label: String)], userPrompt: String) -> [[String: Any]] {
+    /// `cacheControlOnLastBlock` (round 19) puts a cache breakpoint on the last block, the user's words,
+    /// so the tools, both system blocks, the history and the screenshots are cached together. It is
+    /// never put on an image block. Without it the blocks are exactly what they were.
+    static func currentUserContentBlocks(
+        images: [(data: Data, label: String)],
+        userPrompt: String,
+        cacheControlOnLastBlock: Bool = false
+    ) -> [[String: Any]] {
         var contentBlocks: [[String: Any]] = []
         for image in images {
             contentBlocks.append([
@@ -55,7 +62,24 @@ nonisolated enum ClickyClaudeChatRequestBuilder {
             "type": "text",
             "text": userPrompt
         ])
-        return contentBlocks
+        return cacheControlOnLastBlock ? addingCacheBreakpointToLastBlock(of: contentBlocks) : contentBlocks
+    }
+
+    /// The cache breakpoint (round 19): the key the API reads, the same value the static system block
+    /// carries (a 5-minute cache).
+    static let cacheBreakpointValue: [String: String] = ["type": "ephemeral"]
+
+    /// The same blocks with `cache_control` added to the last one, when it is a text block. Nothing
+    /// else about any block changes, so the bytes the API compares stay the same apart from the key.
+    /// An image as the last block (which the app never sends) or no blocks at all are left as they are.
+    static func addingCacheBreakpointToLastBlock(of contentBlocks: [[String: Any]]) -> [[String: Any]] {
+        guard var lastBlock = contentBlocks.last, (lastBlock["type"] as? String) == "text" else {
+            return contentBlocks
+        }
+        lastBlock["cache_control"] = cacheBreakpointValue
+        var blocksWithBreakpoint = contentBlocks
+        blocksWithBreakpoint[blocksWithBreakpoint.count - 1] = lastBlock
+        return blocksWithBreakpoint
     }
 
     /// The conversation so far as plain text exchanges, then the current user message.
@@ -344,6 +368,22 @@ nonisolated struct ClickyToolLoopResult {
     let endedBecauseOfRequestLimit: Bool
     /// The last reply was cut at the output limit or declined, so its tool calls were not run.
     let endedBecauseTheReplyWasCutOrDeclined: Bool
+    /// Round 19: the reply's tool calls were run and the loop ended there, without sending their
+    /// results back for words (`shouldStopAfterRequest` said so). The caller says a fixed sentence;
+    /// the last reply's text, a progress note, is never used. A `var` with a default, so every way
+    /// of making a result that predates it still works.
+    var endedBecauseTheFinalRequestWasSkipped = false
+    /// Round 19: tool calls that ran together in a group (at-once actions of one reply), over the turn.
+    var parallelToolCallCount = 0
+}
+
+/// What the loop knows right after it has run one reply's tool calls (round 19), for the decision to
+/// end the turn there: the request number, the reply (its stop reason and tool calls) and the results,
+/// in the order of the calls.
+nonisolated struct ClickyToolLoopRoundSummary {
+    let requestNumber: Int
+    let replyMessage: ClickyStreamedMessage
+    let toolResults: [ClickyFileToolResult]
 }
 
 extension ClickyToolLoopResult {
@@ -351,6 +391,10 @@ extension ClickyToolLoopResult {
     /// reply (out of requests, or a reply cut off or declined while it held a tool call), a fixed
     /// honest sentence. The progress note that came with an unanswered tool call is never used.
     var replyTextToFinish: String {
+        if endedBecauseTheFinalRequestWasSkipped {
+            // The caller has the fixed sentence; the text before the tool call was a progress note.
+            return ""
+        }
         if endedBecauseOfRequestLimit {
             return ClickyChangeSpokenSentences.ranOutOfSteps
         }
@@ -393,21 +437,56 @@ nonisolated enum ClickyToolLoop {
     /// in the app's build settings, and the main thread must never wait on ~/Documents). The loop
     /// sends at most `ClickyFileEditingLimits.maximumRequestsPerTurn` requests. It returns as soon
     /// as a reply does not ask for tools.
+    ///
+    /// `cacheFirstUserMessageFromRequest` (round 19): from that request number on, the current turn's
+    /// user message (the one with the screenshots, the last of `baseMessages`; never the first message
+    /// of a conversation with history) carries a cache breakpoint on its last block, so a later request
+    /// reads from the cache what an earlier one wrote. The key is added once, before that request, and
+    /// stays, so every later request only adds messages at the end. Nil (the default) never adds it,
+    /// and every request is exactly what it was in round 18.
+    ///
+    /// `shouldStopAfterRequest` (round 19) is asked right after a reply's tool calls have run; true ends
+    /// the loop there with `endedBecauseTheFinalRequestWasSkipped`, and the results are not sent back.
+    /// The default never stops, which is round 18's loop.
+    ///
+    /// `leadingToolCallsThatMayRunTogether` and `executeToolCallInGroup` (round 19, E): how many of a
+    /// reply's calls, from the first, may run at the same time, and how to run one of them. Two or more
+    /// run in a task group; their input goes in as JSON `Data` (a `[String: Any]` is not `Sendable`), the
+    /// results are put back in the calls' order, and the calls after the group run one by one as
+    /// before. The defaults run every call one by one, which is round 18's loop.
     static func run(
         baseMessages: [[String: Any]],
         buildRequestBody: ([[String: Any]]) -> [String: Any],
         executeToolCall: (String, [String: Any]) async -> ClickyFileToolResult,
-        sendRequest: ([String: Any], Int) async throws -> ClickyStreamedMessage
+        sendRequest: ([String: Any], Int) async throws -> ClickyStreamedMessage,
+        cacheFirstUserMessageFromRequest: Int? = nil,
+        shouldStopAfterRequest: (ClickyToolLoopRoundSummary) -> Bool = { _ in false },
+        leadingToolCallsThatMayRunTogether: ([ClickyToolUseBlock]) -> Int = { _ in 0 },
+        executeToolCallInGroup: (@Sendable (String, Data) async -> ClickyFileToolResult)? = nil
     ) async throws -> ClickyToolLoopResult {
         var messages = baseMessages
         var requestStats: [ClickyToolLoopRequestStats] = []
         var totalTokenUsage = ClickyClaudeTokenUsage()
         var toolRoundTripCount = 0
+        var parallelToolCallCount = 0
         let maximumRequestCount = ClickyFileEditingLimits.maximumRequestsPerTurn
+        // The current turn's user message is the last base message; the history pairs come before it.
+        let currentTurnUserMessageIndex = baseMessages.count - 1
+        var currentTurnUserMessageCarriesTheBreakpoint = false
 
         var lastMessage: ClickyStreamedMessage?
         for requestNumber in 1...maximumRequestCount {
             try Task.checkCancellation()
+
+            if let cacheFirstUserMessageFromRequest,
+               requestNumber >= cacheFirstUserMessageFromRequest,
+               !currentTurnUserMessageCarriesTheBreakpoint,
+               currentTurnUserMessageIndex >= 0,
+               (messages[currentTurnUserMessageIndex]["role"] as? String) == "user",
+               let currentTurnContentBlocks = messages[currentTurnUserMessageIndex]["content"] as? [[String: Any]] {
+                messages[currentTurnUserMessageIndex]["content"] = ClickyClaudeChatRequestBuilder.addingCacheBreakpointToLastBlock(of: currentTurnContentBlocks)
+                currentTurnUserMessageCarriesTheBreakpoint = true
+            }
 
             let requestBody = buildRequestBody(messages)
             let replyMessage = try await sendRequest(requestBody, requestNumber)
@@ -427,7 +506,7 @@ nonisolated enum ClickyToolLoop {
                 // An answer, or a reply cut at the output limit or declined. A cut reply may hold a
                 // half-written tool call, which is never run.
                 let wasCutOrDeclined = !replyMessage.toolUseBlocks.isEmpty
-                return ClickyToolLoopResult(
+                var answerResult = ClickyToolLoopResult(
                     finalMessage: replyMessage,
                     requestCount: requestNumber,
                     toolRoundTripCount: toolRoundTripCount,
@@ -436,6 +515,8 @@ nonisolated enum ClickyToolLoop {
                     endedBecauseOfRequestLimit: false,
                     endedBecauseTheReplyWasCutOrDeclined: wasCutOrDeclined
                 )
+                answerResult.parallelToolCallCount = parallelToolCallCount
+                return answerResult
             }
             if requestNumber == maximumRequestCount {
                 break
@@ -445,21 +526,73 @@ nonisolated enum ClickyToolLoop {
             // with their signature included), then one user message answers every tool call.
             messages.append(["role": "assistant", "content": replyMessage.contentBlocks])
             var userContentBlocks: [[String: Any]] = []
-            for toolUseBlock in replyMessage.toolUseBlocks {
-                if !toolUseBlock.inputWasValidJSON {
+            var toolResultsInOrder: [ClickyFileToolResult] = []
+            // Round 19 (E): the leading calls that may run together run first, in a group; their
+            // results wait here, by position, until their turn comes in the loop below.
+            var resultsOfTheGroupByIndex: [Int: ClickyFileToolResult] = [:]
+            if let executeToolCallInGroup {
+                let groupSize = min(leadingToolCallsThatMayRunTogether(replyMessage.toolUseBlocks), replyMessage.toolUseBlocks.count)
+                if groupSize >= 2 {
+                    let groupCalls: [(index: Int, toolName: String, inputData: Data)] = replyMessage.toolUseBlocks.prefix(groupSize).enumerated().map { index, toolUseBlock in
+                        (index, toolUseBlock.name, (try? JSONSerialization.data(withJSONObject: toolUseBlock.input)) ?? Data("{}".utf8))
+                    }
+                    resultsOfTheGroupByIndex = await withTaskGroup(of: (Int, ClickyFileToolResult).self) { group in
+                        for groupCall in groupCalls {
+                            group.addTask {
+                                (groupCall.index, await executeToolCallInGroup(groupCall.toolName, groupCall.inputData))
+                            }
+                        }
+                        var collectedResults: [Int: ClickyFileToolResult] = [:]
+                        for await (index, toolResult) in group {
+                            collectedResults[index] = toolResult
+                        }
+                        return collectedResults
+                    }
+                    parallelToolCallCount += groupSize
+                }
+            }
+            for (toolUseIndex, toolUseBlock) in replyMessage.toolUseBlocks.enumerated() {
+                if let resultOfTheGroup = resultsOfTheGroupByIndex[toolUseIndex] {
+                    toolResultsInOrder.append(resultOfTheGroup)
                     userContentBlocks.append(toolResultBlock(
                         toolUseIdentifier: toolUseBlock.identifier,
-                        resultText: invalidInputResultText(rawInputText: toolUseBlock.rawInputText),
+                        resultText: resultOfTheGroup.text,
+                        isError: resultOfTheGroup.isError
+                    ))
+                    continue
+                }
+                if !toolUseBlock.inputWasValidJSON {
+                    let invalidInputResult = ClickyFileToolResult.failure(invalidInputResultText(rawInputText: toolUseBlock.rawInputText))
+                    toolResultsInOrder.append(invalidInputResult)
+                    userContentBlocks.append(toolResultBlock(
+                        toolUseIdentifier: toolUseBlock.identifier,
+                        resultText: invalidInputResult.text,
                         isError: true
                     ))
                     continue
                 }
                 let toolResult = await executeToolCall(toolUseBlock.name, toolUseBlock.input)
+                toolResultsInOrder.append(toolResult)
                 userContentBlocks.append(toolResultBlock(
                     toolUseIdentifier: toolUseBlock.identifier,
                     resultText: toolResult.text,
                     isError: toolResult.isError
                 ))
+            }
+            // Round 19: the turn may end here, with the action done and a fixed sentence to say.
+            if shouldStopAfterRequest(ClickyToolLoopRoundSummary(requestNumber: requestNumber, replyMessage: replyMessage, toolResults: toolResultsInOrder)) {
+                var skippedResult = ClickyToolLoopResult(
+                    finalMessage: replyMessage,
+                    requestCount: requestNumber,
+                    toolRoundTripCount: toolRoundTripCount,
+                    requestStats: requestStats,
+                    totalTokenUsage: totalTokenUsage,
+                    endedBecauseOfRequestLimit: false,
+                    endedBecauseTheReplyWasCutOrDeclined: false
+                )
+                skippedResult.endedBecauseTheFinalRequestWasSkipped = true
+                skippedResult.parallelToolCallCount = parallelToolCallCount
+                return skippedResult
             }
             if requestNumber + 1 == maximumRequestCount {
                 userContentBlocks.append(["type": "text", "text": lastRoundHintText])
@@ -469,7 +602,7 @@ nonisolated enum ClickyToolLoop {
         }
 
         // The last request the loop may send still asked for tools: there is no reply to give.
-        return ClickyToolLoopResult(
+        var limitResult = ClickyToolLoopResult(
             finalMessage: lastMessage!,
             requestCount: maximumRequestCount,
             toolRoundTripCount: toolRoundTripCount,
@@ -478,6 +611,8 @@ nonisolated enum ClickyToolLoop {
             endedBecauseOfRequestLimit: true,
             endedBecauseTheReplyWasCutOrDeclined: false
         )
+        limitResult.parallelToolCallCount = parallelToolCallCount
+        return limitResult
     }
 
     private static func adding(_ usage: ClickyClaudeTokenUsage, to total: ClickyClaudeTokenUsage) -> ClickyClaudeTokenUsage {

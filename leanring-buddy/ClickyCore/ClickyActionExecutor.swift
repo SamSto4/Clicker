@@ -184,6 +184,34 @@ nonisolated final class ClickyActionToolTurnSession: @unchecked Sendable {
         }
     }
 
+    // MARK: - Calls that may run together (round 19, E)
+
+    /// True for a call that only opens something at once: `open_app`, `search_web`, `open_file`, and
+    /// `open_url` for a link that opens at once (a link that waits for a yes stays in order, for the
+    /// card). The orchestrator's amendment 4: timer calls never run together, so "swap my pasta timer for
+    /// a 5 minute one" cannot race and ids come out in order; reminders and shortcuts neither.
+    static func isParallelSafe(toolName: String, input: [String: Any]) -> Bool {
+        switch ClickyActionToolName(rawValue: toolName) {
+        case .openApp, .searchWeb, .openFile:
+            return true
+        case .openURL:
+            guard let rawLink = input["url"] as? String, case .openAtOnce = ClickyLinkRule.classify(rawLink) else {
+                return false
+            }
+            return true
+        case .setTimer, .cancelTimer, .createReminder, .listReminders, .listShortcuts, .runShortcut, nil:
+            return false
+        }
+    }
+
+    /// How many of the turn's places for opening something are still free. The loop runs together
+    /// only as many opening calls as there are places, so each of them is sure of one before it starts
+    /// (reserve, then run), and the rest run one by one after the group, in order.
+    var openedItemPlacesLeft: Int {
+        lock.lock(); defer { lock.unlock() }
+        return max(0, ClickyActionLimits.maximumOpenedItemsPerTurn - openedItemCountStorage)
+    }
+
     /// Takes one of the turn's three places for opening something. False when they are used up.
     private func reserveAnOpenedItem() -> Bool {
         lock.lock(); defer { lock.unlock() }

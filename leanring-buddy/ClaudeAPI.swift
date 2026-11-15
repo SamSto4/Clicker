@@ -225,10 +225,16 @@ class ClaudeAPI {
                 errorBodyChunks.append(line)
             }
             let errorBody = errorBodyChunks.joined(separator: "\n")
+            // Round 19: the body and the Worker's cap header travel with the error, so the turn can
+            // tell the daily spending cap from a rate limit.
             throw NSError(
                 domain: "ClaudeAPI",
                 code: httpResponse.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)"]
+                userInfo: [
+                    NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)",
+                    ClickyTurnFailureMessage.responseBodyUserInfoKey: errorBody,
+                    ClickyTurnFailureMessage.dailyCapHeaderUserInfoKey: httpResponse.value(forHTTPHeaderField: ClickyTurnFailureMessage.dailyCapHeaderName) ?? "",
+                ]
             )
         }
 
@@ -283,6 +289,9 @@ class ClaudeAPI {
         case replyTextChanged(accumulatedText: String, requestNumber: Int)
         /// A `tool_use` block started, so the text of this request was a progress note.
         case toolUseStarted(toolName: String, requestNumber: Int)
+        /// Round 19: an action tool call succeeded (it opened, started or stopped something, or queued
+        /// it for a yes). The kind and the result text decide the status pill's notice.
+        case actionToolSucceeded(kind: ClickyActionKind, resultText: String)
     }
 
     /// The same streaming chat request as `analyzeImageStreaming`, with the tools of this turn added
@@ -298,7 +307,11 @@ class ClaudeAPI {
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
         toolSession: ClickyTurnToolSession,
-        onProgress: @MainActor @Sendable (ToolLoopProgress) -> Void
+        cacheFirstUserMessageFromRequest: Int? = nil,
+        shouldStopAfterRequest: (ClickyToolLoopRoundSummary) -> Bool = { _ in false },
+        // Escaping because the calls that run together (round 19, E) report progress from inside a
+        // task group's closure, which outlives this call's frame as far as the compiler can tell.
+        onProgress: @escaping @MainActor @Sendable (ToolLoopProgress) -> Void
     ) async throws -> ClickyToolLoopResult {
         let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(
             staticText: staticSystemPrompt,
@@ -324,9 +337,15 @@ class ClaudeAPI {
                 // The file work (reading, listing, checking a proposal) and the waiting for the
                 // system (launching an app, EventKit) run off the main thread; the executor hops to
                 // the main actor only for what needs it.
-                await Task.detached(priority: .userInitiated) {
+                let toolResult = await Task.detached(priority: .userInitiated) {
                     await toolSession.execute(toolName: toolName, input: toolInput)
                 }.value
+                // Round 19: the status pill shows what happened the moment it happened, before the
+                // model has written a word about it.
+                if let succeededKind = ClickyActionNoticeText.kindOfSuccessfulResult(toolName: toolName, resultText: toolResult.text, isError: toolResult.isError) {
+                    onProgress(.actionToolSucceeded(kind: succeededKind, resultText: toolResult.text))
+                }
+                return toolResult
             },
             sendRequest: { requestBody, requestNumber in
                 try await self.streamOneRequestOfToolLoop(
@@ -335,6 +354,24 @@ class ClaudeAPI {
                     imageCount: images.count,
                     onProgress: onProgress
                 )
+            },
+            cacheFirstUserMessageFromRequest: cacheFirstUserMessageFromRequest,
+            shouldStopAfterRequest: shouldStopAfterRequest,
+            // Round 19 (E): calls that only open something at once run together (no more of them than
+            // the turn has places left), and their results go back in the calls' order.
+            leadingToolCallsThatMayRunTogether: { toolUseBlocks in
+                guard let actionSession = toolSession.actionSession else { return 0 }
+                return ClickyParallelToolCalls.leadingCallsThatMayRunTogether(toolUseBlocks, openedItemPlacesLeft: actionSession.openedItemPlacesLeft)
+            },
+            executeToolCallInGroup: { @Sendable toolName, toolInputData in
+                // The input crosses into the group as JSON data (a dictionary of `Any` is not
+                // `Sendable`) and is read back here.
+                let toolInput = ((try? JSONSerialization.jsonObject(with: toolInputData)) as? [String: Any]) ?? [:]
+                let toolResult = await toolSession.execute(toolName: toolName, input: toolInput)
+                if let succeededKind = ClickyActionNoticeText.kindOfSuccessfulResult(toolName: toolName, resultText: toolResult.text, isError: toolResult.isError) {
+                    await onProgress(.actionToolSucceeded(kind: succeededKind, resultText: toolResult.text))
+                }
+                return toolResult
             }
         )
     }
@@ -368,10 +405,16 @@ class ClaudeAPI {
                 errorBodyChunks.append(line)
             }
             let errorBody = errorBodyChunks.joined(separator: "\n")
+            // Round 19: the body and the Worker's cap header travel with the error, so the turn can
+            // tell the daily spending cap from a rate limit.
             throw NSError(
                 domain: "ClaudeAPI",
                 code: httpResponse.statusCode,
-                userInfo: [NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)"]
+                userInfo: [
+                    NSLocalizedDescriptionKey: "API Error (\(httpResponse.statusCode)): \(errorBody)",
+                    ClickyTurnFailureMessage.responseBodyUserInfoKey: errorBody,
+                    ClickyTurnFailureMessage.dailyCapHeaderUserInfoKey: httpResponse.value(forHTTPHeaderField: ClickyTurnFailureMessage.dailyCapHeaderName) ?? "",
+                ]
             )
         }
 
@@ -463,7 +506,11 @@ class ClaudeAPI {
             throw NSError(
                 domain: "ClaudeAPI",
                 code: (response as? HTTPURLResponse)?.statusCode ?? -1,
-                userInfo: [NSLocalizedDescriptionKey: "API Error: \(responseString)"]
+                userInfo: [
+                    NSLocalizedDescriptionKey: "API Error: \(responseString)",
+                    ClickyTurnFailureMessage.responseBodyUserInfoKey: responseString,
+                    ClickyTurnFailureMessage.dailyCapHeaderUserInfoKey: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: ClickyTurnFailureMessage.dailyCapHeaderName) ?? "",
+                ]
             )
         }
 

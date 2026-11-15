@@ -115,7 +115,8 @@ nonisolated enum ClickyActionToolDefinitions {
             ],
             [
                 "name": ClickyActionToolName.openFile.rawValue,
-                "description": "open a file from the folders the user lets you edit, in their editor (at a line when given) or its usual app. reveal_in_finder shows it selected in finder instead. never runs apps, installers or scripts.",
+                // Round 19 added the last sentence, with find_file.
+                "description": "open a file from the folders the user lets you edit, in their editor (at a line when given) or its usual app. reveal_in_finder shows it selected in finder instead. never runs apps, installers or scripts. if you know only the file's name, call find_file first.",
                 "input_schema": [
                     "type": "object",
                     "properties": [
@@ -209,6 +210,23 @@ nonisolated enum ClickyTurnToolDefinitions {
             tools.append(contentsOf: ClickyActionToolDefinitions.toolsArray())
         }
         return tools
+    }
+}
+
+// MARK: - Calls that run together (round 19, E)
+
+nonisolated enum ClickyParallelToolCalls {
+    /// How many of a reply's tool calls, from the first, run together: all of them when every call is
+    /// one that only opens something at once (`ClickyActionToolTurnSession.isParallelSafe`) and its input
+    /// was valid JSON, but no more than the places left for opening things; 0 (one by one, as in round
+    /// 18) for any other mix, and for fewer than two calls.
+    static func leadingCallsThatMayRunTogether(_ toolUseBlocks: [ClickyToolUseBlock], openedItemPlacesLeft: Int) -> Int {
+        guard toolUseBlocks.count >= 2,
+              toolUseBlocks.allSatisfy({ $0.inputWasValidJSON && ClickyActionToolTurnSession.isParallelSafe(toolName: $0.name, input: $0.input) }) else {
+            return 0
+        }
+        let groupSize = min(toolUseBlocks.count, openedItemPlacesLeft)
+        return groupSize >= 2 ? groupSize : 0
     }
 }
 

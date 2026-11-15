@@ -352,6 +352,95 @@
         "maxToolCalls": 0,
         "queued": []
       }
+    },
+    {
+      "id": "act_15_open_safari_and_youtube",
+      "screenshot": "terminal_main.jpg",
+      "appName": "Terminal",
+      "bundleIdentifier": "com.apple.Terminal",
+      "windowTitle": "samsto — zsh — 110x34",
+      "userPrompt": "open safari and youtube",
+      "expect": {
+        "calls": [
+          {
+            "tool": "open_app",
+            "match": {
+              "name": "safari"
+            }
+          },
+          {
+            "tool": "open_url",
+            "match": {
+              "url": "youtube.com"
+            }
+          }
+        ],
+        "maxToolCalls": 2,
+        "executed": [
+          {
+            "call": "launchApplication",
+            "contains": "safari"
+          },
+          {
+            "call": "openLink",
+            "contains": "youtube.com"
+          }
+        ],
+        "forbiddenTools": [
+          "run_shortcut"
+        ],
+        "queued": []
+      }
+    },
+    {
+      "id": "act_16_open_file_by_name_only",
+      "area": "files",
+      "screenshot": "terminal_main.jpg",
+      "appName": "Terminal",
+      "bundleIdentifier": "com.apple.Terminal",
+      "windowTitle": "samsto — zsh — 110x34",
+      "editableFolders": [
+        "project"
+      ],
+      "files": [
+        {
+          "path": "project/README.md",
+          "content": "# project\n\nthe app's sources are under Sources.\n"
+        },
+        {
+          "path": "project/Sources/App/Views/Compose/Compose.swift",
+          "content": "import SwiftUI\n\nstruct ComposeView: View {\n    @State private var draftText = \"\"\n\n    var body: some View {\n        VStack {\n            TextField(\"message\", text: $draftText)\n            Button(\"Send\") {\n                send()\n            }\n        }\n    }\n\n    private func send() {\n        print(\"sending \\(draftText)\")\n    }\n}\n"
+        },
+        {
+          "path": "project/Sources/App/Views/Settings/SettingsView.swift",
+          "content": "import SwiftUI\n\nstruct SettingsView: View {\n    var body: some View { Text(\"settings\") }\n}\n"
+        }
+      ],
+      "userPrompt": "open compose.swift",
+      "expect": {
+        "calls": [
+          {
+            "tool": "open_file",
+            "match": {
+              "path": "Compose.swift"
+            }
+          }
+        ],
+        "maxToolCalls": 3,
+        "executed": [
+          {
+            "call": "openFile",
+            "contains": "Compose.swift"
+          }
+        ],
+        "forbiddenTools": [
+          "propose_edit",
+          "propose_new_file",
+          "propose_delete",
+          "run_shortcut"
+        ],
+        "queued": []
+      }
     }
   ]
 }

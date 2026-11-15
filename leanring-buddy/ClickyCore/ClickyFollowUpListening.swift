@@ -69,7 +69,13 @@ nonisolated struct ClickyFollowUpListeningStateMachine {
     private var floorSampleSum = 0.0
     private var floorSampleCount = 0
     private var aboveSpeechThresholdSince: TimeInterval?
-    private var speechStartedAt: TimeInterval = 0
+    /// When speech started (meaningful once `speechHasStarted`). Readable since round 19 for the
+    /// follow-up log; the machine's decisions do not change.
+    private(set) var speechStartedAt: TimeInterval = 0
+    /// Round 19, for the follow-up log only: true once the floor was measured over the full
+    /// measuring time (not when an immediate answer made it the fixed default), and once speech started.
+    private(set) var floorWasMeasured = false
+    private(set) var speechHasStarted = false
     private var lastLoudMomentAt: TimeInterval = 0
     private var latestLevel = 0.0
     /// True once the level dropped to quiet at any point after speech started. A person speaking
@@ -113,6 +119,7 @@ nonisolated struct ClickyFollowUpListeningStateMachine {
             if moment - windowOpenedAt >= ClickyFollowUpListeningConstants.noiseFloorMeasuringSeconds {
                 let measuredFloor = floorSampleSum / Double(max(1, floorSampleCount))
                 noiseFloor = min(measuredFloor, ClickyFollowUpListeningConstants.maximumMeasuredNoiseFloor)
+                floorWasMeasured = true
                 phase = .waitingForSpeech
                 return advanceWhileWaitingForSpeech(at: moment)
             }
@@ -154,6 +161,7 @@ nonisolated struct ClickyFollowUpListeningStateMachine {
             if let aboveSpeechThresholdSince, moment - aboveSpeechThresholdSince >= ClickyFollowUpListeningConstants.speechStartHoldSeconds {
                 phase = .speaking
                 speechStartedAt = aboveSpeechThresholdSince
+                speechHasStarted = true
                 lastLoudMomentAt = moment
                 return .keepListening
             }

@@ -12,6 +12,8 @@ nonisolated enum ClickyFileToolName: String, CaseIterable, Equatable {
     case proposeEdit = "propose_edit"
     case proposeNewFile = "propose_new_file"
     case proposeDelete = "propose_delete"
+    /// Round 19: last, so the five round 17 tools keep their place in the cached prefix.
+    case findFile = "find_file"
 }
 
 nonisolated enum ClickyFileToolDefinitions {
@@ -24,7 +26,9 @@ nonisolated enum ClickyFileToolDefinitions {
         return [
             [
                 "name": ClickyFileToolName.listFolder.rawValue,
-                "description": "List the files and folders inside a folder the user lets you edit, to find a file. Returns at most \(ClickyFileEditingLimits.maximumListedEntries) entries with their sizes.",
+                // Round 19 added the last sentence: listing folders to find a file by name took the
+                // model two extra requests in the live eval.
+                "description": "List the files and folders inside a folder the user lets you edit, to find a file. Returns at most \(ClickyFileEditingLimits.maximumListedEntries) entries with their sizes. To find a file by name, use find_file instead.",
                 "input_schema": [
                     "type": "object",
                     "properties": [
@@ -85,8 +89,38 @@ nonisolated enum ClickyFileToolDefinitions {
                     "required": ["path", "summary"],
                 ] as [String: Any],
             ],
+            [
+                // Round 19 (J): opening a file the model had to find took 4 to 5 requests because it
+                // listed folders twice first. This finds it by name in one call.
+                "name": ClickyFileToolName.findFile.rawValue,
+                "description": "Find files by name in the folders you may edit: a file name or a part of it, case-insensitive. Use it when you know the name but not the folder, instead of listing folders.",
+                "input_schema": [
+                    "type": "object",
+                    "properties": [
+                        "name": ["type": "string", "description": "The file name or a part of it, such as Compose.swift or compose."],
+                    ],
+                    "required": ["name"],
+                ] as [String: Any],
+            ],
         ]
     }
+}
+
+/// Round 19: how far `find_file` looks (the orchestrator's amendment 9 adds the folders it skips and
+/// the two stops; the round 19 review added dist, target, vendor, .next and out).
+nonisolated enum ClickyFindFileLimits {
+    static let maximumListedMatches = 20
+    /// Files at most this many folders below an allowed folder ("project/1/2/3/4/5/6/a.txt" is found,
+    /// one folder deeper is not).
+    static let maximumDepth = 6
+    /// The search stops after this many entries, or after this long, and says so.
+    static let maximumVisitedEntries = 5000
+    static let timeLimitSeconds: TimeInterval = 1
+    /// Folders of build output and installed packages: large, and never what the user means.
+    static let skippedFolderNames: Set<String> = [
+        "node_modules", ".build", "build", "DerivedData", "Pods", ".venv", "venv", "__pycache__",
+        "dist", "target", "vendor", ".next", "out",
+    ]
 }
 
 // MARK: - Reading a tool call
@@ -97,6 +131,7 @@ nonisolated enum ClickyFileToolCall: Equatable {
     case proposeEdit(path: String, oldText: String, newText: String, summary: String)
     case proposeNewFile(path: String, content: String, summary: String)
     case proposeDelete(path: String, summary: String)
+    case findFile(name: String)
 
     /// The tool call, or the short sentence that tells the model what was wrong with it.
     static func parse(toolName: String, input: [String: Any]) -> Result<ClickyFileToolCall, ClickyFileToolInputError> {
@@ -156,6 +191,11 @@ nonisolated enum ClickyFileToolCall: Equatable {
             switch requiredText("path") {
             case .failure(let error): return .failure(error)
             case .success(let path): return .success(.proposeDelete(path: path, summary: optionalSummary()))
+            }
+        case .findFile:
+            switch requiredText("name") {
+            case .failure(let error): return .failure(error)
+            case .success(let name): return .success(.findFile(name: name))
             }
         }
     }
@@ -253,7 +293,141 @@ nonisolated final class ClickyFileToolTurnSession: @unchecked Sendable {
             return proposeNewFile(rawPath: path, content: content, rawSummary: summary)
         case .proposeDelete(let path, let summary):
             return proposeDelete(rawPath: path, rawSummary: summary)
+        case .findFile(let name):
+            return findFile(rawName: name)
         }
+    }
+
+    // MARK: - find_file (round 19)
+
+    /// Files whose name holds the words, in every allowed folder, listed as the other tools write
+    /// paths ("project/Sources/Compose.swift"). Reads no file, so `bytesRead` is unchanged.
+    private func findFile(rawName: String) -> ClickyFileToolResult {
+        let search = Self.findFiles(
+            named: rawName,
+            policy: policy,
+            fileManager: fileManager,
+            maximumVisitedEntries: ClickyFindFileLimits.maximumVisitedEntries,
+            timeLimitSeconds: ClickyFindFileLimits.timeLimitSeconds
+        )
+        return Self.findFileResult(forName: rawName, search: search)
+    }
+
+    /// What one search found. `stopReason` is set when it stopped before it had looked everywhere.
+    struct FindFileSearch: Equatable {
+        enum StopReason: Equatable {
+            case tooManyEntries
+            case timeLimit
+        }
+        var displayPaths: [String] = []
+        var stopReason: StopReason?
+    }
+
+    /// Walks every allowed folder (files at most `ClickyFindFileLimits.maximumDepth` folders below it)
+    /// for file names that hold the name, case and accents ignored. Never looks inside a `.git` folder,
+    /// a protected name or a build or package folder, and every match goes through the path policy, so
+    /// a link that points out or a protected path is never listed. The limits are parameters so the
+    /// checks can reach them quickly.
+    ///
+    /// The walk is breadth first (round 19 review): the folders of one depth, in every allowed folder,
+    /// are all listed before any folder one deeper, so the entry budget is spent on the files nearest
+    /// the top first. Walking one folder to the bottom before the next had missed a file at the top of
+    /// the last folder of a 10,200-entry tree. Each folder is read entry by entry (only its own
+    /// entries; the walk queues the subfolders itself), so a huge folder still stops at the budget.
+    static func findFiles(
+        named rawName: String,
+        policy: ClickyFilePathPolicy,
+        fileManager: FileManager,
+        maximumVisitedEntries: Int,
+        timeLimitSeconds: TimeInterval
+    ) -> FindFileSearch {
+        var search = FindFileSearch()
+        let wantedName = ClickyActionText.normalizedForComparison((rawName.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).lastPathComponent)
+        guard !wantedName.isEmpty else {
+            return search
+        }
+        let searchDeadline = Date().addingTimeInterval(timeLimitSeconds)
+        var visitedEntryCount = 0
+        // The allowed folders are depth 0. A folder is listed when its depth is at most the maximum:
+        // its files are then at most that many folders below the allowed folder.
+        var foldersToListAtThisDepth = policy.allowedFolderURLs
+        var depthOfTheFoldersBeingListed = 0
+        walk: while !foldersToListAtThisDepth.isEmpty {
+            var foldersToListAtTheNextDepth: [URL] = []
+            for folderURL in foldersToListAtThisDepth {
+                guard let enumerator = fileManager.enumerator(
+                    at: folderURL,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                    options: [.skipsSubdirectoryDescendants]
+                ) else {
+                    continue
+                }
+                for case let entryURL as URL in enumerator {
+                    visitedEntryCount += 1
+                    if visitedEntryCount > maximumVisitedEntries {
+                        search.stopReason = .tooManyEntries
+                        break walk
+                    }
+                    if visitedEntryCount % 100 == 0, Date() > searchDeadline {
+                        search.stopReason = .timeLimit
+                        break walk
+                    }
+                    let entryName = entryURL.lastPathComponent
+                    let resourceValues = try? entryURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                    let isFolder = resourceValues?.isDirectory == true && resourceValues?.isSymbolicLink != true
+                    if ClickyProtectedFileNames.isGitFolderName(entryName) || ClickyProtectedFileNames.nameIsProtected(entryName) {
+                        continue
+                    }
+                    if isFolder {
+                        let folderIsWithinTheDepth = depthOfTheFoldersBeingListed + 1 <= ClickyFindFileLimits.maximumDepth
+                        if folderIsWithinTheDepth && !ClickyFindFileLimits.skippedFolderNames.contains(entryName) {
+                            foldersToListAtTheNextDepth.append(entryURL)
+                        }
+                        continue
+                    }
+                    guard ClickyActionText.normalizedForComparison(entryName).contains(wantedName) else {
+                        continue
+                    }
+                    guard case .success(let resolvedPath) = policy.resolve(rawPath: entryURL.path, intent: .existingItem) else {
+                        continue
+                    }
+                    search.displayPaths.append(displayPath(of: resolvedPath))
+                }
+            }
+            foldersToListAtThisDepth = foldersToListAtTheNextDepth
+            depthOfTheFoldersBeingListed += 1
+        }
+        search.displayPaths.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        return search
+    }
+
+    /// "found 2 files: website/README.md, docs/README.md", at most 20 paths and "and N more" past that,
+    /// or "no file named 'x' in the folders you may edit."; a search that stopped early says so.
+    static func findFileResult(forName rawName: String, search: FindFileSearch) -> ClickyFileToolResult {
+        let shownName = ClickyActionText.oneLine(rawName, maximumCharacters: 60).replacingOccurrences(of: "'", with: "")
+        guard !shownName.isEmpty else {
+            return .failure("find_file needs a file name or a part of one.")
+        }
+        var resultText: String
+        if search.displayPaths.isEmpty {
+            resultText = "no file named '\(shownName)' in the folders you may edit."
+        } else {
+            let listedPaths = search.displayPaths.prefix(ClickyFindFileLimits.maximumListedMatches).joined(separator: ", ")
+            let fileCount = search.displayPaths.count
+            resultText = "found \(fileCount) \(fileCount == 1 ? "file" : "files"): \(listedPaths)"
+            if fileCount > ClickyFindFileLimits.maximumListedMatches {
+                resultText += ", and \(fileCount - ClickyFindFileLimits.maximumListedMatches) more"
+            }
+        }
+        switch search.stopReason {
+        case .tooManyEntries:
+            resultText += " (the search stopped after \(ClickyFindFileLimits.maximumVisitedEntries) entries; there may be more. ask for a longer name or list the folder.)"
+        case .timeLimit:
+            resultText += " (the search stopped after \(Int(ClickyFindFileLimits.timeLimitSeconds)) second; there may be more. ask for a longer name or list the folder.)"
+        case nil:
+            break
+        }
+        return .success(resultText)
     }
 
     // MARK: - list_folder
