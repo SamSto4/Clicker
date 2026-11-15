@@ -256,16 +256,27 @@ nonisolated struct ClickyVoiceList: Codable, Equatable, Sendable {
     /// Every name, category, label key and label value is cut to this many characters.
     static let maximumTextLength = 60
 
-    /// One line with no square brackets, at most 60 characters: line breaks, tabs and other control
-    /// characters become spaces, runs of spaces become one, and the ends are trimmed.
+    /// Invisible characters that change how text around them is shown, dropped from voice texts: the
+    /// direction marks, embeddings, overrides and isolates (a name could otherwise flip the text
+    /// after it), the byte order mark and the word joiner.
+    static let droppedInvisibleScalarValues: Set<UInt32> = [
+        0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0xFEFF, 0x2060,
+    ]
+
+    /// One line with no square brackets, at most 60 characters: line breaks, tabs and control
+    /// characters (general category Cc) become spaces, runs of spaces become one, and the ends are
+    /// trimmed. The direction controls and the byte order mark are dropped. Other format characters
+    /// stay: the zero-width joiner holds emoji sequences together and the zero-width non-joiner is
+    /// part of how Persian and other scripts are written (round 20 review: before, both became
+    /// spaces, so a family emoji fell apart).
     static func cleanedText(_ rawText: String) -> String {
         var cleanedScalars = String.UnicodeScalarView()
         var previousScalarWasSpace = false
         for scalar in rawText.unicodeScalars {
-            if scalar == "[" || scalar == "]" {
+            if scalar == "[" || scalar == "]" || droppedInvisibleScalarValues.contains(scalar.value) {
                 continue
             }
-            let isSpaceLike = CharacterSet.whitespacesAndNewlines.contains(scalar) || CharacterSet.controlCharacters.contains(scalar)
+            let isSpaceLike = CharacterSet.whitespacesAndNewlines.contains(scalar) || scalar.properties.generalCategory == .control
             if isSpaceLike {
                 if !previousScalarWasSpace {
                     cleanedScalars.append(" ")
@@ -349,10 +360,10 @@ nonisolated struct ClickyVoiceList: Codable, Equatable, Sendable {
             if firstVoice.groupOrder != secondVoice.groupOrder {
                 return firstVoice.groupOrder < secondVoice.groupOrder
             }
-            let firstLowercasedName = firstVoice.name.lowercased()
-            let secondLowercasedName = secondVoice.name.lowercased()
-            if firstLowercasedName != secondLowercasedName {
-                return firstLowercasedName < secondLowercasedName
+            // Finder's order (round 20 review): "Émile" sorts with the e's, not after "Zed".
+            let nameOrder = firstVoice.name.localizedStandardCompare(secondVoice.name)
+            if nameOrder != .orderedSame {
+                return nameOrder == .orderedAscending
             }
             return firstVoice.id < secondVoice.id
         }
