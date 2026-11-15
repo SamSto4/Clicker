@@ -255,10 +255,13 @@ nonisolated enum ClickyPromptAssembler {
 
         // Only after a switch of tab, window or app since the last exchange. The base prompt is
         // not touched (it is the cached block), so this per-turn block is where Clicky is told
-        // that the earlier messages were about another screen and not to remark on it.
+        // that the earlier messages were about another screen and not to remark on it. Round 21
+        // review: while a walkthrough is in progress the note lets a step name the app it happens
+        // in and say to switch to it.
         if let screenChangedNoteText = ClickyScreenChange.noteText(
             screenOfLastExchange: context.screenOfLastExchange,
-            screenNow: context.screenNow
+            screenNow: context.screenNow,
+            walkthroughIsInProgress: context.walkthroughPromptContext != nil
         ) {
             sectionTexts.append(screenChangedNoteText)
         }

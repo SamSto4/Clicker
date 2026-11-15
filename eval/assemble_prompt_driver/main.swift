@@ -1088,10 +1088,11 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     }
     // The worst cases of the cap: with marks on the screen in Xcode, both format skills and both app
     // skills come in together; with a scene on the screen as well, all five do. A third ordinary skill
-    // is still refused by the two-skill rule.
+    // is still refused by the two-skill rule. Since the round 21 review the cap counts the ordinary
+    // (app) skills only, as in round 20; the format skills come on top.
     let xcodeWorstCaseNames = round21SelectedNames("make it bigger", "com.apple.dt.Xcode", "Xcode", marksOnScreen: true)
-    let xcodeWorstCaseCharacters = loadedSkills.filter { xcodeWorstCaseNames.contains($0.skillName) }.reduce(0) { $0 + $1.bodyText.count }
-    check("round 21 skills: draw, card, xcode and coding_general fit together under the cap", Set(xcodeWorstCaseNames) == ["draw", "card", "xcode", "coding_general"] && xcodeWorstCaseCharacters < ClickySkillLibrary.maximumSkillBodyCharacterCountPerTurn, "\(xcodeWorstCaseNames) \(xcodeWorstCaseCharacters)")
+    let xcodeWorstCaseOrdinaryCharacters = loadedSkills.filter { xcodeWorstCaseNames.contains($0.skillName) && !$0.isAlwaysIncludedWhenSelected }.reduce(0) { $0 + $1.bodyText.count }
+    check("round 21 skills: draw, card, xcode and coding_general come in together; the two app skills fit round 20's cap on their own", Set(xcodeWorstCaseNames) == ["draw", "card", "xcode", "coding_general"] && xcodeWorstCaseOrdinaryCharacters <= ClickySkillLibrary.maximumOrdinarySkillBodyCharacterCountPerTurn, "\(xcodeWorstCaseNames) \(xcodeWorstCaseOrdinaryCharacters)")
     let xcodeSceneWorstCaseNames = round21SelectedNames("make it bigger", "com.apple.dt.Xcode", "Xcode", marksOnScreen: true, sceneOnScreen: true)
     check("round 21 skills: with a scene on screen too, all five fit", Set(xcodeSceneWorstCaseNames) == ["draw", "card", "scene", "xcode", "coding_general"], "\(xcodeSceneWorstCaseNames)")
     check("round 21 skills: a third ordinary skill is still refused", round21SelectedNames("swiftui build failed in xcode terminal", "com.apple.dt.Xcode", "Xcode", marksOnScreen: true).filter { !["draw", "card", "scene"].contains($0) }.count == 2)

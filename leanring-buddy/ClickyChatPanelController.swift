@@ -96,6 +96,18 @@ final class ClickyChatPanelController {
     /// can hide while the panel is up and come back after.
     var openStateChangedHandler: ((Bool) -> Void)?
 
+    /// Round 21 review: where the panel is on the screen while it is open (global AppKit
+    /// coordinates), nil while it is closed. It is the frame the window was last asked to have, where
+    /// its open or resize animation ends. A spotlight cuts it out of its shade, because the panel sits
+    /// below the overlay the shade is drawn in.
+    var frameOnScreen: CGRect? {
+        isOpen ? lastRequestedPanelFrame : nil
+    }
+
+    /// Round 21 review: called when the panel opens, closes or changes its frame, so a spotlight on
+    /// the screen can cut the panel out of its shade again.
+    var frameOnScreenChangedHandler: (() -> Void)?
+
     /// True while the "ask clicky…" text field has the keyboard (round 18). Follow-up listening does
     /// not open while the user is typing, so the microphone and the keyboard are never both in use.
     var isChatTextFieldFirstResponder: Bool {
@@ -217,6 +229,7 @@ final class ClickyChatPanelController {
         }
         observeChangeCardWhileOpen()
         openStateChangedHandler?(true)
+        frameOnScreenChangedHandler?()
     }
 
     // MARK: - A change waiting for the user's answer (round 17)
@@ -312,6 +325,7 @@ final class ClickyChatPanelController {
 
         handKeyboardBackToPreviousApplication()
         openStateChangedHandler?(false)
+        frameOnScreenChangedHandler?()
     }
 
     /// The panel is non-activating, so the app the user was in normally never lost the keyboard.
@@ -402,6 +416,7 @@ final class ClickyChatPanelController {
         }
         guard newFrame != lastRequestedPanelFrame else { return }
         lastRequestedPanelFrame = newFrame
+        frameOnScreenChangedHandler?()
         if animated && panel.isVisible {
             NSAnimationContext.runAnimationGroup { animationContext in
                 animationContext.duration = DS.ChatPanel.resizeSeconds

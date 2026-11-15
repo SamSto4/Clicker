@@ -66,8 +66,8 @@ nonisolated struct ClickyFollowUpListeningStateMachine {
     private(set) var noiseFloor = ClickyFollowUpListeningConstants.defaultNoiseFloor
 
     private var windowOpenedAt: TimeInterval = 0
-    /// With no speech within this long of the window opening, it gives up. Round 21: 45 seconds while
-    /// a walkthrough is in progress (the user is doing the step), else the usual 6.
+    /// With no speech within this long of the window opening, it gives up. Round 21: 45 seconds right
+    /// after a reply that gave a walkthrough step (the user is doing the step), else the usual 6.
     private var noSpeechGiveUpSeconds = ClickyFollowUpListeningConstants.noSpeechGiveUpSeconds
     private var floorSampleSum = 0.0
     private var floorSampleCount = 0
@@ -88,7 +88,8 @@ nonisolated struct ClickyFollowUpListeningStateMachine {
     init() {}
 
     /// The microphone is on: the window is open from `moment`. `noSpeechGiveUpSeconds` is how long it
-    /// waits for speech to start (round 21: a parameter, so a walkthrough can wait 45 seconds).
+    /// waits for speech to start (round 21: a parameter, so the window after a walkthrough step can
+    /// wait 45 seconds).
     mutating func begin(at moment: TimeInterval, noSpeechGiveUpSeconds: TimeInterval = ClickyFollowUpListeningConstants.noSpeechGiveUpSeconds) {
         self = ClickyFollowUpListeningStateMachine()
         phase = .measuringNoiseFloor
@@ -205,6 +206,13 @@ nonisolated struct ClickyFollowUpTurnCounter: Equatable {
 
     /// The user pressed the ask keys or typed a message: the user is in charge again.
     mutating func recordTheUserTookOver() {
+        followUpTurnsInARow = 0
+    }
+
+    /// Round 21 review: a walkthrough step turn ("next", "back", "repeat") whose reply really gave the
+    /// step it asked for. The user is following the steps, so the count starts again; the cap still
+    /// holds for every follow-up turn that is not a step (step words never count towards it).
+    mutating func recordAWalkthroughStepWasTaken() {
         followUpTurnsInARow = 0
     }
 }

@@ -569,21 +569,42 @@ nonisolated enum ClickyDrawTagParser {
 
     /// Round 21: reads "plan|price;free|0;pro|12": rows split at ";", cells at "|". Each cell is
     /// trimmed and cut to 16 characters (an empty cell, such as a blank top-left corner, is kept).
-    /// A blank row (a trailing ";") is left out. Two to four columns, one to four rows, and every row
-    /// with the same number of cells, or the row is dropped: a table with a missing cell would put
-    /// the words under the wrong heading.
+    /// A blank row (a trailing ";") is left out. Two to four columns, and every row with the same
+    /// number of cells, or the row is dropped: a table with a missing cell would put the words under
+    /// the wrong heading.
+    ///
+    /// Two mistakes the model made in the round 21 tester's live run are read leniently instead of
+    /// dropping the row. A table of more than four rows keeps its first four (the header and three
+    /// more). A body that does not read as a table is read once more with the two separators swapped
+    /// (rows at "|", cells at ";"); a table read that way is kept the right way round, so the history
+    /// shows the model the separators it should use.
     static func tableRow(fromRowContent rowContent: String) -> ClickyExplanationCardRow? {
+        if let tableRows = tableRows(fromRowContent: rowContent, rowSeparator: ";", cellSeparator: "|") {
+            return .table(rows: tableRows)
+        }
+        if let tableRowsReadWithTheSeparatorsSwapped = tableRows(fromRowContent: rowContent, rowSeparator: "|", cellSeparator: ";") {
+            return .table(rows: tableRowsReadWithTheSeparatorsSwapped)
+        }
+        return nil
+    }
+
+    /// The cells of a table body read with these separators, or nil when they do not make a table.
+    private static func tableRows(fromRowContent rowContent: String, rowSeparator: String, cellSeparator: String) -> [[String]]? {
         var tableRows: [[String]] = []
-        for tableRowText in rowContent.components(separatedBy: ";") {
+        for tableRowText in rowContent.components(separatedBy: rowSeparator) {
             if tableRowText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 continue
             }
-            tableRows.append(tableRowText.components(separatedBy: "|").map { cellText in
+            // Rows past the fourth are left out before anything is checked, so the first four still
+            // make a table when a later row is longer, shorter or broken.
+            guard tableRows.count < ClickyExplanationCard.maximumTableRowCount else {
+                break
+            }
+            tableRows.append(tableRowText.components(separatedBy: cellSeparator).map { cellText in
                 singleLineText(cellText, cutToCharacterCount: ClickyExplanationCard.maximumTableCellCharacterCount)
             })
         }
         guard tableRows.count >= ClickyExplanationCard.minimumTableRowCount,
-              tableRows.count <= ClickyExplanationCard.maximumTableRowCount,
               let columnCount = tableRows.first?.count,
               columnCount >= ClickyExplanationCard.minimumTableColumnCount,
               columnCount <= ClickyExplanationCard.maximumTableColumnCount,
@@ -591,7 +612,7 @@ nonisolated enum ClickyDrawTagParser {
               tableRows.joined().contains(where: { !$0.isEmpty }) else {
             return nil
         }
-        return .table(rows: tableRows)
+        return tableRows
     }
 
     /// The parts of a row between its separators, each one line and cut to the limit. Empty parts

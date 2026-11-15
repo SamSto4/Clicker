@@ -118,6 +118,17 @@ final class ClickyStatusPillController {
     /// in the meantime.
     private var visibilityGeneration = 0
 
+    /// Round 21 review: the pill's frame on the screen while it shows (global AppKit coordinates),
+    /// nil while it is hidden or fading out. A spotlight cuts it out of its shade, because the pill
+    /// sits below the overlay the shade is drawn in.
+    var frameOnScreen: CGRect? {
+        shownPlacement?.frame
+    }
+
+    /// Round 21 review: called when the pill appears, goes or moves (not when only its words change
+    /// in place), so a spotlight on the screen can cut it out of its shade again.
+    var frameOnScreenChangedHandler: (() -> Void)?
+
     // MARK: - Showing and hiding
 
     /// Shows the pill with this content on this screen, fading it in if it was hidden. Called
@@ -147,9 +158,13 @@ final class ClickyStatusPillController {
         }
 
         visibilityGeneration += 1
+        let frameShownBefore = shownPlacement?.frame
         shownContent = content
         shownPlacement = placement
         shownAskingAccentColourHex = askingAccentColourHex
+        if frameShownBefore != placement.frame {
+            frameOnScreenChangedHandler?()
+        }
 
         let statusPillPanel = existingOrNewStatusPillPanel()
         statusPillPanel.setFrame(placement.frame, display: false)
@@ -179,6 +194,7 @@ final class ClickyStatusPillController {
         shownAskingAccentColourHex = nil
         visibilityGeneration += 1
         let generationWhenHidden = visibilityGeneration
+        frameOnScreenChangedHandler?()
 
         fadePill(toOpacity: 0)
 

@@ -32,13 +32,17 @@ nonisolated enum ClickyWalkthroughUserWord: String, CaseIterable, Equatable, Sen
 /// The exact transcripts that steer a walkthrough. Only these, whole, after the ends are trimmed and
 /// inner punctuation removed ("Okay, next." is "okay next"); anything longer ("next, and what does
 /// staged mean") is an ordinary question. The step turns' own transcripts are in the lists too, so
-/// typing what Clicky sends ("next step please") means the same.
+/// typing what Clicky sends ("next step please") means the same. "next one", "go to the next step"
+/// and "previous one" were added after the round 21 tester's live run, where people said them.
+/// ("go to the next step" starts like a quick command, "go to <app>", so it is first offered to the
+/// quick commands; "the" never names an app there, so it comes back here unchanged.)
 nonisolated enum ClickyWalkthroughWords {
     static let nextPhrases: Set<String> = [
         "next", "ok next", "okay next", "next step", "next step please", "next please", "done", "go on", "continue",
+        "next one", "go to the next step",
     ]
     static let backPhrases: Set<String> = [
-        "back", "go back", "previous", "previous step", "go back a step", "go back a step please",
+        "back", "go back", "previous", "previous step", "go back a step", "go back a step please", "previous one",
     ]
     static let repeatPhrases: Set<String> = [
         "repeat", "again", "say that again", "repeat that", "repeat that step", "repeat that step please",
@@ -209,13 +213,25 @@ nonisolated struct ClickyWalkthroughStepRequest: Equatable, Sendable {
     let requestedStepNumber: Int
 }
 
+/// What a finished reply did to the walkthrough (see `ClickyWalkthroughState.stepTaken`): the
+/// walkthrough to keep from now on and the step the reply gave, for the metrics line and for the
+/// follow-up window after it.
+nonisolated struct ClickyWalkthroughStepTaken: Equatable {
+    let walkthroughAfterReply: ClickyWalkthroughState
+    let stepNumber: Int
+    let stepCount: Int
+    /// True when the reply began a walkthrough (or replaced the one in progress with a new plan).
+    let beganAWalkthrough: Bool
+}
+
 /// The one walkthrough in progress. A value: the app keeps it, and replaces it with the state after a
 /// step the model gave.
 nonisolated struct ClickyWalkthroughState: Equatable {
     /// More steps than this is not a walkthrough but a manual.
     static let maximumStepCount = 12
-    /// The follow-up window waits this long for "next" while a walkthrough is in progress: the user is
-    /// doing the step, which takes longer than answering.
+    /// The follow-up window right after a reply that gave a step waits this long for "next": the user
+    /// is doing the step, which takes longer than answering. Every other window keeps the usual six
+    /// seconds (see `followUpWindowGiveUpSeconds`).
     static let followUpWindowSeconds: TimeInterval = 45
     /// Ten minutes without a step ends a walkthrough: the user has moved on.
     static let staleAfterSeconds: TimeInterval = 600
@@ -276,6 +292,85 @@ nonisolated struct ClickyWalkthroughState: Equatable {
         now.timeIntervalSince(lastStepAt) >= Self.staleAfterSeconds
     }
 
+    /// How long a follow-up window waits for speech (round 21 review): 45 seconds only right after a
+    /// reply that gave a step of the walkthrough still in progress, because the user is now doing
+    /// that step. Every other window, during a walkthrough or not, keeps the usual six seconds, so a
+    /// room that keeps talking cannot hold the microphone open for long.
+    static func followUpWindowGiveUpSeconds(afterAReplyThatTookAStep replyTookAStep: Bool, walkthroughIsInProgress: Bool) -> TimeInterval {
+        replyTookAStep && walkthroughIsInProgress ? followUpWindowSeconds : ClickyFollowUpListeningConstants.noSpeechGiveUpSeconds
+    }
+
+    /// Applies a finished reply's walkthrough tags. Returns nil when the reply took no step: the
+    /// walkthrough then stays exactly as it is (its ten minutes are not started again) and the next
+    /// follow-up window is the usual one. `walkthroughNow` is the walkthrough as the reply ends,
+    /// which a new chat or a stop may have changed since the turn started.
+    ///
+    /// - A step turn (`stepRequest` set: the user said "next", "back" or "repeat") takes a step only
+    ///   when its reply carries exactly the step it asked for, and only while the walkthrough is still
+    ///   the one the turn started with. A "repeat" gives the same step again and counts as a step.
+    /// - On any other turn a reply with `[STEP:1 of n]` and a plan, or with another step count,
+    ///   begins a walkthrough (replacing the one in progress), and a reply that gives another step of
+    ///   the walkthrough in progress moves it there (the user said "ok, what now?" instead of
+    ///   "next"). Round 21 review: a reply that only repeats the step the user is on, or the same plan
+    ///   from step 1 while the user is on step 1, takes no step, so answers that merely mention an
+    ///   abandoned walkthrough cannot keep it alive.
+    static func stepTaken(
+        byReplyTags replyTags: ClickyWalkthroughReplyTags,
+        stepRequest: ClickyWalkthroughStepRequest?,
+        walkthroughAtTurnStart: ClickyWalkthroughState?,
+        walkthroughNow: ClickyWalkthroughState?,
+        now: Date
+    ) -> ClickyWalkthroughStepTaken? {
+        guard let replyStepNumber = replyTags.stepNumber, let replyStepCount = replyTags.stepCount else {
+            return nil
+        }
+        if let stepRequest {
+            guard let walkthroughAtTurnStart,
+                  walkthroughNow == walkthroughAtTurnStart,
+                  replyStepNumber == stepRequest.requestedStepNumber else {
+                return nil
+            }
+            return ClickyWalkthroughStepTaken(
+                walkthroughAfterReply: walkthroughAtTurnStart.recordingStepGiven(replyStepNumber, at: now),
+                stepNumber: replyStepNumber,
+                stepCount: walkthroughAtTurnStart.stepCount,
+                beganAWalkthrough: false
+            )
+        }
+        let replyBeginsANewWalkthrough = walkthroughAtTurnStart == nil
+            || !replyTags.planTextsByStepNumber.isEmpty
+            || replyStepCount != walkthroughAtTurnStart?.stepCount
+        if replyBeginsANewWalkthrough, let begunWalkthrough = beginning(fromReplyTags: replyTags, now: now) {
+            let replyRepeatsTheWalkthroughTheUserIsOnStepOneOf = walkthroughAtTurnStart.map { walkthroughAtTurnStart in
+                walkthroughNow == walkthroughAtTurnStart
+                    && walkthroughAtTurnStart.currentStep == 1
+                    && walkthroughAtTurnStart.stepCount == begunWalkthrough.stepCount
+                    && walkthroughAtTurnStart.planTexts == begunWalkthrough.planTexts
+            } ?? false
+            if replyRepeatsTheWalkthroughTheUserIsOnStepOneOf {
+                return nil
+            }
+            return ClickyWalkthroughStepTaken(
+                walkthroughAfterReply: begunWalkthrough,
+                stepNumber: 1,
+                stepCount: begunWalkthrough.stepCount,
+                beganAWalkthrough: true
+            )
+        }
+        if let walkthroughAtTurnStart,
+           walkthroughNow == walkthroughAtTurnStart,
+           replyStepCount == walkthroughAtTurnStart.stepCount,
+           replyStepNumber != walkthroughAtTurnStart.currentStep {
+            return ClickyWalkthroughStepTaken(
+                walkthroughAfterReply: walkthroughAtTurnStart.recordingStepGiven(replyStepNumber, at: now),
+                stepNumber: replyStepNumber,
+                stepCount: replyStepCount,
+                beganAWalkthrough: false
+            )
+        }
+        return nil
+    }
+
     /// The per-turn prompt section while a walkthrough is in progress (after "marks on screen",
     /// before the profile). `userWord` is the step word of a step turn, or nil when the user asked
     /// something else: then the section says which step is current and not to move on.
@@ -301,6 +396,9 @@ nonisolated struct ClickyWalkthroughState: Equatable {
         case .finished?, .stopped?, nil:
             sectionLines.append("- the user is on step \(currentStep) of \(stepCount).")
             sectionLines.append("- the user asked something else; answer it in one or two sentences and do not give the next step unless they say next.")
+            // Round 21 review: the line above read as a ban on any walkthrough, so a new one was
+            // discouraged while an old one was in progress.
+            sectionLines.append("- if they ask for a different walkthrough, start it fresh with [STEP:1 of n] and its plan.")
         }
         return sectionLines.joined(separator: "\n")
     }

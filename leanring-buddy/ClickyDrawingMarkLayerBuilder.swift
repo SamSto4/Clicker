@@ -74,6 +74,9 @@ enum ClickyDrawingMarkLayerBuilder {
     static let spotlightRingOpacity: Float = 0.6
     /// A spotlight's shade fades in over this long (and fades out like any other mark).
     static let spotlightAppearSeconds: Double = 0.35
+    /// Round 21 review: the name of a spotlight's shade layer, so its path can be found and redrawn
+    /// when Clicky's chat panel or status pill appears, goes or moves.
+    static let spotlightShadeLayerName = "clickySpotlightShade"
 
     /// Core Animation layers accept extra values by key. Each stroke layer remembers when, as a
     /// share of the pen time, its reveal starts and ends.
@@ -509,11 +512,17 @@ enum ClickyDrawingMarkLayerBuilder {
     /// The shade and the ring are shape layers directly inside the spotlight layer, so the spotlight
     /// must appear through `animateSpotlightAppearance`, never `animateAppearance` (which would
     /// treat them as ink and reveal them along their length).
+    ///
+    /// Round 21 review: `cutOutFramesFromTopLeft` are the frames of Clicky's own chat panel and
+    /// status pill on this display (see `ClickySpotlightShade.cutOutFramesFromTopLeft`). They sit
+    /// below the overlay, so they are cut out of the shade as extra holes and stay readable. The ring
+    /// stays around the circle only. With none the layer is exactly round 21's.
     static func makeSpotlightLayer(
         center: ClickyDrawingPoint,
         radius: Double,
         displaySizeInPoints: CGSize,
-        backingScaleFactor: CGFloat
+        backingScaleFactor: CGFloat,
+        cutOutFramesFromTopLeft: [CGRect] = []
     ) -> CALayer {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -523,19 +532,17 @@ enum ClickyDrawingMarkLayerBuilder {
         spotlightLayer.frame = CGRect(origin: .zero, size: displaySizeInPoints)
 
         // The centre is measured from the display's top-left corner; a layer's y grows upwards.
-        let holeFrameInLayer = CGRect(
-            x: CGFloat(center.x - radius),
-            y: displaySizeInPoints.height - CGFloat(center.y + radius),
-            width: CGFloat(2 * radius),
-            height: CGFloat(2 * radius)
-        )
+        let holeFrameInLayer = ClickySpotlightShade.holeFrameInLayer(center: center, radius: radius, displaySizeInPoints: displaySizeInPoints)
 
-        let shadePath = CGMutablePath()
-        shadePath.addRect(spotlightLayer.bounds)
-        shadePath.addEllipse(in: holeFrameInLayer)
         let shadeLayer = CAShapeLayer()
+        shadeLayer.name = spotlightShadeLayerName
         shadeLayer.frame = spotlightLayer.bounds
-        shadeLayer.path = shadePath
+        shadeLayer.path = ClickySpotlightShade.shadePath(
+            displaySizeInPoints: displaySizeInPoints,
+            center: center,
+            radius: radius,
+            cutOutFramesFromTopLeft: cutOutFramesFromTopLeft
+        )
         shadeLayer.fillRule = .evenOdd
         shadeLayer.fillColor = NSColor(DS.Colors.overlayDrawingSpotlightShade).cgColor
         shadeLayer.strokeColor = nil
@@ -553,6 +560,31 @@ enum ClickyDrawingMarkLayerBuilder {
         spotlightLayer.addSublayer(ringLayer)
 
         return spotlightLayer
+    }
+
+    /// Round 21 review: redraws the shade of a spotlight already on the screen with new cut-outs,
+    /// when Clicky's chat panel or status pill has appeared, gone or moved. The path is replaced with
+    /// Core Animation's implicit animation turned off, so the holes jump to their new places instead
+    /// of morphing for a quarter second. The ring is left alone.
+    static func updateSpotlightShadeCutOuts(
+        of spotlightLayer: CALayer,
+        center: ClickyDrawingPoint,
+        radius: Double,
+        displaySizeInPoints: CGSize,
+        cutOutFramesFromTopLeft: [CGRect]
+    ) {
+        guard let shadeLayer = spotlightLayer.sublayers?.first(where: { $0.name == spotlightShadeLayerName }) as? CAShapeLayer else {
+            return
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shadeLayer.path = ClickySpotlightShade.shadePath(
+            displaySizeInPoints: displaySizeInPoints,
+            center: center,
+            radius: radius,
+            cutOutFramesFromTopLeft: cutOutFramesFromTopLeft
+        )
+        CATransaction.commit()
     }
 
     /// The shade (and its ring) fade in. The layer must already be in the layer tree.

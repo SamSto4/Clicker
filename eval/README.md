@@ -412,7 +412,9 @@ Round 21 moved the drawing, card and 3D scene formats out of the cached base pro
 
 The skills' keywords (whole words, any case; "3-d" and "3 d" read the same):
 
-- draw: draw, circle, mark, underline, highlight, box, annotate, label, point out, walk me through, walk through, walkthrough, talk me through, step by step, guide me through, show me how, spotlight, focus on, dim everything, erase, undo the mark, clear the marks, next step, go back a step. Also selected while marks are on the screen and while a walkthrough is in progress.
+- draw: draw, circle, mark, underline, highlight, box, annotate, label, point out, walk me through, walk through, walkthrough, talk me through, step by step, guide me through, show me how, spotlight, focus on, dim everything, erase, undo the mark, clear the marks, next step, go back a step, and since the round 21 review arrow, arrows, sticky, sticky note, callout, callouts, outline, cross out, strike through, markup, take me through, one step at a time. Also selected while marks are on the screen and while a walkthrough is in progress.
+
+Since the round 21 review the ordinary (app) skills keep round 20's cap of 2,500 characters, counted over them only; the format skills come on top and never change which app skills a turn selects.
 - card: explain, teach me, break down, break it down, compare, how does this work, how does it work, what's the difference, difference between, overview, summarize this, diagram, diagrams. Also selected while marks are on the screen.
 - scene: 3d, 3-d, three d, model of, inside of, the parts of, how it's built, cross section, exploded. Also selected while a 3D scene is on the screen.
 
@@ -422,7 +424,7 @@ New tags (the driver reports what the app's parsers make of them):
 |---|---|
 | `[DRAW:spotlight:x,y:radius]` | darkens everything but a circle; radius 20 to 2,000 screenshot pixels; one per reply (a second is dropped and uses up none of the 8); counts towards the 8 draw tags; fades on scroll. `finish` reports it as `{ "shapeKind": "spotlight", "x", "y", "center": { "x", "y" }, "radius" }` |
 | `[ROW:code:text]` | one line of code in monospace, cut to 90 characters, colons and pipes kept. `rowKind` "code", `partTexts` [the line] |
-| `[ROW:table:a\|b;c\|d]` | rows split at `;`, cells at `\|`; 2 to 4 columns, 1 to 4 rows (the first is the header), every row the same length or the row is dropped; cells cut to 16 characters; an empty cell is kept. `rowKind` "table", `partTexts` one per table row, `tableRows` the cells |
+| `[ROW:table:a\|b;c\|d]` | rows split at `;`, cells at `\|`; 2 to 4 columns, 1 to 4 rows (the first is the header), every row the same length or the row is dropped; cells cut to 16 characters; an empty cell is kept. Since the round 21 review a longer table keeps its first four rows, and a body that does not read as a table is read once more with the separators swapped (rows at `\|`, cells at `;`) and reported the right way round. `rowKind` "table", `partTexts` one per table row, `tableRows` the cells |
 | `[STEP:k of n]` | the first tag of a walkthrough reply; 1 <= k <= n <= 12; never spoken; kept first in history |
 | `[PLAN:k:text]` | in the step-one reply, one per step, text cut to 60 characters, k 1 to 12; never spoken; kept last in history |
 
@@ -448,12 +450,12 @@ While a walkthrough is in progress these transcripts steer it, whether spoken wi
 
 | word | transcripts | what happens |
 |---|---|---|
-| next | next, ok next, okay next, next step, next step please, next please, done, go on, continue | a step turn for the next step, sent to the model as "next step please"; after the last step no model call: "that was the last step." and the walkthrough ends |
-| back | back, go back, previous, previous step, go back a step, go back a step please | a step turn for the step before (step 1 stays step 1), sent as "go back a step please" |
+| next | next, ok next, okay next, next step, next step please, next please, done, go on, continue, next one, go to the next step | a step turn for the next step, sent to the model as "next step please"; after the last step no model call: "that was the last step." and the walkthrough ends |
+| back | back, go back, previous, previous step, go back a step, go back a step please, previous one | a step turn for the step before (step 1 stays step 1), sent as "go back a step please" |
 | repeat | repeat, again, say that again, repeat that, repeat that step, repeat that step please | a step turn for the same step, sent as "repeat that step please" |
 | stop | stop | ends the walkthrough; in the follow-up window silently (like every end phrase, which also ends it), typed or with the keys with "okay, i stopped the walkthrough." |
 
-With no walkthrough in progress every one of these is an ordinary transcript, exactly as in round 20. A step turn moves the walkthrough only when its reply carries the step that was asked for. While a walkthrough is in progress the follow-up window waits 45 seconds for speech (6 otherwise) and the cap of five follow-up turns in a row does not apply. Ten minutes without a step, Escape with nothing running (or closing the window), a new chat or continuing another chat end it.
+With no walkthrough in progress every one of these is an ordinary transcript, exactly as in round 20. "next one", "go to the next step" and "previous one" were added in the round 21 review. A step turn moves the walkthrough only when its reply carries the step that was asked for. Since the round 21 review the follow-up window waits 45 seconds for speech only right after a reply that gave a step (6 for every other window), and the cap of five follow-up turns in a row holds during a walkthrough too: step words never count towards it, and a step turn that got its step starts the count again. A reply to any other turn that only repeats the step the user is on takes no step. Ten minutes without a step, Escape with nothing running (or closing the window), a new chat or continuing another chat end it; the Escape that ends it also cancels a waiting change or closes the chat panel.
 
 ### Scenario classes for the tester
 

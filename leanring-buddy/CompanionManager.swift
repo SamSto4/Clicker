@@ -757,6 +757,7 @@ final class CompanionManager: ObservableObject {
         bindDictation()
         bindStatusPill()
         bindChatPanel()
+        bindSpotlightCutOuts()
         bindTimerAlerts()
         restoreTimersFromTheLastRun()
         overlayWindowManager.drawingOverlayController.drawingLifetimes = ClickyDrawingLifetimes.lifetimes(for: drawingLifetimeChoice)
@@ -1700,6 +1701,26 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    // MARK: - Spotlight cut-outs (round 21 review)
+
+    /// A spotlight's shade is drawn in the overlay, which sits above Clicky's own chat panel and
+    /// status pill, so it darkened them (a typed "spotlight the run button" put its own reply under
+    /// 45 percent black). The drawing overlay asks for their frames when it draws a spotlight, and
+    /// both tell it when they appear, go or move, so the cut-outs follow them.
+    private func bindSpotlightCutOuts() {
+        let drawingOverlayController = overlayWindowManager.drawingOverlayController
+        drawingOverlayController.clickyWindowFramesKeptOutOfSpotlightShade = { [weak self] in
+            guard let self else { return [] }
+            return [self.chatPanelController.frameOnScreen, self.statusPillController.frameOnScreen].compactMap { $0 }
+        }
+        chatPanelController.frameOnScreenChangedHandler = { [weak drawingOverlayController] in
+            drawingOverlayController?.refreshSpotlightCutOuts()
+        }
+        statusPillController.frameOnScreenChangedHandler = { [weak drawingOverlayController] in
+            drawingOverlayController?.refreshSpotlightCutOuts()
+        }
+    }
+
     // MARK: - Sharper pointing (round 21)
 
     /// Where the blue cursor should fly for a `[POINT:]` target: the model's point (in the display's
@@ -1714,10 +1735,14 @@ final class CompanionManager: ObservableObject {
     /// (`displayLocalFrame`). The primary display is the one whose frame starts at (0, 0).
     ///
     /// Only the role, frame and process of the one element under the point are read, off the main
-    /// thread, waiting at most a quarter second per read for an app that does not answer.
+    /// thread, waiting at most a quarter second per message for an app that does not answer: the hit
+    /// test and one read of the three together, about half a second at worst. When the hit test lands
+    /// on Clicky's own window it is asked again of `frontmostApplicationProcessIdentifier`, the app the
+    /// user was in when the turn started (round 21 review), about three quarters of a second at worst.
     private func snappedDisplayLocalPoint(
         forDisplayLocalPoint modelDisplayLocalPoint: CGPoint,
-        displayFrame: CGRect
+        displayFrame: CGRect,
+        frontmostApplicationProcessIdentifier: pid_t?
     ) async -> (point: CGPoint, outcome: ClickyPointSnapOutcome, distancePoints: Int) {
         guard WindowPositionManager.hasAccessibilityPermission() else {
             return (modelDisplayLocalPoint, .noPermission, 0)
@@ -1731,7 +1756,10 @@ final class CompanionManager: ObservableObject {
             primaryScreenHeight: Double(primaryScreenHeight)
         )
         let elementReadResult = await Task.detached(priority: .userInitiated) {
-            ClickyAccessibilityElementReader.elementUnderPoint(globalTopLeftPoint: globalTopLeftPoint)
+            ClickyAccessibilityElementReader.elementUnderPoint(
+                globalTopLeftPoint: globalTopLeftPoint,
+                frontmostApplicationProcessIdentifier: frontmostApplicationProcessIdentifier
+            )
         }.value
         switch elementReadResult {
         case .noElement:
@@ -1836,44 +1864,34 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Applies a finished reply's walkthrough tags to the walkthrough. Returns the step it took, for
-    /// the metrics line, or nil.
+    /// the metrics line and the 45-second follow-up window, or nil.
     ///
-    /// A step turn moves the walkthrough only when its reply carries exactly the step that was asked
-    /// for; otherwise nothing changes and the next "next" asks for the same step again. On any other
-    /// turn a reply with `[STEP:1 of n]` begins a walkthrough (a new plan replaces the one in
-    /// progress), and a reply that gives a step of the walkthrough in progress (the user said "ok,
-    /// what now?" instead of "next") moves it there, so it follows what the user was shown.
+    /// The rules are `ClickyWalkthroughState.stepTaken` (pure, so they are checked offline): a step
+    /// turn moves the walkthrough only when its reply carries exactly the step that was asked for;
+    /// otherwise nothing changes and the next "next" asks for the same step again. On any other turn
+    /// a reply with `[STEP:1 of n]` and a plan begins a walkthrough (a new plan replaces the one in
+    /// progress), and a reply that gives another step of the walkthrough in progress (the user said
+    /// "ok, what now?" instead of "next") moves it there. Round 21 review: a reply that only repeats
+    /// the step the user is on takes no step, so it no longer restarts the ten minutes.
     private func takeWalkthroughStep(
         from walkthroughReplyTags: ClickyWalkthroughReplyTags,
         stepRequest walkthroughStepRequest: ClickyWalkthroughStepRequest?,
         walkthroughAtTurnStart: ClickyWalkthroughState?
     ) -> (stepNumber: Int, stepCount: Int)? {
-        guard let replyStepNumber = walkthroughReplyTags.stepNumber, let replyStepCount = walkthroughReplyTags.stepCount else {
+        guard let walkthroughStepTaken = ClickyWalkthroughState.stepTaken(
+            byReplyTags: walkthroughReplyTags,
+            stepRequest: walkthroughStepRequest,
+            walkthroughAtTurnStart: walkthroughAtTurnStart,
+            walkthroughNow: walkthroughState,
+            now: Date()
+        ) else {
             return nil
         }
-        let now = Date()
-        if let walkthroughStepRequest {
-            guard let walkthroughAtTurnStart,
-                  walkthroughState == walkthroughAtTurnStart,
-                  replyStepNumber == walkthroughStepRequest.requestedStepNumber else {
-                return nil
-            }
-            walkthroughState = walkthroughAtTurnStart.recordingStepGiven(replyStepNumber, at: now)
-            return (replyStepNumber, walkthroughAtTurnStart.stepCount)
+        walkthroughState = walkthroughStepTaken.walkthroughAfterReply
+        if walkthroughStepTaken.beganAWalkthrough {
+            print("🧭 Clicky: walkthrough began with \(walkthroughStepTaken.stepCount) steps")
         }
-        let replyBeginsANewWalkthrough = walkthroughAtTurnStart == nil
-            || !walkthroughReplyTags.planTextsByStepNumber.isEmpty
-            || replyStepCount != walkthroughAtTurnStart?.stepCount
-        if replyBeginsANewWalkthrough, let begunWalkthrough = ClickyWalkthroughState.beginning(fromReplyTags: walkthroughReplyTags, now: now) {
-            walkthroughState = begunWalkthrough
-            print("🧭 Clicky: walkthrough began with \(begunWalkthrough.stepCount) steps")
-            return (1, begunWalkthrough.stepCount)
-        }
-        if let walkthroughAtTurnStart, walkthroughState == walkthroughAtTurnStart, replyStepCount == walkthroughAtTurnStart.stepCount {
-            walkthroughState = walkthroughAtTurnStart.recordingStepGiven(replyStepNumber, at: now)
-            return (replyStepNumber, replyStepCount)
-        }
-        return nil
+        return (walkthroughStepTaken.stepNumber, walkthroughStepTaken.stepCount)
     }
 
     /// "that was the last step." or "okay, i stopped the walkthrough.": one fixed sentence, said
@@ -2032,14 +2050,20 @@ final class CompanionManager: ObservableObject {
 
     /// A spoken reply has been heard to its end: after 0.3 s, and only if everything still holds, a
     /// window opens and Clicky listens for a follow-up.
-    private func scheduleFollowUpListeningWindowAfterSpokenReply() {
+    ///
+    /// `afterAReplyThatTookAWalkthroughStep` (round 21 review) is true only when this reply gave a
+    /// step of a walkthrough: that window waits 45 seconds while the user does the step. Every other
+    /// window, a walkthrough in progress or not, waits the usual six.
+    private func scheduleFollowUpListeningWindowAfterSpokenReply(afterAReplyThatTookAWalkthroughStep: Bool = false) {
         followUpWindowOpenTask?.cancel()
         followUpWindowOpenTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(ClickyFollowUpListeningConstants.secondsAfterReplyBeforeTheWindowOpens * 1_000_000_000))
             guard let self, !Task.isCancelled else { return }
-            // Round 21: while a walkthrough is in progress the cap on follow-up turns in a row does not
-            // apply: the user is saying "next" step after step, which is the point of the window.
-            guard self.followUpWindowMayOpenNow(ignoringTheChainCap: self.walkthroughStillInProgress() != nil) else {
+            // The cap on follow-up turns in a row holds during a walkthrough too (round 21 review: a
+            // room that keeps talking could otherwise keep an abandoned walkthrough going for ten
+            // minutes). Step words never count towards it, and a step turn that took its step starts
+            // the count again (`recordAWalkthroughStepWasTaken`), so following the steps is not capped.
+            guard self.followUpWindowMayOpenNow() else {
                 // Round 19: when the cap on follow-up turns in a row is the only thing that keeps
                 // the window shut, the follow-up log says so (a line with no measurements).
                 if self.followUpWindowMayOpenNow(ignoringTheChainCap: true) {
@@ -2051,7 +2075,7 @@ final class CompanionManager: ObservableObject {
                 }
                 return
             }
-            await self.openFollowUpListeningWindow()
+            await self.openFollowUpListeningWindow(afterAReplyThatTookAWalkthroughStep: afterAReplyThatTookAWalkthroughStep)
         }
     }
 
@@ -2082,7 +2106,7 @@ final class CompanionManager: ObservableObject {
             && hasSpeechRecognitionPermission
     }
 
-    private func openFollowUpListeningWindow() async {
+    private func openFollowUpListeningWindow(afterAReplyThatTookAWalkthroughStep: Bool) async {
         let windowIdentifier = UUID()
         followUpWindowIdentifier = windowIdentifier
         isFollowUpWindowOpen = true
@@ -2110,19 +2134,21 @@ final class CompanionManager: ObservableObject {
             return
         }
         print("🎙️ Clicky: follow-up window open")
-        listenForTheEndOfTheFollowUp(windowIdentifier: windowIdentifier)
+        listenForTheEndOfTheFollowUp(windowIdentifier: windowIdentifier, afterAReplyThatTookAWalkthroughStep: afterAReplyThatTookAWalkthroughStep)
     }
 
     /// Reads the microphone level every 50 ms and lets `ClickyFollowUpListeningStateMachine` decide
     /// when speech started and ended. At the end of speech the capture is finalised exactly like a
     /// key release; with nothing said in six seconds the window closes without a sound.
-    private func listenForTheEndOfTheFollowUp(windowIdentifier: UUID) {
+    private func listenForTheEndOfTheFollowUp(windowIdentifier: UUID, afterAReplyThatTookAWalkthroughStep: Bool) {
         followUpWindowListenTask?.cancel()
-        // Round 21: during a walkthrough the window waits 45 seconds for the user to do the step and
-        // say "next"; otherwise the usual 6.
-        let noSpeechGiveUpSeconds = walkthroughStillInProgress() != nil
-            ? ClickyWalkthroughState.followUpWindowSeconds
-            : ClickyFollowUpListeningConstants.noSpeechGiveUpSeconds
+        // Round 21: right after a reply that gave a walkthrough step the window waits 45 seconds for
+        // the user to do the step and say "next". Round 21 review: only then; every other window keeps
+        // the usual 6, during a walkthrough too.
+        let noSpeechGiveUpSeconds = ClickyWalkthroughState.followUpWindowGiveUpSeconds(
+            afterAReplyThatTookAStep: afterAReplyThatTookAWalkthroughStep,
+            walkthroughIsInProgress: walkthroughStillInProgress() != nil
+        )
         followUpWindowListenTask = Task { @MainActor [weak self] in
             var stateMachine = ClickyFollowUpListeningStateMachine()
             let windowOpenedUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
@@ -2748,10 +2774,11 @@ final class CompanionManager: ObservableObject {
                 print("⎋ Clicky: Escape stopped the voice sample")
                 return
             }
-            // Round 21: with nothing running, Escape ends a walkthrough in progress, and is used up by it.
-            if walkthroughState != nil {
+            // Round 21: with nothing running, Escape ends a walkthrough in progress (one past its ten
+            // minutes has already ended). Round 21 review: it is not used up by that, so the same press
+            // still does what round 17 gave it to do below: cancel a waiting change, or close the panel.
+            if walkthroughStillInProgress() != nil {
                 endWalkthrough(because: "escape")
-                return
             }
             // Nothing is running. A change that waits for an answer is cancelled first ("okay, i
             // left it." in the panel, not spoken) and the panel stays open; with no change waiting,
@@ -3135,6 +3162,9 @@ final class CompanionManager: ObservableObject {
             // Set once the reply's audio has started, and then ended without being cut off: the
             // condition for a follow-up window (round 18).
             var replyAudioWasStarted = false
+            // Round 21 review: set when this reply gave a walkthrough step. Only the follow-up window
+            // after such a reply waits 45 seconds for the user to do the step.
+            var replyTookAWalkthroughStep = false
             // Round 19: when the reply's audio began, so an Escape during it can be timed.
             var replyAudioStartedUptimeSeconds: TimeInterval?
             // The step running right now. It is cleared only when every step has finished, so a
@@ -3689,6 +3719,13 @@ final class CompanionManager: ObservableObject {
                 ) {
                     turnMetrics.walkthroughStep = takenWalkthroughStep.stepNumber
                     turnMetrics.walkthroughStepCount = takenWalkthroughStep.stepCount
+                    replyTookAWalkthroughStep = true
+                    // Round 21 review: a step turn ("next", "back", "repeat") that really got its step
+                    // starts the count of follow-up turns in a row again. Any other turn keeps counting,
+                    // so the cap still ends a chain of follow-up turns that are not steps.
+                    if walkthroughStepRequest != nil {
+                        followUpTurnCounter.recordAWalkthroughStepWasTaken()
+                    }
                 } else if let walkthroughStepRequest {
                     // The reply did not carry the step that was asked for: nothing moves, and the next
                     // "next" asks for the same step again.
@@ -3752,13 +3789,19 @@ final class CompanionManager: ObservableObject {
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(pointTarget.label ?? "element")\"")
 
                     // Round 21: the point may snap to the centre of the small control under it (read
-                    // through Accessibility, at most a quarter second twice). The read runs while the
-                    // speech audio is fetched; the flight starts as soon as it is done, from the
-                    // snapped point or, when nothing snaps, from the model's own point as before.
-                    // The turn's own task already holds the manager (which lives as long as the app),
-                    // so the snap task holds it the same way.
+                    // through Accessibility: at most a quarter second for the hit test and one for the
+                    // read, a third when the hit test lands on Clicky's own window and is asked again of
+                    // the app the user was in). The read runs while the speech audio is fetched; the
+                    // flight starts as soon as it is done, from the snapped point or, when nothing
+                    // snaps, from the model's own point as before. The turn's own task already holds
+                    // the manager (which lives as long as the app), so the snap task holds it the same way.
+                    let frontmostApplicationProcessIdentifierAtTurnStart = frontmostApplicationAtTurnStart?.processIdentifier
                     pointSnapTask = Task { @MainActor in
-                        let snapResult = await self.snappedDisplayLocalPoint(forDisplayLocalPoint: modelDisplayLocalPoint, displayFrame: displayFrame)
+                        let snapResult = await self.snappedDisplayLocalPoint(
+                            forDisplayLocalPoint: modelDisplayLocalPoint,
+                            displayFrame: displayFrame,
+                            frontmostApplicationProcessIdentifier: frontmostApplicationProcessIdentifierAtTurnStart
+                        )
                         // The turn may have been stopped (Escape, a new press) or replaced while the
                         // element was read: then the cursor is left where it is.
                         guard !Task.isCancelled,
@@ -3963,8 +4006,8 @@ final class CompanionManager: ObservableObject {
                     turnStepInProgress = nil
                 }
                 // Round 21: the snap ran while the speech was fetched (a typed turn waits for it here,
-                // at most about half a second), so its flight has started; its outcome goes on the
-                // metrics line.
+                // at most about half a second, three quarters when the hit test was asked again), so
+                // its flight has started; its outcome goes on the metrics line.
                 if let pointSnapTask {
                     let pointSnapResult = await pointSnapTask.value
                     turnMetrics.pointSnapOutcome = pointSnapResult.outcome
@@ -4011,9 +4054,10 @@ final class CompanionManager: ObservableObject {
 
             // Follow-up listening (round 18): a spoken reply that was heard to its end (not cut by
             // Escape, a new press or a failure) opens a window 0.3 s later, if everything still
-            // holds then. A typed turn, or a reply that was not spoken, never does.
+            // holds then. A typed turn, or a reply that was not spoken, never does. Round 21 review:
+            // the window after a reply that gave a walkthrough step waits 45 seconds, any other 6.
             if inputMode == .spoken, shouldSpeakThisReply, replyAudioWasStarted, !Task.isCancelled {
-                scheduleFollowUpListeningWindowAfterSpokenReply()
+                scheduleFollowUpListeningWindowAfterSpokenReply(afterAReplyThatTookAWalkthroughStep: replyTookAWalkthroughStep)
             }
         }
     }
