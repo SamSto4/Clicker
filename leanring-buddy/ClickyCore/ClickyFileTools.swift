@@ -107,16 +107,20 @@ nonisolated enum ClickyFileToolDefinitions {
 }
 
 /// Round 19: how far `find_file` looks (the orchestrator's amendment 9 adds the folders it skips and
-/// the two stops).
+/// the two stops; the round 19 review added dist, target, vendor, .next and out).
 nonisolated enum ClickyFindFileLimits {
     static let maximumListedMatches = 20
-    /// Files at most this many folders below an allowed folder.
+    /// Files at most this many folders below an allowed folder ("project/1/2/3/4/5/6/a.txt" is found,
+    /// one folder deeper is not).
     static let maximumDepth = 6
     /// The search stops after this many entries, or after this long, and says so.
     static let maximumVisitedEntries = 5000
     static let timeLimitSeconds: TimeInterval = 1
     /// Folders of build output and installed packages: large, and never what the user means.
-    static let skippedFolderNames: Set<String> = ["node_modules", ".build", "build", "DerivedData", "Pods", ".venv", "venv", "__pycache__"]
+    static let skippedFolderNames: Set<String> = [
+        "node_modules", ".build", "build", "DerivedData", "Pods", ".venv", "venv", "__pycache__",
+        "dist", "target", "vendor", ".next", "out",
+    ]
 }
 
 // MARK: - Reading a tool call
@@ -319,11 +323,17 @@ nonisolated final class ClickyFileToolTurnSession: @unchecked Sendable {
         var stopReason: StopReason?
     }
 
-    /// Walks every allowed folder (at most `ClickyFindFileLimits.maximumDepth` deep) for file names
-    /// that hold the name, case and accents ignored. Never looks inside a `.git` folder, a protected
-    /// name or a build or package folder, and every match goes through the path policy, so a link
-    /// that points out or a protected path is never listed. The limits are parameters so the checks
-    /// can reach them quickly.
+    /// Walks every allowed folder (files at most `ClickyFindFileLimits.maximumDepth` folders below it)
+    /// for file names that hold the name, case and accents ignored. Never looks inside a `.git` folder,
+    /// a protected name or a build or package folder, and every match goes through the path policy, so
+    /// a link that points out or a protected path is never listed. The limits are parameters so the
+    /// checks can reach them quickly.
+    ///
+    /// The walk is breadth first (round 19 review): the folders of one depth, in every allowed folder,
+    /// are all listed before any folder one deeper, so the entry budget is spent on the files nearest
+    /// the top first. Walking one folder to the bottom before the next had missed a file at the top of
+    /// the last folder of a 10,200-entry tree. Each folder is read entry by entry (only its own
+    /// entries; the walk queues the subfolders itself), so a huge folder still stops at the budget.
     static func findFiles(
         named rawName: String,
         policy: ClickyFilePathPolicy,
@@ -338,45 +348,54 @@ nonisolated final class ClickyFileToolTurnSession: @unchecked Sendable {
         }
         let searchDeadline = Date().addingTimeInterval(timeLimitSeconds)
         var visitedEntryCount = 0
-        folderLoop: for allowedFolderURL in policy.allowedFolderURLs {
-            guard let enumerator = fileManager.enumerator(
-                at: allowedFolderURL,
-                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-                options: []
-            ) else {
-                continue
-            }
-            for case let entryURL as URL in enumerator {
-                visitedEntryCount += 1
-                if visitedEntryCount > maximumVisitedEntries {
-                    search.stopReason = .tooManyEntries
-                    break folderLoop
-                }
-                if visitedEntryCount % 100 == 0, Date() > searchDeadline {
-                    search.stopReason = .timeLimit
-                    break folderLoop
-                }
-                let entryName = entryURL.lastPathComponent
-                let resourceValues = try? entryURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-                let isFolder = resourceValues?.isDirectory == true && resourceValues?.isSymbolicLink != true
-                if ClickyProtectedFileNames.isGitFolderName(entryName) || ClickyProtectedFileNames.nameIsProtected(entryName) {
-                    if isFolder { enumerator.skipDescendants() }
+        // The allowed folders are depth 0. A folder is listed when its depth is at most the maximum:
+        // its files are then at most that many folders below the allowed folder.
+        var foldersToListAtThisDepth = policy.allowedFolderURLs
+        var depthOfTheFoldersBeingListed = 0
+        walk: while !foldersToListAtThisDepth.isEmpty {
+            var foldersToListAtTheNextDepth: [URL] = []
+            for folderURL in foldersToListAtThisDepth {
+                guard let enumerator = fileManager.enumerator(
+                    at: folderURL,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                    options: [.skipsSubdirectoryDescendants]
+                ) else {
                     continue
                 }
-                if isFolder {
-                    if ClickyFindFileLimits.skippedFolderNames.contains(entryName) || enumerator.level >= ClickyFindFileLimits.maximumDepth {
-                        enumerator.skipDescendants()
+                for case let entryURL as URL in enumerator {
+                    visitedEntryCount += 1
+                    if visitedEntryCount > maximumVisitedEntries {
+                        search.stopReason = .tooManyEntries
+                        break walk
                     }
-                    continue
+                    if visitedEntryCount % 100 == 0, Date() > searchDeadline {
+                        search.stopReason = .timeLimit
+                        break walk
+                    }
+                    let entryName = entryURL.lastPathComponent
+                    let resourceValues = try? entryURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                    let isFolder = resourceValues?.isDirectory == true && resourceValues?.isSymbolicLink != true
+                    if ClickyProtectedFileNames.isGitFolderName(entryName) || ClickyProtectedFileNames.nameIsProtected(entryName) {
+                        continue
+                    }
+                    if isFolder {
+                        let folderIsWithinTheDepth = depthOfTheFoldersBeingListed + 1 <= ClickyFindFileLimits.maximumDepth
+                        if folderIsWithinTheDepth && !ClickyFindFileLimits.skippedFolderNames.contains(entryName) {
+                            foldersToListAtTheNextDepth.append(entryURL)
+                        }
+                        continue
+                    }
+                    guard ClickyActionText.normalizedForComparison(entryName).contains(wantedName) else {
+                        continue
+                    }
+                    guard case .success(let resolvedPath) = policy.resolve(rawPath: entryURL.path, intent: .existingItem) else {
+                        continue
+                    }
+                    search.displayPaths.append(displayPath(of: resolvedPath))
                 }
-                guard ClickyActionText.normalizedForComparison(entryName).contains(wantedName) else {
-                    continue
-                }
-                guard case .success(let resolvedPath) = policy.resolve(rawPath: entryURL.path, intent: .existingItem) else {
-                    continue
-                }
-                search.displayPaths.append(displayPath(of: resolvedPath))
             }
+            foldersToListAtThisDepth = foldersToListAtTheNextDepth
+            depthOfTheFoldersBeingListed += 1
         }
         search.displayPaths.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         return search

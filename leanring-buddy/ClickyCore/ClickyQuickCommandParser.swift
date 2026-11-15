@@ -140,24 +140,27 @@ nonisolated enum ClickyQuickCommandParser {
 
     // MARK: - Setting a timer
 
-    /// "set a timer for <duration>", "timer for <duration>", "set a <n> <unit> timer" and "<n> <unit>
-    /// timer", each with an optional "for <label>" or "called <label>" after it (amendment 6: the short
-    /// forms too, "set a 5 minute timer for tea"). The duration is a number (digits, or a word up to
-    /// sixty, or "a"/"an" for one) and a unit (seconds, minutes, hours), or "half an hour". A duration
-    /// with "and" ("an hour and a half") never gets here: the word rules send it to the model.
+    /// "set a timer for <duration>" (also "set timer for", "start a timer for", "start timer for"),
+    /// "timer for <duration>", "set a <n> <unit> timer" (also "start a"), and "<n> <unit> timer", each
+    /// with an optional "for <label>" or "called <label>" after it (amendment 6: the short forms too,
+    /// "set a 5 minute timer for tea"). The duration is a number (digits, or a word up to sixty, or
+    /// "a"/"an" for one) and a unit (seconds, minutes, hours), or "half an hour". A duration with "and"
+    /// ("an hour and a half") never gets here: the word rules send it to the model. The "start" and
+    /// article-less forms were added in the round 19 review: "start a timer for 10 minutes" is how many
+    /// people say it, and it went to the model.
+    static let timerForPrefixes = ["set a timer for ", "set timer for ", "start a timer for ", "start timer for ", "timer for "]
+    static let timerAdjectivePrefixes = ["set a ", "start a "]
+
     static func timerToSet(commandText rawCommandText: String) -> (durationSeconds: Int, label: String?)? {
         // "5-minute" and "twenty-five" are read as "5 minute" and "twenty five".
         let commandText = ClickyActionText.collapsedToOneLine(rawCommandText.replacingOccurrences(of: "-", with: " "))
         let restAfterTheWords: String
         let durationIsAnAdjective: Bool
-        if commandText.hasPrefix("set a timer for ") {
-            restAfterTheWords = String(commandText.dropFirst("set a timer for ".count))
+        if let timerForPrefix = timerForPrefixes.first(where: { commandText.hasPrefix($0) }) {
+            restAfterTheWords = String(commandText.dropFirst(timerForPrefix.count))
             durationIsAnAdjective = false
-        } else if commandText.hasPrefix("timer for ") {
-            restAfterTheWords = String(commandText.dropFirst("timer for ".count))
-            durationIsAnAdjective = false
-        } else if commandText.hasPrefix("set a ") {
-            restAfterTheWords = String(commandText.dropFirst("set a ".count))
+        } else if let adjectivePrefix = timerAdjectivePrefixes.first(where: { commandText.hasPrefix($0) }) {
+            restAfterTheWords = String(commandText.dropFirst(adjectivePrefix.count))
             durationIsAnAdjective = true
         } else {
             restAfterTheWords = commandText
@@ -237,13 +240,7 @@ nonisolated enum ClickyQuickCommandParser {
     /// timer" / "cancel the <label> timer" where the label names exactly one running timer (an exact
     /// label first, then one that holds the words). The timer's id comes back.
     static func timerToCancel(commandText: String, runningTimers: [ClickyTimer]) -> String? {
-        let labelPart: String
-        if commandText == "stop the timer" || commandText == "cancel the timer" {
-            labelPart = ""
-        } else if let stopRange = ["stop the ", "cancel the "].first(where: { commandText.hasPrefix($0) }), commandText.hasSuffix(" timer") {
-            labelPart = String(commandText.dropFirst(stopRange.count).dropLast(" timer".count))
-            guard !labelPart.isEmpty else { return nil }
-        } else {
+        guard let labelPart = labelPartOfAStopTimerCommand(commandText: commandText) else {
             return nil
         }
         if labelPart.isEmpty {
@@ -265,5 +262,22 @@ nonisolated enum ClickyQuickCommandParser {
             return normalizedLabel.contains(reference) || reference.contains(normalizedLabel)
         }
         return containingMatches.count == 1 ? containingMatches[0].identifier : nil
+    }
+
+    /// The words of the form alone: "" for "stop the timer" and "cancel the timer", the label words of
+    /// "stop the <label> timer" and "cancel the <label> timer", and nil for anything else. Which running
+    /// timer the label names is `timerToCancel`'s question. The skip gate uses this too (round 19
+    /// review), so a cancelled timer ends the turn without the model's words only after a plain stop
+    /// command.
+    static func labelPartOfAStopTimerCommand(commandText: String) -> String? {
+        if commandText == "stop the timer" || commandText == "cancel the timer" {
+            return ""
+        }
+        guard let stopPrefix = ["stop the ", "cancel the "].first(where: { commandText.hasPrefix($0) }),
+              commandText.hasSuffix(" timer") else {
+            return nil
+        }
+        let labelPart = String(commandText.dropFirst(stopPrefix.count).dropLast(" timer".count))
+        return labelPart.isEmpty ? nil : labelPart
     }
 }

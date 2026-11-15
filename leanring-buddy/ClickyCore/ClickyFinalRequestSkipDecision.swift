@@ -6,7 +6,10 @@ import Foundation
 // the time and about half of the cost. The fixed confirmation (`ClickyFixedConfirmationText`) is said
 // instead. Anything that needs reasoning still goes back to the model: an error, close names, a link or
 // shortcut that waits, a reminder, a lookup, a file tool, two calls, or words that are more than a plain
-// command. Foundation only.
+// command. The round 19 review added the last check: every word of the command must be accounted for
+// by the action itself, because "open slack summarize my inbox" passed the shared word rules and the
+// user heard only "opened slack." Not skipping is always safe: the model then says the words.
+// Foundation only.
 
 nonisolated enum ClickyFinalRequestSkipDecision {
     /// The kinds of action whose result a fixed sentence can say. `openLinkQueued` and
@@ -14,6 +17,16 @@ nonisolated enum ClickyFinalRequestSkipDecision {
     /// do `createReminder`, `listReminders` and `listShortcuts` (their replies need words the result
     /// does not give).
     static let kindsThatMaySkip: Set<ClickyActionKind> = [.openApp, .openLink, .searchWeb, .openFile, .revealFile, .setTimer, .cancelTimer]
+
+    /// Round 19 review: the words of a plain command that ask for the action itself, and the small words
+    /// around them. Every other word of the command must be found in the tool call's input (the app's
+    /// name, the link, the search words, the path), or the user asked for more than the action did. The
+    /// orchestrator's fixed list; a word missing from it only means the model says the words.
+    static let commandWordsTheActionAccountsFor: Set<String> = [
+        "open", "launch", "start", "switch", "go", "to", "show", "search", "google", "look", "up", "web",
+        "internet", "for", "set", "a", "an", "the", "my", "me", "please", "now", "app", "application",
+        "site", "website", "page", "repo", "repository", "file", "folder", "in", "finder", "on", "at", "called",
+    ]
 
     /// What the gate looks at, as plain values.
     struct Facts: Equatable {
@@ -33,22 +46,29 @@ nonisolated enum ClickyFinalRequestSkipDecision {
         let transcript: String
         /// The persona's assistant name, so "hey jarvis" counts as a polite prefix.
         let assistantName: String
+        /// Round 19 review: the input of the reply's one tool call as texts (`inputValueTexts(of:)`): its
+        /// string values, and its numbers written as text, ordered by key. Empty when the reply holds
+        /// no call or several (which never skip anyway). A `var` with a default so the facts can still
+        /// be made without it; then no word can be accounted for by the input, and only a timer's
+        /// grammar can let the turn skip.
+        var toolInputValueTexts: [String] = []
     }
 
     /// True only when all of these hold: it is the turn's first request; the reply stopped for a tool
     /// call and holds exactly one `tool_use`, with valid input, naming an action tool; its result is
     /// not an error; the action session recorded exactly one action, of a kind in `kindsThatMaySkip`;
-    /// no file tool was called in this turn; the fixed sentence can be built from the result; and the
+    /// no file tool was called in this turn; the fixed sentence can be built from the result; the
     /// transcript is a plain command by the shared word rules (`ClickySimpleCommandWords`: at most 12
     /// words, no joining, conditional or question word, no question mark but a trailing one after a
-    /// polite prefix).
+    /// polite prefix); and every word of that command is accounted for by the action
+    /// (`actionAccountsForEveryWord`).
     static func shouldSkip(_ facts: Facts) -> Bool {
         guard facts.requestNumber == 1,
               facts.stopReason == "tool_use",
               facts.toolUseNames.count == 1,
               facts.everyToolInputWasValidJSON,
               let toolName = facts.toolUseNames.first,
-              ClickyActionToolName(rawValue: toolName) != nil,
+              let actionToolName = ClickyActionToolName(rawValue: toolName),
               facts.toolResults.count == 1,
               let toolResult = facts.toolResults.first,
               !toolResult.isError,
@@ -61,7 +81,56 @@ nonisolated enum ClickyFinalRequestSkipDecision {
         guard ClickyFixedConfirmationText.sentenceWithoutAddress(forKind: recordedKind, resultText: toolResult.text) != nil else {
             return false
         }
-        return ClickySimpleCommandWords.plainCommandText(facts.transcript, assistantName: facts.assistantName) != nil
+        guard let plainCommandText = ClickySimpleCommandWords.plainCommandText(facts.transcript, assistantName: facts.assistantName) else {
+            return false
+        }
+        return actionAccountsForEveryWord(
+            ofPlainCommand: plainCommandText,
+            actionToolName: actionToolName,
+            toolInputValueTexts: facts.toolInputValueTexts
+        )
+    }
+
+    /// Round 19 review: true when the action accounts for every word of the plain command. The words
+    /// are `ClickySimpleCommandWords.tokens(of:)`; the command words in `commandWordsTheActionAccountsFor`
+    /// are dropped, and each word left must be a word of the tool call's input, split the same way
+    /// ("youtube.com" gives youtube and com, "samsto4/clicker" gives samsto4 and clicker). So "open
+    /// safari" or "launch chrome" (Google Chrome) skip, and "open safari check the weather" does not.
+    /// A command with no word left ("open the app") is accounted for: the fixed sentence still names
+    /// what was opened. A timer's words are not in its input ("10 minutes" is 600 seconds; a cancel may
+    /// name the timer by its id), so the closed timer grammar of quick commands reads the command instead.
+    static func actionAccountsForEveryWord(
+        ofPlainCommand plainCommandText: String,
+        actionToolName: ClickyActionToolName,
+        toolInputValueTexts: [String]
+    ) -> Bool {
+        switch actionToolName {
+        case .setTimer:
+            return ClickyQuickCommandParser.timerToSet(commandText: plainCommandText) != nil
+        case .cancelTimer:
+            // "stop the timer", "cancel the timer", "stop the <label> timer", "cancel the <label> timer".
+            return ClickyQuickCommandParser.labelPartOfAStopTimerCommand(commandText: plainCommandText) != nil
+        default:
+            let wordsOfTheInput = Set(toolInputValueTexts.flatMap { ClickySimpleCommandWords.tokens(of: $0) })
+            let wordsLeftToAccountFor = ClickySimpleCommandWords.tokens(of: plainCommandText)
+                .filter { !commandWordsTheActionAccountsFor.contains($0) }
+            return wordsLeftToAccountFor.allSatisfy { wordsOfTheInput.contains($0) }
+        }
+    }
+
+    /// A tool call's input as the texts the gate compares words with: every string value, and every
+    /// number written as text ("9" for a line), ordered by key. True and false (which JSON gives as a
+    /// number too) and nested values are left out: they are no words the user could have said.
+    static func inputValueTexts(of toolInput: [String: Any]) -> [String] {
+        toolInput.sorted { $0.key < $1.key }.compactMap { (_, value) -> String? in
+            if let text = value as? String {
+                return text
+            }
+            if let number = value as? NSNumber {
+                return CFGetTypeID(number) == CFBooleanGetTypeID() ? nil : number.stringValue
+            }
+            return nil
+        }
     }
 
     /// The gate for a reply the loop has just answered, with the turn's sessions.
@@ -83,7 +152,8 @@ nonisolated enum ClickyFinalRequestSkipDecision {
             recordedActionKinds: actionSession.actionKinds,
             fileToolCallCount: fileToolCallCount,
             transcript: transcript,
-            assistantName: assistantName
+            assistantName: assistantName,
+            toolInputValueTexts: replyMessage.toolUseBlocks.count == 1 ? inputValueTexts(of: replyMessage.toolUseBlocks[0].input) : []
         ))
     }
 }
