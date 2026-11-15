@@ -18,11 +18,23 @@ nonisolated enum ClickyFixedConfirmationText {
         guard let plainSentence = sentenceWithoutAddress(forKind: kind, resultText: resultText) else {
             return nil
         }
-        let userAddress = ClickyActionText.collapsedToOneLine(persona.userAddress.lowercased())
+        let userAddress = addressForTheSentence(persona.userAddress)
         guard !userAddress.isEmpty else {
             return plainSentence
         }
         return String(plainSentence.dropLast()) + ", " + userAddress + "."
+    }
+
+    /// The "call me" name as it goes before the sentence's full stop: lowercase, one line, and without
+    /// the punctuation and spaces it ends with, because the sentence brings its own full stop (round 19
+    /// review: "sir." gave "opened safari, sir.." and "sir!" gave "sir!."). An address that is only
+    /// punctuation is no address. Punctuation inside it stays ("mr. smith").
+    static func addressForTheSentence(_ rawUserAddress: String) -> String {
+        var userAddress = ClickyActionText.collapsedToOneLine(rawUserAddress.lowercased())
+        while let lastCharacter = userAddress.last, ".!?,;: ".contains(lastCharacter) {
+            userAddress.removeLast()
+        }
+        return userAddress
     }
 
     /// The table, without the form of address. Every sentence ends with one full stop.
