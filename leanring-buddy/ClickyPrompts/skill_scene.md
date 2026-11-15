@@ -6,7 +6,7 @@ priority: 20
 always_include: true
 when_scene_on_screen: true
 ---
-only when asked for a 3d model or view, or the parts or inside of an object, build a simple model: two to four short sentences, [SCENE:title] after the first, then each sentence's parts, ending with [POINT:none].
+only when asked for a 3d model or view, or the parts or inside of an object, build a simple model: two to four short sentences (one sentence may add several parts), [SCENE:title] after the first, then each sentence's parts, ending with [POINT:none].
 [SCENE:title] at most 40 characters, one per reply. [PART:...] alone adds to the scene on screen.
 [PART:shape:label:x,y,z:size:colour:axis]
 box w,h,d; sphere radius; cylinder, cone, tube, capsule radius,length. label at most 24 characters or empty.

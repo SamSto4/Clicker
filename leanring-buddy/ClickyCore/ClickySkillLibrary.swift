@@ -17,7 +17,8 @@ nonisolated struct ClickySkill: Equatable {
     let sourceFileName: String
     /// From the "always_include" front matter key. A skill like this teaches a reply format the
     /// user just asked for, so once it matches the turn it must not lose its place to app skills
-    /// that score higher: it is included first, and the other skills share the room that is left.
+    /// that score higher: it is included whatever its size, and (since the round 21 review) it uses
+    /// none of the ordinary skills' room, so it never pushes an app skill out either.
     var isAlwaysIncludedWhenSelected: Bool = false
     /// From the "when_marks_on_screen" front matter key. The skill also matches the turn while
     /// Clicky's drawing is on the screen, whatever the user says, so the drawing can be edited.
@@ -50,18 +51,17 @@ nonisolated enum ClickySkillLibrary {
     /// An app match is a strong signal, so it outweighs a keyword hit.
     static let applicationMatchScore = 100
     static let keywordMatchScore = 40
-    /// Caps how much skill text one turn adds. A skill that would exceed the cap is skipped whole,
-    /// never cut in half.
+    /// Caps how much text the ordinary skills (the app and topic skills) add to one turn. A skill
+    /// that would exceed the cap is skipped whole, never cut in half.
     ///
-    /// Round 21 raised it from 2,500, because the drawing, card and 3D scene formats moved out of
-    /// the cached base prompt into the three format skills (`skill_draw.md`, `skill_card.md`,
-    /// `skill_scene.md`), which are always included when they match and take their room first. A
-    /// format skill must never push an app skill out, so the cap has to hold the worst case: all
-    /// three format skills (a turn with marks and a 3D scene on the screen: about 2,100 + 1,250 +
-    /// 900 characters) and the largest pair of app skills (xcode and coding_general: about 2,500),
-    /// about 6,750 in all. The cap only limits: an ordinary turn adds exactly the skills it
-    /// matched, as before.
-    static let maximumSkillBodyCharacterCountPerTurn = 7000
+    /// Round 20's number, counted over the ordinary skills only. The always-included format skills
+    /// (`skill_draw.md`, `skill_card.md` and `skill_scene.md`, round 21) come on top and use none of
+    /// it, so a turn that selects no format skill selects exactly what round 20 selected, and a
+    /// format skill can never push an app skill out. Round 21 first had one shared cap of 7,000,
+    /// counted after the format skills' bodies: that let a plain question select more app skills
+    /// than round 20 did, and with all three format skills on the screen it still pushed an app
+    /// skill out (the round 21 review).
+    static let maximumOrdinarySkillBodyCharacterCountPerTurn = 2500
     /// The "name" of the skill file that teaches the [DRAW:...] reply format (round 21: the format
     /// lives in `skill_draw.md` again, together with the spotlight and the walkthrough steps).
     static let drawSkillName = "draw"
@@ -148,9 +148,10 @@ nonisolated enum ClickySkillLibrary {
     /// matches it (100 points) or the transcript contains one of its keywords (40 points).
     /// Ties go to higher priority, then to name order, so the result is deterministic.
     ///
-    /// A skill marked "always_include" that is eligible is taken first, whatever its rank and size,
-    /// and does not count towards `maxSkillCount`. The other skills then share what is left of the
-    /// character cap. With no such skill eligible, the selection is exactly what it always was.
+    /// A skill marked "always_include" that is eligible is taken whatever its rank and size, and
+    /// counts towards neither `maxSkillCount` nor the character cap: the other skills are chosen
+    /// exactly as they would be without it. With no such skill eligible, the selection is exactly
+    /// what it always was.
     static func selectSkills(from availableSkills: [ClickySkill], for selectionContext: ClickySkillSelectionContext, maxSkillCount: Int = 2) -> [ClickySkill] {
         // Keyword matching compares whole words, so both sides are reduced to space-separated words.
         // Padding with spaces stops "ide" from matching inside "video".
@@ -192,30 +193,25 @@ nonisolated enum ClickySkillLibrary {
             return firstScoredSkill.skill.skillName < secondScoredSkill.skill.skillName
         }
 
-        // Skills that must be included take their room first.
-        let alwaysIncludedSkillNames = Set(
-            rankedSkills.filter(\.skill.isAlwaysIncludedWhenSelected).map(\.skill.skillName)
-        )
-        var accumulatedBodyCharacterCount = rankedSkills
-            .filter(\.skill.isAlwaysIncludedWhenSelected)
-            .reduce(0) { characterCountSoFar, rankedSkill in characterCountSoFar + rankedSkill.skill.bodyText.count }
-
+        // Skills that must be included are taken whatever their size. Only the ordinary skills count
+        // towards the cap, so they are chosen exactly as they would be without the others.
         var selectedSkills: [ClickySkill] = []
         var selectedOrdinarySkillCount = 0
+        var accumulatedOrdinaryBodyCharacterCount = 0
         for rankedSkill in rankedSkills {
-            if alwaysIncludedSkillNames.contains(rankedSkill.skill.skillName) {
+            if rankedSkill.skill.isAlwaysIncludedWhenSelected {
                 selectedSkills.append(rankedSkill.skill)
                 continue
             }
             guard selectedOrdinarySkillCount < maxSkillCount else {
                 continue
             }
-            if accumulatedBodyCharacterCount + rankedSkill.skill.bodyText.count > maximumSkillBodyCharacterCountPerTurn {
+            if accumulatedOrdinaryBodyCharacterCount + rankedSkill.skill.bodyText.count > maximumOrdinarySkillBodyCharacterCountPerTurn {
                 continue
             }
             selectedSkills.append(rankedSkill.skill)
             selectedOrdinarySkillCount += 1
-            accumulatedBodyCharacterCount += rankedSkill.skill.bodyText.count
+            accumulatedOrdinaryBodyCharacterCount += rankedSkill.skill.bodyText.count
         }
         return selectedSkills
     }

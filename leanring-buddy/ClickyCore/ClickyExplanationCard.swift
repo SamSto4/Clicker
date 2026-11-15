@@ -89,7 +89,8 @@ nonisolated struct ClickyExplanationCard: Equatable {
     static let maximumCodeRowCharacterCount = 90
 
     /// Round 21: a table row. A cell is a word or two and is cut at the limit; a table outside the
-    /// counts (or with rows of different lengths) is dropped, not cut, like a flow with too many steps.
+    /// column counts (or with rows of different lengths) is dropped, not cut, like a flow with too
+    /// many steps. Since the round 21 review a table of more than four rows keeps its first four.
     static let maximumTableCellCharacterCount = 16
     static let minimumTableColumnCount = 2
     static let maximumTableColumnCount = 4
