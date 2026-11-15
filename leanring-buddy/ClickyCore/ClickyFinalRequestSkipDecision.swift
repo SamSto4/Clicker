@@ -26,6 +26,10 @@ nonisolated enum ClickyFinalRequestSkipDecision {
         "open", "launch", "start", "switch", "go", "to", "show", "search", "google", "look", "up", "web",
         "internet", "for", "set", "a", "an", "the", "my", "me", "please", "now", "app", "application",
         "site", "website", "page", "repo", "repository", "file", "folder", "in", "finder", "on", "at", "called",
+        // Added after the tester's re-run: everyday ways to say "open" ("pull up youtube", "fire up
+        // xcode", "bring up safari", "boot up slack", "run xcode", "hop into safari", "pop open notes"),
+        // "reveal" (reveal ... in finder) and "line" (open ... at line 9, whose number is in the input).
+        "pull", "fire", "bring", "boot", "run", "hop", "pop", "into", "line", "reveal",
     ]
 
     /// What the gate looks at, as plain values.
@@ -114,7 +118,17 @@ nonisolated enum ClickyFinalRequestSkipDecision {
             let wordsOfTheInput = Set(toolInputValueTexts.flatMap { ClickySimpleCommandWords.tokens(of: $0) })
             let wordsLeftToAccountFor = ClickySimpleCommandWords.tokens(of: plainCommandText)
                 .filter { !commandWordsTheActionAccountsFor.contains($0) }
-            return wordsLeftToAccountFor.allSatisfy { wordsOfTheInput.contains($0) }
+            if wordsLeftToAccountFor.allSatisfy({ wordsOfTheInput.contains($0) }) {
+                return true
+            }
+            // An app named by a known alias ("vs code", "system preferences"): the model writes the
+            // app's full name in the input, so the alias's words are not in it, but the alias names
+            // exactly that app.
+            guard actionToolName == .openApp,
+                  let aliasTarget = ClickyAppNameMatcher.aliases[wordsLeftToAccountFor.joined(separator: " ")] else {
+                return false
+            }
+            return toolInputValueTexts.contains { ClickyActionText.normalizedForComparison($0) == aliasTarget }
         }
     }
 
