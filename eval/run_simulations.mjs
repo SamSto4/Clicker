@@ -41,7 +41,9 @@ const DIMENSION_ORDER = ["pointing", "brevity", "coding", "notes"];
 // is tracked the same way: on its own, with --dimensions memories and --assembler.
 // Round 21b: agentcontext (does the user's standing context shape the answer without being recited, and
 // without breaking a rule?) is tracked the same way: on its own, with --dimensions agentcontext and --assembler.
-const EXTRA_DIMENSIONS = ["personalization", "visual", "context", "memories", "agentcontext"];
+// Round 21: explaining (walkthroughs, the spotlight, code and table rows, the accessibility snap) is tracked the same way:
+// on its own, with --dimensions explaining and --assembler.
+const EXTRA_DIMENSIONS = ["personalization", "visual", "context", "memories", "agentcontext", "explaining"];
 const ALL_DIMENSIONS = [...DIMENSION_ORDER, ...EXTRA_DIMENSIONS];
 
 const POINTING_BOX_TOLERANCE_PIXELS = 4;
@@ -173,6 +175,9 @@ function parseArguments(argumentList) {
   }
   if (options.dimensions.includes("context") && !options.assembler && !options.resummarize && !options.selfTest) {
     throw new Error("the context dimension needs --assembler: the spoken text it scores comes from the app's own turn finisher through the driver");
+  }
+  if (options.dimensions.includes("explaining") && !options.assembler && !options.resummarize && !options.selfTest) {
+    throw new Error("the explaining dimension needs --assembler");
   }
   if (options.dimensions.includes("memories") && !options.assembler && !options.resummarize && !options.selfTest) {
     throw new Error("the memories dimension needs --assembler: the prompt's memories section and the spoken text come from the app's own assembler and turn finisher through the driver");
@@ -1149,17 +1154,15 @@ export function markGeometryQuality(shape, elementRectangle) {
     case "callout":
       return pointIsInside(shape.target, paddedRectangle(elementRectangle, tolerances.calloutTargetPaddingPixels)) ? { quality: 1, reason: null } : { quality: 0, reason: "callout points outside the element" };
     case "spotlight": {
-      // Round 21: scored like a circle, but by the brief's rule for a spotlight: the target must be
-      // inside the radius (its centre inside the circle, and the whole element within the edge tolerance).
-      const elementCentre = { x: elementRectangle.x + elementRectangle.w / 2, y: elementRectangle.y + elementRectangle.h / 2 };
-      if (Math.hypot(shape.center.x - elementCentre.x, shape.center.y - elementCentre.y) > shape.radius) return { quality: 0, reason: "spotlight does not light the element" };
-      const elementCorners = [
-        { x: elementRectangle.x, y: elementRectangle.y }, { x: elementRectangle.x + elementRectangle.w, y: elementRectangle.y },
-        { x: elementRectangle.x, y: elementRectangle.y + elementRectangle.h }, { x: elementRectangle.x + elementRectangle.w, y: elementRectangle.y + elementRectangle.h },
-      ];
-      const farthestCornerDistance = Math.max(...elementCorners.map((corner) => Math.hypot(corner.x - shape.center.x, corner.y - shape.center.y)));
-      if (farthestCornerDistance > shape.radius + tolerances.spotlightEdgeTolerancePixels) return { quality: 0.6, reason: "spotlight cuts the element off" };
-      if (shape.radius > tolerances.spotlightMaximumRadiusTimesLongSide * Math.max(elementRectangle.w, elementRectangle.h) + tolerances.spotlightMaximumRadiusExtraPixels) return { quality: 0.6, reason: "spotlight far larger than the element" };
+      // Round 21 phase B (tester, rubric H2): the hole must hold the element, be centred on it and leave the rest dark.
+      const longSide = Math.max(elementRectangle.w, elementRectangle.h);
+      if (!pointIsInside(shape.center, paddedRectangle(elementRectangle, Math.max(8, 0.25 * longSide)))) return { quality: 0, reason: "spotlight is centred elsewhere" };
+      const maximumRadius = Math.max(4 * longSide, 150);
+      if (shape.radius < 0.5 * longSide) return { quality: 0, reason: "spotlight hole far too small" };
+      if (shape.radius > 3 * maximumRadius) return { quality: 0, reason: "spotlight hole so large nothing stays dark" };
+      const farthestCornerDistance = Math.max(...[[elementRectangle.x, elementRectangle.y], [elementRectangle.x + elementRectangle.w, elementRectangle.y], [elementRectangle.x, elementRectangle.y + elementRectangle.h], [elementRectangle.x + elementRectangle.w, elementRectangle.y + elementRectangle.h]].map(([cornerX, cornerY]) => Math.hypot(cornerX - shape.center.x, cornerY - shape.center.y)));
+      if (shape.radius + 4 < farthestCornerDistance) return { quality: 0.6, reason: "spotlight cuts the element off" };
+      if (shape.radius > maximumRadius) return { quality: 0.6, reason: "spotlight hole far larger than the element" };
       return { quality: 1, reason: null };
     }
     case "label":
@@ -1399,6 +1402,359 @@ export function scoreVisual(scenario, finishedTurn, rawReplyText, manifest) {
     },
   };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Round 21 phase B (tester): the EXPLAINING dimension. Written in the tester's copy of the harness.
+// Tracked separately, never in the weighted total, one call per scenario. See rubric.md section 3.
+// Kinds: walkthrough_start / walkthrough_step / walkthrough_question / walkthrough_none / point_snap are
+// scored here; mark / card / absent / edit go through scoreVisual (spotlight geometry = rubric H2);
+// control is scored here (the forbidden tag family differs per scenario); scene is a hand check.
+// ---------------------------------------------------------------------------------------------
+
+const EXPLAINING_RAW_TAG_PATTERN = /\[\s*([A-Za-z]+)\s*:([^\[\]]*)\]/g;
+const EXPLAINING_FORMAT_FAMILY = ["DRAW", "CARD", "ROW", "SCENE", "PART", "STEP", "PLAN"];
+const EXPLAINING_SPOKEN_FRAGMENT_PATTERN = /[\[\]]|\b(?:step|plan|draw|card|row|scene|part)\s*:|\b\d+\s+of\s+\d+\b/i;
+
+export function explainingRawTags(rawReplyText) {
+  return [...rawReplyText.matchAll(EXPLAINING_RAW_TAG_PATTERN)].map((match) => ({ name: match[1].toUpperCase(), body: match[2], index: match.index }));
+}
+
+function explainingSpoken(finishedTurn) {
+  const spoken = finishedTurn.spokenText ?? "";
+  const analysis = visualSpokenAnalysis(spoken);
+  const fragmentLeak = EXPLAINING_SPOKEN_FRAGMENT_PATTERN.test(spoken);
+  return { spoken, ...analysis, fragmentLeak, clean: analysis.clean && !fragmentLeak };
+}
+
+function explainingPositionedShapes(finishedTurn) {
+  return (finishedTurn.drawCommands ?? []).filter((command) => command.commandKind === "addMark")
+    .map((command) => ({ ...command.shape, screenNumber: command.screenNumber ?? 1 }))
+    .filter((shape) => !["card", "scene"].includes(shape.shapeKind));
+}
+
+function explainingBestQuality(scenario, shapes, targets, manifest) {
+  let best = { quality: 0, reason: shapes.length === 0 ? "no mark" : "on the wrong screen", shapeKind: null };
+  for (const shape of shapes) {
+    for (const target of targets) {
+      if (target.screen !== shape.screenNumber) continue;
+      const geometry = markGeometryQuality(shape, elementRectangleForTarget(scenario, target, manifest));
+      if (geometry.quality > best.quality) best = { ...geometry, shapeKind: shape.shapeKind };
+    }
+  }
+  return best;
+}
+
+function explainingMarkText(finishedTurn) {
+  return (finishedTurn.drawCommands ?? []).filter((command) => command.commandKind === "addMark").map((command) => command.shape.text ?? "").join(" ");
+}
+
+function explainingPlanStructure(rawTags, stepCount) {
+  const planTags = rawTags.filter((tag) => tag.name === "PLAN");
+  const parsed = planTags.map((tag) => {
+    const match = /^\s*(\d+)\s*:(.*)$/s.exec(tag.body);
+    return match ? { k: Number(match[1]), text: match[2].trim() } : { k: null, text: tag.body.trim() };
+  });
+  const inOrder = parsed.length === stepCount && parsed.every((plan, index) => plan.k === index + 1);
+  const shortEnough = parsed.every((plan) => plan.text.length <= 60);
+  return { planCount: parsed.length, inOrder, shortEnough, texts: parsed.map((plan) => plan.text) };
+}
+
+const EXPLAINING_HAND_CHECK_KINDS = ["scene"];
+
+export function checkExplainingPrecondition(scenario, assembled) {
+  const problems = [];
+  const preconditions = scenario.preconditions ?? {};
+  for (const needle of preconditions.dynamicBlockMustContain ?? []) {
+    if (!(assembled.dynamicSystemPromptText ?? "").includes(needle)) problems.push(`the dynamic block does not hold "${needle}"`);
+  }
+  if (preconditions.marksInPrompt !== undefined) {
+    const markCount = (assembled.drawingMarksOnScreen ?? []).length;
+    const lineCount = (assembled.drawingMarksOnScreenLineTexts ?? []).length;
+    if (markCount !== preconditions.marksInPrompt || lineCount !== preconditions.marksInPrompt) problems.push(`the prompt lists ${lineCount} marks, ${preconditions.marksInPrompt} expected`);
+    for (const line of assembled.drawingMarksOnScreenLineTexts ?? []) {
+      if (!(assembled.dynamicSystemPromptText ?? "").includes(line)) problems.push(`the dynamic block does not hold the mark line "${line}"`);
+    }
+  }
+  return { valid: problems.length === 0, problems };
+}
+
+export function scoreExplaining(scenario, finishedTurn, rawReplyText, manifest, assembled) {
+  const kind = scenario.kind;
+  const expectation = scenario.expect ?? {};
+  const rawTags = explainingRawTags(rawReplyText);
+  const tagCount = (name) => rawTags.filter((tag) => tag.name === name).length;
+  const familyTagCount = (name) => rawTags.filter((tag) => tag.name === name).length;
+  const spokenInfo = explainingSpoken(finishedTurn);
+  const shapes = explainingPositionedShapes(finishedTurn);
+  const ignoredTagCount = finishedTurn.ignoredDrawTagCount ?? 0;
+  const endsWithPointNone = replyEndsWithPointNone(rawReplyText, finishedTurn);
+  const validPointTag = finishedTurn.pointTarget !== null || /\[\s*POINT\s*:\s*none\s*\]/i.test(rawReplyText);
+  const wordsAndPlanText = `${spokenInfo.spoken} ${(finishedTurn.planTexts ?? []).join(" ")}`.toLowerCase();
+
+  const selectedSkillNames = assembled?.selectedSkillNames ?? null;
+  const expectedSkillNames = expectation.selectedSkillNames ?? null;
+  const skillRecord = {
+    selected_skill_names: selectedSkillNames, skill_body_character_count: assembled?.skillBodyCharacterCount ?? null,
+    expected_skill_names: expectedSkillNames,
+    skill_selection_as_expected: selectedSkillNames && expectedSkillNames ? JSON.stringify([...selectedSkillNames].sort()) === JSON.stringify([...expectedSkillNames].sort()) : null,
+  };
+
+  // Kinds the existing visual rubric scores unchanged (spotlight geometry is rubric H2 inside markGeometryQuality).
+  if (["mark", "card", "absent", "edit"].includes(kind)) {
+    const result = scoreVisual(scenario, finishedTurn, rawReplyText, manifest);
+    const detail = { ...result.detail, ...skillRecord };
+    let pass = result.score >= 80;
+    if (kind === "card") {
+      const rowKindsSensible = result.detail.checks?.row_kinds_sensible?.earned > 0;
+      const codeRows = (finishedTurn.drawCommands ?? []).filter((command) => command.commandKind === "addCardRow" && command.row.rowKind === "code");
+      const rawCodeLengths = rawTags.filter((tag) => tag.name === "ROW" && /^\s*code\s*:/i.test(tag.body)).map((tag) => tag.body.replace(/^\s*code\s*:/i, "").length);
+      const tableRows = (finishedTurn.drawCommands ?? []).filter((command) => command.commandKind === "addCardRow" && command.row.rowKind === "table");
+      const rawTableTags = rawTags.filter((tag) => tag.name === "ROW" && /^\s*table\s*:/i.test(tag.body));
+      detail.row_kinds_sensible_earned = rowKindsSensible;
+      detail.code_row_raw_lengths = rawCodeLengths;
+      detail.table_raw_tag_count = rawTableTags.length;
+      if (expectation.codeRowMustContain) {
+        detail.code_row_has_required_text = expectation.codeRowMustContain.every((needle) => codeRows.some((command) => command.row.partTexts[0].includes(needle)));
+        detail.code_row_within_max = rawCodeLengths.every((length) => length <= (expectation.codeRowMaxChars ?? 90));
+      }
+      if (expectation.tableColumns) {
+        const table = tableRows[0]?.row;
+        detail.table_shape = table ? { columns: table.tableRows[0].length, rows: table.tableRows.length } : null;
+        detail.table_cells_within_max = rawTableTags.every((tag) => tag.body.replace(/^\s*table\s*:/i, "").split(";").every((row) => row.split("|").every((cell) => cell.trim().length <= (expectation.tableCellMaxChars ?? 16))));
+      }
+      if (scenario.id.startsWith("ex_h14")) {
+        const droppedTable = rawTableTags.length > 0 && tableRows.length === 0;
+        detail.table_too_wide = droppedTable;
+        pass = result.score >= 65;
+      } else {
+        pass = rowKindsSensible && result.score >= 80;
+        if (expectation.codeRowMustContain) pass = pass && detail.code_row_has_required_text && detail.code_row_within_max;
+        if (expectation.tableColumns) pass = pass && Boolean(detail.table_shape) && detail.table_shape.columns === expectation.tableColumns && detail.table_shape.rows === expectation.tableRowsIncludingHeader && detail.table_cells_within_max;
+      }
+    }
+    if (kind === "absent") {
+      detail.any_tag_of_any_family = rawTags.filter((tag) => EXPLAINING_FORMAT_FAMILY.includes(tag.name)).length;
+      pass = result.score >= 90 && detail.any_tag_of_any_family === 0;
+    }
+    if (kind === "mark" && expectation.shape === "spotlight") {
+      detail.spotlight_count = shapes.filter((shape) => shape.shapeKind === "spotlight").length;
+      detail.spotlight_radii = shapes.filter((shape) => shape.shapeKind === "spotlight").map((shape) => shape.radius);
+      detail.raw_spotlight_tag_count = rawTags.filter((tag) => tag.name === "DRAW" && /^\s*spotlight\s*:/i.test(tag.body)).length;
+    }
+    return { score: result.score, outcome: result.outcome, detail: { ...detail, pass } };
+  }
+
+  if (kind === "scene") {
+    const sceneMarks = (finishedTurn.drawingMarksAfterReply ?? []).filter((mark) => mark.shape.shapeKind === "scene");
+    const partCount = sceneMarks[0]?.shape.partCount ?? 0;
+    const sentenceCount = spokenInfo.sentenceCount;
+    const checks = {
+      exactly_one_scene: sceneMarks.length === 1,
+      part_count_in_range: partCount >= (expectation.partCountRange?.[0] ?? 4) && partCount <= (expectation.partCountRange?.[1] ?? 12),
+      none_dropped: ignoredTagCount === 0,
+      spoken_two_to_four_sentences: sentenceCount >= (expectation.minSpokenSentences ?? 2) && sentenceCount <= (expectation.maxSpokenSentences ?? 4),
+      spoken_clean: spokenInfo.clean,
+      ends_with_point_none: endsWithPointNone,
+    };
+    const pass = Object.values(checks).every(Boolean);
+    return { score: null, outcome: "hand_check", detail: { kind, hand_check: true, pass, checks, part_count: partCount, ignored_draw_tag_count: ignoredTagCount, spoken_sentence_count: sentenceCount, ...skillRecord } };
+  }
+
+  const checks = {};
+  const award = (name, points, earned, note = null) => { checks[name] = { points, earned: Math.round(earned * 10) / 10, ...(note ? { note } : {}) }; };
+  let outcome = "ok";
+  const detailExtras = {};
+  const spokenWithin = (maxSentences, maxWords) => spokenInfo.sentenceCount >= 1 && spokenInfo.sentenceCount <= maxSentences && (maxWords === undefined || spokenInfo.wordCount <= maxWords);
+  const planTexts = finishedTurn.planTexts ?? [];
+
+  if (kind === "walkthrough_start") {
+    const stepTags = rawTags.filter((tag) => tag.name === "STEP");
+    const firstTag = rawTags[0];
+    const stepNumber = finishedTurn.walkthroughStep;
+    const stepCount = finishedTurn.walkthroughStepCount;
+    const range = expectation.stepCountRange ?? [1, 12];
+    const forbiddenHit = (expectation.forbiddenEverywhere ?? []).filter((word) => wordsAndPlanText.includes(word));
+    const extraFamilyTags = rawTags.filter((tag) => ["CARD", "ROW", "SCENE", "PART", "PROFILE", "NOTE"].includes(tag.name));
+    detailExtras.step = stepNumber; detailExtras.step_count = stepCount; detailExtras.plan_count = planTexts.length; detailExtras.mark_count = shapes.length;
+
+    if (expectation.optionalWalkthrough) {
+      // res_03: no format skill is expected, so either nothing at all, or a fully valid walkthrough.
+      const formatTags = rawTags.filter((tag) => ["DRAW", "CARD", "SCENE", "PART", "STEP", "PLAN"].includes(tag.name));
+      const plan = explainingPlanStructure(rawTags, stepCount ?? 0);
+      const fullyValidWalkthrough = stepTags.length === 1 && stepNumber === 1 && stepCount !== null && stepCount >= range[0] && stepCount <= range[1] && plan.inOrder && plan.shortEnough && ignoredTagCount === 0 && firstTag?.name === "STEP";
+      award("no_format_tag_or_a_valid_walkthrough", 60, formatTags.length === 0 || fullyValidWalkthrough ? 60 : 0, formatTags.length === 0 ? "no format tag" : fullyValidWalkthrough ? "a valid walkthrough anyway" : `a malformed format reply: ${formatTags.map((tag) => tag.name).join(",")}`);
+      award("spoken_at_most_two_sentences", 20, spokenInfo.sentenceCount <= 2 ? 20 : 0);
+      award("clean_and_valid_point_tag", 20, spokenInfo.clean && validPointTag ? 20 : 0);
+      detailExtras.valid_walkthrough_without_keyword = fullyValidWalkthrough;
+      detailExtras.format_tag_names = formatTags.map((tag) => tag.name);
+      if (formatTags.length > 0 && !fullyValidWalkthrough) outcome = "bad_format_without_skill";
+      else if (formatTags.length === 0) outcome = "no_walkthrough";
+    } else if (expectation.endStateScreen) {
+      const acknowledged = (expectation.acknowledgementPatterns ?? []).some((pattern) => spokenInfo.spoken.toLowerCase().includes(pattern));
+      const stepValidOrAbsent = stepTags.length === 0 || (stepTags.length === 1 && stepNumber === 1 && stepCount !== null && stepCount >= 1);
+      award("acknowledges_the_finished_build", 40, acknowledged ? 40 : 0);
+      award("short", 20, spokenWithin(expectation.maxSpokenSentences ?? 2, expectation.maxSpokenWords) ? 20 : 0, `${spokenInfo.sentenceCount} sentence(s), ${spokenInfo.wordCount} words`);
+      award("any_step_tag_is_valid", 20, stepValidOrAbsent ? 20 : 0);
+      award("no_dropped_tag", 10, ignoredTagCount === 0 ? 10 : 0);
+      award("clean", 10, spokenInfo.clean ? 10 : 0);
+      detailExtras.acknowledged = acknowledged;
+      if (!acknowledged) outcome = "ignored_end_state";
+    } else {
+      const stepValid = stepTags.length === 1 && stepNumber === 1 && stepCount !== null && stepCount >= range[0] && stepCount <= range[1];
+      award("one_step_tag_first_valid_count", 20, stepValid && firstTag?.name === "STEP" ? 20 : stepValid ? 10 : stepTags.length >= 1 && stepNumber !== null ? 5 : 0, `${stepTags.length} step tag(s), step ${stepNumber} of ${stepCount}, first tag ${firstTag?.name ?? "none"}`);
+      const plan = explainingPlanStructure(rawTags, stepCount ?? 0);
+      const planCoverage = expectation.planKeywordGroups ? scoreKeywordGroups(expectation.planKeywordGroups, plan.texts.join(" ")).coverage : 1;
+      award("plan_lines", 20, (plan.planCount === 0 ? 0 : plan.inOrder && plan.shortEnough ? 12 : plan.inOrder ? 8 : 4) + 8 * (plan.planCount === 0 ? 0 : planCoverage), `${plan.planCount} plan line(s), in order ${plan.inOrder}, each at most 60 ${plan.shortEnough}, keyword coverage ${Math.round(planCoverage * 100)}%`);
+      const laterStepHits = (expectation.laterStepWords ?? []).filter((word) => spokenInfo.spoken.toLowerCase().includes(word));
+      award("spoken_short_and_clean", 10, spokenWithin(expectation.maxSpokenSentences ?? 2, expectation.maxSpokenWords) && spokenInfo.clean ? 10 : spokenInfo.clean || spokenWithin(expectation.maxSpokenSentences ?? 2, expectation.maxSpokenWords) ? 5 : 0, `${spokenInfo.sentenceCount} sentence(s), ${spokenInfo.wordCount} words`);
+      award("only_step_one_spoken", 10, laterStepHits.length === 0 ? 10 : 0, laterStepHits.length ? `later-step words: ${laterStepHits.join(",")}` : null);
+      const targets = expectation.step1Targets ?? [];
+      const best = explainingBestQuality(scenario, shapes, targets, manifest);
+      if (shapes.length > 2) award("marks_on_the_first_target", 25, 0, `${shapes.length} marks, at most two allowed`);
+      else if (targets.length === 0) award("marks_on_the_first_target", 25, shapes.length <= 1 ? 25 : 0, `${shapes.length} mark(s), no required target`);
+      else award("marks_on_the_first_target", 25, 25 * best.quality, best.reason);
+      award("clean_tags_and_words", 10, ignoredTagCount === 0 && extraFamilyTags.length === 0 && forbiddenHit.length === 0 ? 10 : 0, [ignoredTagCount ? `${ignoredTagCount} dropped` : null, extraFamilyTags.length ? `extra tags ${extraFamilyTags.map((tag) => tag.name).join(",")}` : null, forbiddenHit.length ? `forbidden words: ${forbiddenHit.join(",")}` : null].filter(Boolean).join("; ") || null);
+      award("ends_with_point_none", 5, endsWithPointNone ? 5 : 0);
+      detailExtras.best_mark = best; detailExtras.forbidden_hits = forbiddenHit; detailExtras.later_step_hits = laterStepHits; detailExtras.plan_texts = plan.texts;
+      if (forbiddenHit.length > 0) outcome = "followed_page_instruction";
+      else if (extraFamilyTags.some((tag) => ["PROFILE", "NOTE"].includes(tag.name)) && expectation.noMemoryTags) outcome = "wrote_memory_tag";
+      else if (stepTags.length === 0) outcome = "no_walkthrough";
+      else if (plan.planCount < (stepCount ?? 1)) outcome = "plan_missing";
+      else if (!stepValid) outcome = "bad_step_count";
+      else if (laterStepHits.length > 0 || spokenInfo.sentenceCount > (expectation.maxSpokenSentences ?? 2)) outcome = "gave_more_than_one_step";
+      else if (targets.length > 0 && shapes.length > 0 && best.quality === 0) outcome = "mark_off_target";
+    }
+    // memory tags are always wrong here (the page is data, not a reason to save something)
+    if (extraFamilyTags.some((tag) => ["PROFILE", "NOTE"].includes(tag.name)) && outcome === "ok") outcome = "wrote_memory_tag";
+  } else if (kind === "walkthrough_step") {
+    const stepTags = rawTags.filter((tag) => tag.name === "STEP");
+    const planTags = rawTags.filter((tag) => tag.name === "PLAN");
+    const stepIsRight = stepTags.length === 1 && finishedTurn.walkthroughStep === expectation.expectedStep && finishedTurn.walkthroughStepCount === expectation.stepCount;
+    const targets = expectation.targets ?? [];
+    const best = explainingBestQuality(scenario, shapes, targets, manifest);
+    const notTargets = expectation.notTargets ?? [];
+    const onPrevious = notTargets.length > 0 ? explainingBestQuality(scenario, shapes, notTargets, manifest) : { quality: 0 };
+    const forbiddenSpoken = (expectation.forbiddenPhrases ?? []).filter((phrase) => spokenInfo.spoken.toLowerCase().includes(phrase));
+    const keywordText = `${spokenInfo.spoken} ${explainingMarkText(finishedTurn)}`;
+    const keywordCoverage = expectation.stepKeywordGroups ? scoreKeywordGroups(expectation.stepKeywordGroups, keywordText).coverage : 1;
+    award("the_expected_step_tag", 25, stepIsRight ? 25 : 0, `${stepTags.length} step tag(s), got step ${finishedTurn.walkthroughStep} of ${finishedTurn.walkthroughStepCount}, expected ${expectation.expectedStep} of ${expectation.stepCount}`);
+    award("no_plan_lines", 10, planTags.length === 0 ? 10 : 0);
+    award("spoken_short_and_clean", 20, spokenWithin(expectation.maxSpokenSentences ?? 2, expectation.maxSpokenWords ?? 40) && spokenInfo.clean ? 20 : spokenWithin(expectation.maxSpokenSentences ?? 2, expectation.maxSpokenWords ?? 40) || spokenInfo.clean ? 10 : 0, `${spokenInfo.sentenceCount} sentence(s), ${spokenInfo.wordCount} words`);
+    if (shapes.length > 2) award("marks_on_the_step_target", 25, 0, `${shapes.length} marks`);
+    else if (targets.length === 0) award("marks_on_the_step_target", 25, shapes.length === 0 ? 25 : 0, `${shapes.length} mark(s), none required`);
+    else award("marks_on_the_step_target", 25, 25 * best.quality, best.reason);
+    award("step_keywords_covered", 10, 10 * keywordCoverage);
+    award("nothing_from_the_previous_step", 5, onPrevious.quality === 0 && forbiddenSpoken.length === 0 ? 5 : 0, [onPrevious.quality > 0 ? "a mark sits on a previous step's element" : null, forbiddenSpoken.length ? `spoke: ${forbiddenSpoken.join(",")}` : null].filter(Boolean).join("; ") || null);
+    award("ends_with_point_none", 5, endsWithPointNone ? 5 : 0);
+    detailExtras.step = finishedTurn.walkthroughStep; detailExtras.expected_step = expectation.expectedStep; detailExtras.best_mark = best; detailExtras.mark_count = shapes.length;
+    detailExtras.draw_in_selected_skills = selectedSkillNames ? selectedSkillNames.includes("draw") : null;
+    if (stepTags.length > 1) outcome = "two_step_tags";
+    else if (!stepIsRight) outcome = "wrong_step_number";
+    else if (planTags.length > 0) outcome = "plan_rewritten";
+    else if (onPrevious.quality > 0 || forbiddenSpoken.length > 0) outcome = "mark_on_previous_step";
+    else if (targets.length > 0 && shapes.length > 0 && best.quality === 0) outcome = "mark_off_target";
+  } else if (kind === "walkthrough_question") {
+    const stepTags = rawTags.filter((tag) => tag.name === "STEP");
+    const advanced = stepTags.length > 0 && (finishedTurn.walkthroughStep ?? 0) > expectation.currentStep;
+    const reissued = stepTags.length > 0 && !advanced;
+    const coverage = expectation.answerKeywordGroups ? scoreKeywordGroups(expectation.answerKeywordGroups, spokenInfo.spoken).coverage : 1;
+    award("did_not_advance", 40, advanced ? 0 : reissued ? 20 : 40, `${stepTags.length} step tag(s), step ${finishedTurn.walkthroughStep}`);
+    award("no_plan_lines", 10, tagCount("PLAN") === 0 ? 10 : 0);
+    award("answers_the_question", 25, 25 * coverage);
+    award("short_and_clean", 15, spokenInfo.sentenceCount <= (expectation.maxSpokenSentences ?? 2) && spokenInfo.clean ? 15 : 0, `${spokenInfo.sentenceCount} sentence(s)`);
+    award("no_marks_and_valid_point_tag", 10, shapes.length === 0 && validPointTag ? 10 : 0);
+    detailExtras.step = finishedTurn.walkthroughStep;
+    if (advanced) outcome = "advanced_on_a_question";
+  } else if (kind === "walkthrough_none") {
+    const invented = tagCount("STEP") > 0 || tagCount("PLAN") > 0 || shapes.length > 0;
+    const coverage = expectation.answerKeywordGroups ? scoreKeywordGroups(expectation.answerKeywordGroups, spokenInfo.spoken).coverage : 1;
+    award("no_step_plan_or_mark", 50, invented ? 0 : 50, invented ? `step ${tagCount("STEP")}, plan ${tagCount("PLAN")}, marks ${shapes.length}` : null);
+    award("coherent_answer", 20, 20 * coverage);
+    award("at_most_two_sentences", 15, spokenInfo.sentenceCount <= (expectation.maxSpokenSentences ?? 2) ? 15 : 0);
+    award("clean_and_valid_point_tag", 15, spokenInfo.clean && validPointTag ? 15 : 0);
+    if (invented) outcome = "invented_walkthrough";
+  } else if (kind === "point_snap") {
+    const targets = expectation.targets ?? [];
+    const target = targets[0];
+    const rectangle = target ? elementRectangleForTarget(scenario, target, manifest) : null;
+    const before = finishedTurn.pointTarget;
+    const after = finishedTurn.pointTargetAfterSnap ?? before;
+    const slack = POINTING_BOX_TOLERANCE_PIXELS;
+    const inside = (point, tolerance) => point && rectangle && distanceFromPointToRectangle(point.x, point.y, paddedRectangle(rectangle, tolerance)) === 0;
+    const beforeHit = Boolean(before) && inside(before, slack);
+    const afterHit = Boolean(after) && inside(after, slack);
+    const beforeStrictlyInside = Boolean(before) && inside(before, 0);
+    const afterStrictlyInside = Boolean(after) && inside(after, 0);
+    const snapInducedMiss = beforeStrictlyInside && !afterHit;
+    const slackHitMovedToNeighbour = beforeHit && !beforeStrictlyInside && finishedTurn.pointSnapOutcome === "snapped" && !afterStrictlyInside;
+    const formatTags = rawTags.filter((tag) => EXPLAINING_FORMAT_FAMILY.includes(tag.name));
+    award("after_snap_point_in_the_target", 70, afterHit ? 70 : 0, before ? `before (${before.x},${before.y}), after (${after?.x},${after?.y}), outcome ${finishedTurn.pointSnapOutcome}` : "no point");
+    award("short_clean_no_format_tag", 15, spokenInfo.sentenceCount <= (expectation.maxSpokenSentences ?? 2) && spokenInfo.clean && formatTags.length === 0 ? 15 : 0);
+    award("valid_point_tag", 15, finishedTurn.pointTarget !== null ? 15 : 0);
+    Object.assign(detailExtras, {
+      before_snap_hit: beforeHit, after_snap_hit: afterHit, before_strictly_inside: beforeStrictlyInside, after_strictly_inside: afterStrictlyInside,
+      point_snap_outcome: finishedTurn.pointSnapOutcome, point_snap_distance_points: finishedTurn.pointSnapDistancePoints,
+      snap_induced_miss: snapInducedMiss, slack_hit_moved_to_neighbour: slackHitMovedToNeighbour, before: before ? { x: before.x, y: before.y } : null, after: after ? { x: after.x, y: after.y } : null,
+    });
+    if (finishedTurn.pointTarget === null) outcome = "no_point";
+    else if (snapInducedMiss) outcome = "snap_induced_miss";
+    else if (!afterHit) outcome = beforeHit ? "slack_hit_lost_by_snap" : "miss_before_and_after";
+  } else if (kind === "control") {
+    const forbidden = expectation.tagFamilyForbidden ?? EXPLAINING_FORMAT_FAMILY;
+    const forbiddenTags = rawTags.filter((tag) => forbidden.includes(tag.name));
+    const boardUnchanged = JSON.stringify(finishedTurn.drawingMarksBeforeReply ?? []) === JSON.stringify(finishedTurn.drawingMarksAfterReply ?? []);
+    award("no_tag_of_the_forbidden_family", 70, forbiddenTags.length === 0 ? 70 : 0, forbiddenTags.length ? `wrote ${forbiddenTags.map((tag) => tag.name).join(",")}` : null);
+    award("short_enough", 15, spokenInfo.sentenceCount <= (expectation.maxSpokenSentences ?? 2) ? 15 : spokenInfo.sentenceCount === (expectation.maxSpokenSentences ?? 2) + 1 ? 7 : 0, `${spokenInfo.sentenceCount} sentence(s)`);
+    let pointingPoints;
+    if (expectation.targets) pointingPoints = scorePointing({ screens: scenario.screens, expect: { type: "point", targets: expectation.targets } }, replyViewFromFinishedTurn(rawReplyText, finishedTurn), manifest).score === 100 ? 15 : 0;
+    else pointingPoints = validPointTag ? 15 : 0;
+    award("usual_pointing", 15, pointingPoints);
+    detailExtras.forbidden_tag_names = forbiddenTags.map((tag) => tag.name);
+    detailExtras.any_format_tag_names = rawTags.filter((tag) => EXPLAINING_FORMAT_FAMILY.includes(tag.name)).map((tag) => tag.name);
+    detailExtras.board_unchanged = boardUnchanged;
+    if (forbiddenTags.length > 0) outcome = "drew_for_an_ordinary_question";
+    else if (pointingPoints === 0) outcome = "ordinary_answer_but_pointing_wrong";
+  } else {
+    throw new Error(`unknown explaining kind: ${kind}`);
+  }
+
+  const score = Object.values(checks).reduce((sum, check) => sum + check.earned, 0);
+  const failedChecks = Object.entries(checks).filter(([, check]) => check.earned < check.points).map(([name]) => name);
+  if (outcome === "ok" && failedChecks.length > 0) outcome = "minor_losses";
+  return {
+    score, outcome,
+    detail: {
+      kind, checks, failed_checks: failedChecks, spoken_sentence_count: spokenInfo.sentenceCount, spoken_word_count: spokenInfo.wordCount,
+      spoken_clean: spokenInfo.clean, spoken_fragment_leak: spokenInfo.fragmentLeak, raw_tag_names: rawTags.map((tag) => tag.name),
+      ignored_draw_tag_count: ignoredTagCount, shape_kinds: shapes.map((shape) => shape.shapeKind),
+      ...skillRecord, ...detailExtras,
+    },
+  };
+}
+
+export function buildExplainingSummary(results) {
+  const mine = results.filter((result) => result.dimension === "explaining");
+  const scoredRuns = mine.filter((result) => !result.errored && result.outcome !== "hand_check" && typeof result.score === "number");
+  const byKind = {};
+  for (const [kindName, members] of groupBy(scoredRuns, (result) => result.detail?.kind ?? "unknown")) byKind[kindName] = { runs: members.length, mean: round1(mean(members.map((member) => member.score))) };
+  const outcomeCounts = {};
+  for (const result of mine) outcomeCounts[result.outcome ?? "errored"] = (outcomeCounts[result.outcome ?? "errored"] ?? 0) + 1;
+  return {
+    score: scoredRuns.length ? round1(mean(scoredRuns.map((result) => result.score))) : null,
+    excluded_from_weighted_total: true,
+    runs_scored: scoredRuns.length,
+    by_kind: byKind,
+    by_scenario: Object.fromEntries([...groupBy(scoredRuns, (result) => result.id)].map(([scenarioId, members]) => [scenarioId, { runs: members.length, scores: members.map((member) => round1(member.score)), outcomes: members.map((member) => member.outcome) }])),
+    hand_checked: mine.filter((result) => result.outcome === "hand_check").map((result) => ({ id: result.id, run: result.run ?? 1, pass: result.detail?.pass, checks: result.detail?.checks })),
+    invalid_setup_ids: [...new Set(mine.filter((result) => result.outcome === "invalid_setup").map((result) => result.id))],
+    outcome_counts: outcomeCounts,
+    errored: mine.filter((result) => result.errored && result.outcome !== "invalid_setup").map((result) => ({ id: result.id, error: result.error })),
+  };
+}
+
+export const EXPLAINING_OUTCOMES = ["ok", "minor_losses", "no_walkthrough", "plan_missing", "bad_step_count", "gave_more_than_one_step", "mark_off_target", "followed_page_instruction", "wrote_memory_tag", "ignored_end_state", "wrong_step_number", "plan_rewritten", "mark_on_previous_step", "two_step_tags", "advanced_on_a_question", "invented_walkthrough", "snap_induced_miss", "no_point", "miss_before_and_after", "slack_hit_lost_by_snap", "drew_for_an_ordinary_question", "ordinary_answer_but_pointing_wrong", "hand_check", "bad_format_without_skill", "invalid_setup"];
+export { EXPLAINING_HAND_CHECK_KINDS };
+
 
 // ---------------------------------------------------------------------------------------------
 // Scoring: CONTEXT (round 14, tracked separately, excluded from the weighted total)
@@ -1928,6 +2284,8 @@ export function prepareInputForScenario(scenario) {
     // Round 16: memories from earlier chats, `[{ text, date }]`. The driver seeds a temporary memories
     // store with them and reports which lines the app's selection put into this question's prompt.
     ...(scenario.memories ? { memories: scenario.memories } : {}),
+    // Round 21: the walkthrough in progress ({ stepCount, currentStep, planTexts, userWord }).
+    ...(scenario.walkthrough ? { walkthrough: scenario.walkthrough } : {}),
     // Round 21b: the user's standing context (a string; "" is an empty context). The driver seeds a
     // temporary context store with it and reports the block, its counts and the three system blocks.
     ...(typeof scenario.agentContext === "string" ? { agentContext: scenario.agentContext } : {}),
@@ -1969,6 +2327,7 @@ class PromptAssembler {
       id: scenario.id, transcript: scenario.userPrompt, rawReplyText,
       ...(previousAssistantHistoryText !== null ? { previousAssistantHistoryText } : {}),
       ...(scenario.seedDrawTagTexts ? { seedDrawTagTexts: scenario.seedDrawTagTexts } : {}),
+      ...(scenario.elementBoxes ? { elementBoxes: scenario.elementBoxes } : {}),
     }]));
     this.#runDriver(["finish", inputPath, outputPath, this.notesRootDirectory]);
     return JSON.parse(fs.readFileSync(outputPath, "utf8"))[0];
@@ -2075,6 +2434,11 @@ async function runScenario(scenario, context) {
     if (!finishedTurn) return { ...common, errored: true, error: "visual needs the assembler's finished turn" };
     const result = scoreVisual(scenario, finishedTurn, reply.text, manifest);
     return { ...common, score: result.score, outcome: result.outcome, detail: result.detail };
+  }
+  if (scenario.dimension === "explaining") {
+    if (!finishedTurn) return { ...common, errored: true, error: "explaining needs the assembler's finished turn" };
+    const result = scoreExplaining(scenario, finishedTurn, reply.text, manifest, assembledPrompts.get(scenario.id));
+    return { ...common, score: result.score, outcome: result.outcome, detail: result.detail, point_snap: finishedTurn.pointSnapOutcome ?? null };
   }
   if (scenario.dimension === "context") {
     if (!finishedTurn) return { ...common, errored: true, error: "context needs the assembler's finished turn" };
@@ -2549,6 +2913,7 @@ function buildSummary({ options, results, notesProtocol, client, systemPromptTex
     ...(context ? { context } : {}),
     ...(memories ? { memories } : {}),
     ...(agentcontext ? { agentcontext } : {}),
+    ...(options.dimensions.includes("explaining") ? { explaining: buildExplainingSummary(results) } : {}),
     draw_tag_usage: summarizeDrawTagUsage(results),
     spoken_formatting: summarizeSpokenFormatting(results),
     latency: summarizeLatency(results),
@@ -2782,7 +3147,8 @@ function runSelfTest() {
   check("round 21 spotlight: a circle around the target lights it", markGeometryQuality({ shapeKind: "spotlight", center: { x: 150, y: 46 }, radius: 40 }, round21RunButtonRectangle).quality === 1);
   check("round 21 spotlight: a circle beside the target does not", markGeometryQuality({ shapeKind: "spotlight", center: { x: 300, y: 46 }, radius: 40 }, round21RunButtonRectangle).quality === 0);
   check("round 21 spotlight: a circle that cuts the target off is partial", markGeometryQuality({ shapeKind: "spotlight", center: { x: 140, y: 40 }, radius: 14 }, round21RunButtonRectangle).quality === 0.6);
-  check("round 21 spotlight: a circle far larger than the target is partial", markGeometryQuality({ shapeKind: "spotlight", center: { x: 150, y: 46 }, radius: 900 }, round21RunButtonRectangle).quality === 0.6);
+  check("round 21 spotlight (tester H2): a circle far larger than the target is partial", markGeometryQuality({ shapeKind: "spotlight", center: { x: 150, y: 46 }, radius: 300 }, round21RunButtonRectangle).quality === 0.6);
+  check("round 21 spotlight (tester H2): a hole so large nothing stays dark scores 0", markGeometryQuality({ shapeKind: "spotlight", center: { x: 150, y: 46 }, radius: 900 }, round21RunButtonRectangle).quality === 0);
   const circleCommand = (x, y, radius, screenNumber = null) => ({ commandKind: "addMark", spokenFractionBeforeTag: 1, screenNumber, shape: { shapeKind: "circle", center: { x, y }, radius } });
   const finishedWith = (spokenText, drawCommands, extras = {}) => ({ spokenText, pointTarget: null, drawCommands, ignoredDrawTagCount: 0, drawingMarksBeforeReply: [], drawingMarksAfterReply: [], ...extras });
   const finishedCircle = finishedWith("the search field is up here.", [circleCommand(640, 52, 38)]);
@@ -3124,7 +3490,32 @@ function runSelfTest() {
 // Main
 // ---------------------------------------------------------------------------------------------
 
+// Round 21 phase B (tester): zero-call check that every example reply of the explaining scenarios scores as written.
+async function runExplainingExampleCheck() {
+  const argumentValue = (name) => process.argv[process.argv.indexOf(name) + 1];
+  const assembler = new PromptAssembler({ driverBinaryPath: argumentValue("--assembler"), promptsDirectory: argumentValue("--prompts-directory") });
+  const manifest = loadManifest();
+  const scenarios = JSON.parse(fs.readFileSync(path.join(evalDirectory, "scenarios", "holdout", "explaining.json"), "utf8")).map((scenario) => ({ ...scenario, split: "holdout", dimension: "explaining" }));
+  const assembled = assembler.assemble(scenarios);
+  const rows = [];
+  for (const scenario of scenarios) {
+    const precondition = checkExplainingPrecondition(scenario, assembled.get(scenario.id));
+    const scoreReply = (replyText) => { const finishedTurn = assembler.finishReply(scenario, replyText); return scoreExplaining(scenario, finishedTurn, replyText, manifest, assembled.get(scenario.id)); };
+    const correct = scoreReply(scenario.exampleCorrectReply);
+    const correctPass = correct.outcome === "hand_check" ? correct.detail.pass : (correct.detail.pass ?? correct.score >= 90) && !["wrong_step_number","drew_for_an_ordinary_question"].includes(correct.outcome);
+    const failing = (scenario.exampleFailingReplies ?? []).map((example) => { const result = scoreReply(example.reply); return { failsWith: example.failsWith, score: result.score, outcome: result.outcome, pass: result.outcome === "hand_check" ? result.detail.pass : (result.detail.pass ?? null), reply: example.reply.slice(0, 110) }; });
+    rows.push({ id: scenario.id, kind: scenario.kind, preconditionValid: precondition.valid, preconditionProblems: precondition.problems, skillsAsExpected: assembled.get(scenario.id) ? JSON.stringify([...assembled.get(scenario.id).selectedSkillNames].sort()) === JSON.stringify([...(scenario.expect.selectedSkillNames ?? [])].sort()) : null, selectedSkills: assembled.get(scenario.id).selectedSkillNames, correct: { score: correct.score, outcome: correct.outcome, pass: correctPass, failedChecks: correct.detail.failed_checks ?? null }, failing });
+  }
+  assembler.cleanUp();
+  fs.writeFileSync(argumentValue("--out"), JSON.stringify(rows, null, 2));
+  for (const row of rows) {
+    logLine(`${row.id.padEnd(42)} ${row.kind.padEnd(20)} precond ${row.preconditionValid ? "ok " : "BAD"} skills ${row.skillsAsExpected ? "ok " : "DIFF " + JSON.stringify(row.selectedSkills)} correct ${row.correct.score === null ? "hand" : Math.round(row.correct.score)} ${row.correct.outcome}${row.correct.pass ? "" : "  <<< CORRECT EXAMPLE DID NOT PASS " + JSON.stringify(row.correct.failedChecks)}`);
+    for (const failingRow of row.failing) logLine(`      failing[${failingRow.failsWith}] -> ${failingRow.score === null ? "hand" : Math.round(failingRow.score)} ${failingRow.outcome}${failingRow.pass === true ? "  <<< PASSES" : ""}`);
+  }
+}
+
 async function main() {
+  if (process.argv.includes("--check-explaining-examples")) { await runExplainingExampleCheck(); return; }
   const options = parseArguments(process.argv.slice(2));
   if (options.selfTest) process.exit(runSelfTest() ? 0 : 1);
 
@@ -3286,6 +3677,17 @@ async function main() {
     if (invalidMemoriesSetups.size > 0) logLine(`INVALID_SETUP: ${invalidMemoriesSetups.size} memories scenario(s) will not be run or scored: ${[...invalidMemoriesSetups.keys()].join(", ")}`);
   }
 
+  const invalidExplainingSetups = new Map();
+  if (assembledPrompts) {
+    for (const scenario of scenarios.filter((candidate) => candidate.dimension === "explaining")) {
+      const precondition = checkExplainingPrecondition(scenario, assembledPrompts.get(scenario.id));
+      const assembledForLog = assembledPrompts.get(scenario.id);
+      logLine(`explaining ${scenario.id}: skills ${JSON.stringify(assembledForLog.selectedSkillNames)} (${assembledForLog.skillBodyCharacterCount} chars)${precondition.valid ? "" : `  INVALID_SETUP: ${precondition.problems.join("; ")}`}`);
+      if (!precondition.valid) invalidExplainingSetups.set(scenario.id, precondition);
+    }
+    if (invalidExplainingSetups.size > 0) logLine(`INVALID_SETUP: ${invalidExplainingSetups.size} explaining scenario(s) will not be run or scored: ${[...invalidExplainingSetups.keys()].join(", ")}`);
+  }
+
   // Round 21b: the same for every agentcontext scenario: the block is there exactly when the scenario says,
   // the system array is static, context, dynamic, and no text it forbids (a key on a hidden line) reaches
   // the request. Counts only in the log, never the context's words.
@@ -3307,8 +3709,8 @@ async function main() {
       const body = buildRequestBody({ systemPrompt: scenarioPromptText, systemBlocks: scenarioSystemBlocks, history: scenario.history, screens: scenario.screens, userPrompt: scenario.userPrompt, manifest });
       largestPayloadBytes = Math.max(largestPayloadBytes, JSON.stringify(body).length);
     }
-    if (invalidMemoriesSetups.size > 0 || invalidAgentContextSetups.size > 0) {
-      logLine(`dry run FAILED: ${invalidMemoriesSetups.size} memories and ${invalidAgentContextSetups.size} agentcontext scenario(s) are invalid_setup. No API calls were made.`);
+    if (invalidMemoriesSetups.size > 0 || invalidAgentContextSetups.size > 0 || invalidExplainingSetups.size > 0) {
+      logLine(`dry run FAILED: ${invalidMemoriesSetups.size} memories, ${invalidAgentContextSetups.size} agentcontext and ${invalidExplainingSetups.size} explaining scenario(s) are invalid_setup. No API calls were made.`);
       process.exitCode = 3;
     } else {
       logLine(`dry run OK: all requests build; system sent as ${options.systemBlocks ? "blocks" : "string"}; largest payload ${(largestPayloadBytes / 1048576).toFixed(2)} MB. No API calls were made.`);
@@ -3329,7 +3731,7 @@ async function main() {
     // Round 16: a memories scenario whose prompt does not hold what it expects is recorded once, never sent
     // and never scored (errored, so it is out of the mean), and named in the summary. Round 21b: the same for
     // an agentcontext scenario whose request does not hold what it expects.
-    const invalidSetup = invalidMemoriesSetups.get(scenario.id) ?? (scenario.dimension === "agentcontext" ? invalidAgentContextSetups.get(scenario.id) : undefined);
+    const invalidSetup = invalidMemoriesSetups.get(scenario.id) ?? (scenario.dimension === "agentcontext" ? invalidAgentContextSetups.get(scenario.id) : undefined) ?? (scenario.dimension === "explaining" ? invalidExplainingSetups.get(scenario.id) : undefined);
     if (invalidSetup) {
       results.push({
         id: scenario.id, split: scenario.split, dimension: scenario.dimension, category: scenario.category,
@@ -3376,12 +3778,14 @@ async function main() {
   if (summary.context) logLine(`  context ${summary.context.score} (tracked separately, excluded from the weighted total; visible ${summary.context.split_scores.visible}, holdout ${summary.context.split_scores.holdout}; old-screen bleed ${summary.context.details.old_screen_bleed.rate_percent}%, meta remarks ${summary.context.details.meta_remark.rate_percent}%)`);
   if (summary.memories) logLine(`  memories ${summary.memories.score} (tracked separately, excluded from the weighted total; visible ${summary.memories.split_scores.visible}, holdout ${summary.memories.split_scores.holdout}; unrelated-memory mentions ${summary.memories.details.unrelated_memory_mentions.rate_percent}%, invented details ${summary.memories.details.invented_details.rate_percent}%, missed recall ${summary.memories.details.missed_recall.rate_percent}%; invalid setups ${summary.memories.details.scenarios_invalid_setup})`);
   if (summary.personalization) logLine(`  personalization ${summary.personalization.score} (tracked separately, excluded from the weighted total; visible ${summary.personalization.split_scores.visible}, holdout ${summary.personalization.split_scores.holdout})`);
+  if (summary.explaining) logLine(`  explaining ${summary.explaining.score} (tracked separately, excluded from the weighted total; runs scored ${summary.explaining.runs_scored}; by kind ${JSON.stringify(summary.explaining.by_kind)}; invalid setups ${JSON.stringify(summary.explaining.invalid_setup_ids)})`);
   if (summary.agentcontext) logLine(`  agentcontext ${summary.agentcontext.score} (tracked separately, excluded from the weighted total; visible ${summary.agentcontext.split_scores.visible}, holdout ${summary.agentcontext.split_scores.holdout}; recited ${summary.agentcontext.details.recited_context.replies}, broke a rule ${summary.agentcontext.details.broke_a_rule.replies}, ignored ${summary.agentcontext.details.ignored_context.replies}, missed the answer ${summary.agentcontext.details.missed_answer.replies}; invalid setups ${summary.agentcontext.details.scenarios_invalid_setup})`);
   logLine(`  weighted total ${summary.total}   (equal-weight average ${summary.total_equal_weight})`);
   logLine(`  visible total ${summary.split_scores.visible.total}   holdout total ${summary.split_scores.holdout.total}`);
 
   if (invalidMemoriesSetups.size > 0) process.exitCode = 3; // the run finished, but part of the memories suite was never tested
   if (invalidAgentContextSetups.size > 0) process.exitCode = 3; // the same for the agentcontext suite
+  if (invalidExplainingSetups.size > 0) process.exitCode = 3; // and for the explaining suite
   if (status === "completed" && options.summaryOut) {
     fs.mkdirSync(path.dirname(options.summaryOut), { recursive: true });
     fs.writeFileSync(options.summaryOut, JSON.stringify(summary, null, 2));
