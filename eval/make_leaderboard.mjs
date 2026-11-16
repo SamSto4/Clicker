@@ -66,7 +66,7 @@ export function writeLeaderboard(loopFolder) {
   });
 
   const markdown = [
-    "# Clicky improvement loop leaderboard",
+    "# Ezra improvement loop leaderboard",
     "",
     "Weighted total = 0.30 brevity/speed + 0.30 pointing/honesty + 0.20 coding + 0.20 notes (UX-weighted). Early stop at >= 90.",
     "",
@@ -95,7 +95,7 @@ export function writeLeaderboard(loopFolder) {
       "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
       ...visualRows,
       "",
-      "Tags are read by the app's own ClickyDrawTagParser through the eval driver; marks are compared with the fixtures' known element boxes. Rubric in eval/README.md.",
+      "Tags are read by the app's own EzraDrawTagParser through the eval driver; marks are compared with the fixtures' known element boxes. Rubric in eval/README.md.",
       "",
     ]),
     ...(contextRows.length === 0 ? [] : [

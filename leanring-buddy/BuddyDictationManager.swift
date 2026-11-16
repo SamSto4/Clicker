@@ -213,7 +213,7 @@ private enum BuddyDictationStartSource {
     case textInsertionDictation
     /// Round 18: the follow-up window after a spoken reply. The same microphone and recogniser as a
     /// key press, and the transcript goes to the chat pipeline as a spoken turn, but the end of
-    /// the words is decided by `ClickyFollowUpListeningStateMachine`, not by a key release.
+    /// the words is decided by `EzraFollowUpListeningStateMachine`, not by a key release.
     case followUpListening
 }
 

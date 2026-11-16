@@ -1,0 +1,196 @@
+//
+//  EzraChatSession.swift
+//  leanring-buddy
+//
+//  The chats of this run and their files. It wraps the pure `EzraChatCollection` (which chat a
+//  message goes to, continue, keep, delete) and does the one thing the pure code cannot: write
+//  and read the chat files, off the main thread, in order.
+//
+//  Privacy: a chat holds text only (no screenshots, no audio), every text goes through the secret
+//  check before it is written (`EzraChatRedaction`), and the files live in
+//  ~/Library/Application Support/Ezra/Chats, outside iCloud. Nothing here sends anything anywhere.
+//
+
+import Combine
+import Foundation
+
+@MainActor
+final class EzraChatSession: ObservableObject {
+    /// The chats in memory and which one is active. Views read it; only this class changes it.
+    @Published private(set) var collection = EzraChatCollection()
+
+    private let store: EzraChatStore
+
+    /// Every read, write and delete of a chat file runs on this one queue, so they happen in the
+    /// order they were asked for: a delete can never be overtaken by an older save of the same
+    /// chat, and a read sees every write before it.
+    private let storeQueue = DispatchQueue(label: "com.ezra.chat-store", qos: .utility)
+
+    private var retentionTask: Task<Void, Never>?
+
+    init(store: EzraChatStore) {
+        self.store = store
+    }
+
+    /// The store for this run of the app. See `EzraChatStore.chatsDirectoryURLForRun`: a self
+    /// test run never uses the user's real folder.
+    static func makeStoreForCurrentRun(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> EzraChatStore {
+        EzraChatStore(
+            chatsDirectoryURL: EzraChatStore.chatsDirectoryURLForRun(
+                environment: environment,
+                temporaryDirectoryURL: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+                uniqueFolderNameForSelfTest: "ezra-panel-self-test-chats-\(UUID().uuidString)"
+            )
+        )
+    }
+
+    // MARK: - Reading
+
+    /// Reads the chat files in the background and adds what it finds to the chats in memory. Called
+    /// at launch and each time the panel opens, so a chat file added by hand shows up too.
+    func reloadChatsFromDiskInBackground() {
+        let store = self.store
+        storeQueue.async { [weak self] in
+            let chatsReadFromDisk = store.loadAllChats()
+            Task { @MainActor [weak self] in
+                self?.collection.mergeChatsReadFromDisk(chatsReadFromDisk)
+            }
+        }
+    }
+
+    // MARK: - Which chat
+
+    func messageWouldStartNewChat(at messageStartedAt: Date) -> Bool {
+        collection.messageWouldStartNewChat(at: messageStartedAt)
+    }
+
+    func endActiveChatIfIdleTooLong(at now: Date) {
+        collection.endActiveChatIfIdleTooLong(at: now)
+    }
+
+    func startNewChatByUser() {
+        collection.startNewChatByUser()
+    }
+
+    @discardableResult
+    func continueChat(withID chatID: UUID, at now: Date = Date()) -> EzraChat? {
+        collection.continueChat(withID: chatID, at: now)
+    }
+
+    // MARK: - Recording
+
+    /// Stores one finished exchange (a spoken or a typed message and Ezra's reply) in the active
+    /// chat, or in a new chat when the message was the first of one. Every text is passed through
+    /// the secret check first; a text that looks like a secret is stored as a fixed placeholder.
+    func recordExchange(
+        userText: String,
+        inputMode: EzraTurnInputMode,
+        replyDisplayText: String,
+        replyHistoryText: String,
+        messageStartedAt: Date,
+        replyFinishedAt: Date = Date(),
+        projectForNewChat: EzraChatProject,
+        screenOfExchange: EzraScreenDescription? = nil
+    ) {
+        let redactedExchange = EzraChatRedaction.redactedExchange(
+            userText: userText,
+            inputMode: inputMode,
+            replyDisplayText: replyDisplayText,
+            replyHistoryText: replyHistoryText,
+            timestamp: replyFinishedAt,
+            screenOfExchange: screenOfExchange
+        )
+        let chatToWrite = collection.recordExchange(
+            redactedExchange,
+            messageStartedAt: messageStartedAt,
+            projectForNewChat: projectForNewChat
+        )
+        writeInBackground(chatToWrite)
+    }
+
+    // MARK: - Memory compaction (round 16)
+
+    /// The chats whose compaction into memories is due (see
+    /// `EzraChatCollection.chatsEndedAndAwaitingMemoryCompaction`), oldest first.
+    func chatsEndedAndAwaitingMemoryCompaction(at now: Date = Date(), treatingActiveChatAsEnded: Bool) -> [EzraChat] {
+        collection.chatsEndedAndAwaitingMemoryCompaction(at: now, treatingActiveChatAsEnded: treatingActiveChatAsEnded)
+    }
+
+    /// Records that the compaction covered the first `coveredExchangeCount` exchanges of the chat,
+    /// and writes the chat file so the count survives a restart. A chat deleted meanwhile is ignored.
+    func markMemoryCompacted(chatID: UUID, coveredExchangeCount: Int) {
+        guard let chatToWrite = collection.markMemoryCompacted(chatID: chatID, coveredExchangeCount: coveredExchangeCount) else { return }
+        writeInBackground(chatToWrite)
+    }
+
+    /// Waits until every chat write asked for so far has reached the disk. Only the quit path calls
+    /// it: the app is about to exit, and a count that was marked but not yet written would make the
+    /// next launch compact the same exchanges again. The store queue never waits for the main
+    /// thread (its work reaches the main thread only through `Task { @MainActor }`), so this
+    /// cannot deadlock.
+    func waitForPendingWritesBeforeQuitting() {
+        storeQueue.sync {}
+    }
+
+    // MARK: - Keep and delete
+
+    func toggleKept(chatID: UUID) {
+        guard let chatToWrite = collection.toggleKept(chatID: chatID) else { return }
+        writeInBackground(chatToWrite)
+    }
+
+    func delete(chatID: UUID) {
+        collection.delete(chatID: chatID)
+        let store = self.store
+        storeQueue.async {
+            if let errorDescription = store.deleteChat(withID: chatID) {
+                print("⚠️ Ezra chat delete failed: \(errorDescription)")
+            }
+        }
+    }
+
+    // MARK: - Retention
+
+    /// Deletes chats ninety days after their last message unless they are kept: now, and then
+    /// every six hours for as long as the app runs.
+    func startRetentionSchedule() {
+        retentionTask?.cancel()
+        retentionTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.deleteChatsPastRetentionInBackground()
+                try? await Task.sleep(nanoseconds: UInt64(EzraChatRetention.runEverySeconds * 1_000_000_000))
+            }
+        }
+    }
+
+    func stopRetentionSchedule() {
+        retentionTask?.cancel()
+        retentionTask = nil
+    }
+
+    func deleteChatsPastRetentionInBackground(now: Date = Date()) {
+        let store = self.store
+        storeQueue.async { [weak self] in
+            let removedChatIDs = store.deleteChatsPastRetention(now: now)
+            guard !removedChatIDs.isEmpty else { return }
+            // A count only, never a title or a message.
+            print("🗂 Ezra chats: retention removed \(removedChatIDs.count) chat(s)")
+            Task { @MainActor [weak self] in
+                self?.collection.removeChatsDeletedByRetention(withIDs: removedChatIDs)
+            }
+        }
+    }
+
+    // MARK: - Private
+
+    private func writeInBackground(_ chatToWrite: EzraChat) {
+        let store = self.store
+        storeQueue.async {
+            if let errorDescription = store.save(chatToWrite) {
+                print("⚠️ Ezra chat save failed: \(errorDescription)")
+            }
+        }
+    }
+}

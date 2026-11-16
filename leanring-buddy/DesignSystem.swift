@@ -144,16 +144,16 @@ enum DS {
         static let overlayCursorBlue = Color(hex: "#3380FF")
 
         /// The tint of the waveform, spinner and label while the user is dictating into a text
-        /// field. Green, so dictating is never mistaken for asking Clicky (which is blue).
+        /// field. Green, so dictating is never mistaken for asking Ezra (which is blue).
         static let overlayDictationAccent = Color(hex: "#2FCB9A")
 
-        /// "Marker vermilion": the ink of the marks Clicky draws on the screen (arrows, circles,
+        /// "Marker vermilion": the ink of the marks Ezra draws on the screen (arrows, circles,
         /// boxes, underlines, the edge of a label). A warm red-orange that stands out on white
         /// pages and dark editors alike, and cannot be mistaken for the blue cursor or the green
         /// of dictation.
         static let overlayDrawingInk = Color(hex: "#FF5A36")
 
-        /// The highlighter band Clicky draws over text. Used see-through, so the text stays readable.
+        /// The highlighter band Ezra draws over text. Used see-through, so the text stays readable.
         static let overlayDrawingHighlighter = Color(hex: "#FFC400")
 
         /// The dark pill behind a drawn label, so its words can be read on any background.
@@ -162,17 +162,17 @@ enum DS {
         /// The words of a drawn label: a warm off-white on the dark pill.
         static let overlayDrawingLabelText = Color(hex: "#FFF6EF")
 
-        /// The paper of a sticky note Clicky leaves on the screen: a soft yellow.
+        /// The paper of a sticky note Ezra leaves on the screen: a soft yellow.
         static let overlayDrawingStickyNotePaper = Color(hex: "#FFE98A")
 
         /// The words on a sticky note: a dark warm brown, easy to read on the yellow paper.
         static let overlayDrawingStickyNoteText = Color(hex: "#3A2E0A")
 
-        /// The light edge around the pen tip that leads each stroke while Clicky draws, so the
+        /// The light edge around the pen tip that leads each stroke while Ezra draws, so the
         /// ink-coloured tip can be told apart from the line it has just drawn.
         static let overlayDrawingPenEdge = Color(hex: "#FFF6EF")
 
-        /// The paper of the explanation card Clicky writes on while it explains something: a
+        /// The paper of the explanation card Ezra writes on while it explains something: a
         /// warm cream, lighter and calmer than the yellow of a sticky note.
         static let overlayDrawingCardPaper = Color(hex: "#FBF5E6")
 
@@ -225,7 +225,7 @@ enum DS {
         static let overlayStatusPillText = Color(hex: "#ECEEED")
 
         // ── Chat Panel ───────────────────────────────────────────────
-        // The panel that drops down from the notch (tap option + command) to type to Clicky and to
+        // The panel that drops down from the notch (tap option + command) to type to Ezra and to
         // browse past chats. Dark like the status pill it sits beside, so the two read as one family.
 
         /// The panel's surface on a display without a notch: almost black, used slightly see-through
@@ -252,7 +252,7 @@ enum DS {
         /// The words in the user's bubble.
         static let chatPanelUserBubbleText = Color(hex: "#F2F6FF")
 
-        /// Clicky's reply text and the main words of a list row.
+        /// Ezra's reply text and the main words of a list row.
         static let chatPanelPrimaryText = Color(hex: "#ECEEED")
 
         /// Previews, times and hints.
@@ -273,7 +273,7 @@ enum DS {
         /// An error line in a chat ("i can't reach the internet right now.").
         static let chatPanelErrorText = Color(hex: "#FF6369")
 
-        /// The word and live indicator in the panel while Clicky is thinking, in the asking blue.
+        /// The word and live indicator in the panel while Ezra is thinking, in the asking blue.
         static let chatPanelAskingAccent = Color(hex: "#3380FF")
 
         /// The same, while dictating: the dictation green.
@@ -648,7 +648,7 @@ enum DS {
         static let contextCounterFontSizeInPoints: CGFloat = 11
         /// The space between the title, the editor, the row under it and the warning lines.
         static let contextSectionSpacingInPoints: CGFloat = 8
-        /// " · clicky reads this every turn" is this much dimmer than "CONTEXT" in the tab's title.
+        /// " · ezra reads this every turn" is this much dimmer than "CONTEXT" in the tab's title.
         static let contextTitleSubtitleOpacity: Double = 0.7
         static let voiceSampleButtonSizeInPoints: CGFloat = 24
         static let voiceSampleSymbolFontSizeInPoints: CGFloat = 15
@@ -1300,12 +1300,12 @@ extension DS.Colors {
     /// `overlayCursorBlue` token itself, so the default cursor, its bubbles and the pill's accent are
     /// drawn with exactly the colour they always were (the token stays the default's definition).
     /// Any other colour is the same sRGB numbers `Color(hex:)` would make, read through
-    /// `ClickyCursorColour`, which never turns text that is not a colour into black.
+    /// `EzraCursorColour`, which never turns text that is not a colour into black.
     static func overlayCursorColour(forHex colourHex: String) -> Color {
-        guard let validHex = ClickyCursorColour.parse(colourHex), validHex != ClickyCursorStyle.defaultColourHex else {
+        guard let validHex = EzraCursorColour.parse(colourHex), validHex != EzraCursorStyle.defaultColourHex else {
             return overlayCursorBlue
         }
-        let colourComponents = ClickyCursorColour.components(hex: validHex)
+        let colourComponents = EzraCursorColour.components(hex: validHex)
         return Color(.sRGB, red: colourComponents.red, green: colourComponents.green, blue: colourComponents.blue, opacity: 1)
     }
 }

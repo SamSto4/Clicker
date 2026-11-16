@@ -28,7 +28,7 @@ enum CompanionScreenCaptureUtility {
     /// whether the user's cursor is on that screen. This gives the AI
     /// full context across multiple monitors.
     /// Debug aid for the drawing self test: a picture of the main display that shows ONLY
-    /// Clicky's own windows (the overlay with its marks), never the user's apps. It answers the
+    /// Ezra's own windows (the overlay with its marks), never the user's apps. It answers the
     /// question "did the marks really reach the screen" without capturing anything private.
     static func captureOnlyOwnWindowsOnMainDisplayAsPNG() async throws -> Data? {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)

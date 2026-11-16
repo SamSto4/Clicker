@@ -1,15 +1,15 @@
-// Eval-only driver for the Clicky prompt pipeline.
+// Eval-only driver for the Ezra prompt pipeline.
 //
 // Compile (from /Users/samsto/Clicker, never run xcodebuild):
-//   swiftc -swift-version 5 -O -o <binary> eval/assemble_prompt_driver/main.swift leanring-buddy/ClickyCore/*.swift
+//   swiftc -swift-version 5 -O -o <binary> eval/assemble_prompt_driver/main.swift leanring-buddy/EzraCore/*.swift
 //
 // It calls the same two entry points the app calls, so the harness scores what the app would do:
 //   prepare  <input.json> <output.json> <promptsDirectory> <notesRootDirectory>
 //            For each scenario: seed a temporary note store and (round 4B) a temporary profile.md
-//            (`seedProfileFacts` through ClickyProfileStore.saveFact, or `seedProfileFileContents` written
-//            verbatim for hand-edited files), then ClickyPromptAssembler.prepareSystemPrompt with both stores.
+//            (`seedProfileFacts` through EzraProfileStore.saveFact, or `seedProfileFileContents` written
+//            verbatim for hand-edited files), then EzraPromptAssembler.prepareSystemPrompt with both stores.
 //   finish   <input.json> <output.json> <notesRootDirectory>
-//            For each raw reply: ClickyTurnFinisher.finishTurn against that scenario's temporary note and
+//            For each raw reply: EzraTurnFinisher.finishTurn against that scenario's temporary note and
 //            profile stores (optional `previousAssistantHistoryText` for "forget that"). Reports what the
 //            real gate saved or removed, plus the profile and note texts left in the stores afterwards.
 //   intent   <input.json> <output.json>
@@ -20,10 +20,10 @@
 //            and (round 6) the draw, card and row tags.
 //
 // Round 6 (drawing and the explanation card): `prepare` and `finish` both accept `seedDrawTagTexts`, a list
-// of earlier reply texts whose [DRAW:...], [CARD:...] and [ROW:...] tags are parsed with ClickyDrawTagParser
-// and applied to a ClickyDrawingBoard, one reply after the other. `prepare` passes the resulting marks to the
+// of earlier reply texts whose [DRAW:...], [CARD:...] and [ROW:...] tags are parsed with EzraDrawTagParser
+// and applied to a EzraDrawingBoard, one reply after the other. `prepare` passes the resulting marks to the
 // assembler as `drawingMarksOnScreen` (so the prompt carries the app's own "marks on screen" text); `finish`
-// rebuilds the same board, parses the new reply with ClickyDrawTagParser (with the row count of the card on
+// rebuilds the same board, parses the new reply with EzraDrawTagParser (with the row count of the card on
 // screen, as the app does), applies its commands, and reports the commands, the dropped tag count and the
 // board before and after. The harness scores those records and never re-implements the grammar.
 //
@@ -41,7 +41,7 @@
 // section the app would build for that question (`includedMemoryTexts` in the output lists the lines
 // that were selected). A new mode, `compact`, shows the compaction without any network call:
 //   compact  <input.json> <output.json|-> <promptsDirectory>
-//            For each record `{ id, exchanges: [{ user, clicky }], alreadyCompactedExchangeCount?,
+//            For each record `{ id, exchanges: [{ user, ezra }], alreadyCompactedExchangeCount?,
 //            existingMemoryTexts?, existingProfileFactTexts?, modelOutput? }`: the app's own decision
 //            (nothing new, skipped as too short, or compact), the exact request body the app would send to
 //            the Worker (`requestBody`, and the same as one line of JSON text in `requestBodyJSON`; both
@@ -64,7 +64,7 @@
 //               seeded into a temporary folder under notesRootDirectory (`<id>-files`; the folder names default
 //               to ["project"], a file path is relative to that temporary root and starts with a folder name,
 //               otherwise it goes into the first folder; the text "{root}" inside a tool input is replaced by
-//               the temporary root's path), then the app's own `ClickyFileToolTurnSession` runs the tool(s).
+//               the temporary root's path), then the app's own `EzraFileToolTurnSession` runs the tool(s).
 //               Output per record: `results` (each `{ toolName, resultText, isError }`; `resultText` and
 //               `isError` of the first are repeated at the top level), `queuedChanges` (action, relative path,
 //               summary, the diff lines the change card shows, hidden line count), `toolCallCount`,
@@ -73,7 +73,7 @@
 //               the tool_result of a real loop through the Worker.
 //   finish-files <input.json> <output.json>
 //               For each record `{ id, spokenText, queuedChangeCount, usedFileTools, transcript? }`: the text
-//               after the honesty rule (`ClickyFileEditingHonesty`) and, when `transcript` is given, what
+//               after the honesty rule (`EzraFileEditingHonesty`) and, when `transcript` is given, what
 //               the words mean to a pending change (`confirm`, `cancel`, `undo` or null).
 //
 // Round 21 (explaining on screen): `prepare` also reads an optional `walkthrough` object (`{ stepCount,
@@ -86,12 +86,12 @@
 // reports `walkthroughWord`. See "Explaining on screen (round 21)" in eval/README.md.
 //
 // SAFETY: every note and profile operation goes to a directory under notesRootDirectory. That directory must be
-// a folder whose name starts with "clicky-eval-notes-" and must not be the real Clicky notes folder.
+// a folder whose name starts with "ezra-eval-notes-" and must not be the real Ezra notes folder.
 // The harness creates notesRootDirectory with mkdtemp under the OS temp folder.
 
 import Foundation
 
-let evalNotesFolderNamePrefix = "clicky-eval-notes-"
+let evalNotesFolderNamePrefix = "ezra-eval-notes-"
 
 func failWithMessage(_ message: String) -> Never {
     FileHandle.standardError.write(Data("driver error: \(message)\n".utf8))
@@ -100,47 +100,47 @@ func failWithMessage(_ message: String) -> Never {
 
 func requireTemporaryNotesRoot(_ notesRootDirectoryURL: URL) {
     let standardizedRootPath = notesRootDirectoryURL.standardizedFileURL.path
-    let realNotesPath = ClickyNoteStore.defaultNotesDirectoryURL.standardizedFileURL.path
+    let realNotesPath = EzraNoteStore.defaultNotesDirectoryURL.standardizedFileURL.path
     guard notesRootDirectoryURL.lastPathComponent.hasPrefix(evalNotesFolderNamePrefix),
           standardizedRootPath != realNotesPath,
           !standardizedRootPath.hasPrefix(realNotesPath + "/"),
           !realNotesPath.hasPrefix(standardizedRootPath + "/") else {
-        failWithMessage("refusing notes root \(standardizedRootPath): must be a \(evalNotesFolderNamePrefix)* folder outside the real Clicky notes folder")
+        failWithMessage("refusing notes root \(standardizedRootPath): must be a \(evalNotesFolderNamePrefix)* folder outside the real Ezra notes folder")
     }
 }
 
-func noteStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> ClickyNoteStore {
+func noteStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> EzraNoteStore {
     let scenarioNotesDirectoryURL = notesRootDirectoryURL.appendingPathComponent(scenarioIdentifier, isDirectory: true)
-    return ClickyNoteStore(notesDirectoryURL: scenarioNotesDirectoryURL)
+    return EzraNoteStore(notesDirectoryURL: scenarioNotesDirectoryURL)
 }
 
 /// The profile sits in the same temporary folder as the scenario's daily notes, as it does in the app
 /// (profile.md next to the day files).
-func profileStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> ClickyProfileStore {
+func profileStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> EzraProfileStore {
     let scenarioNotesDirectoryURL = notesRootDirectoryURL.appendingPathComponent(scenarioIdentifier, isDirectory: true)
-    return ClickyProfileStore(profileDirectoryURL: scenarioNotesDirectoryURL)
+    return EzraProfileStore(profileDirectoryURL: scenarioNotesDirectoryURL)
 }
 
 /// The memories of a scenario sit in a folder next to the scenario's notes folder (never inside it, so
 /// the notes folder stays what the app's notes folder is: daily files and profile.md).
-func memoryStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> ClickyMemoryStore {
+func memoryStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> EzraMemoryStore {
     let scenarioMemoriesDirectoryURL = notesRootDirectoryURL.appendingPathComponent("\(scenarioIdentifier)-memories", isDirectory: true)
-    return ClickyMemoryStore(memoriesDirectoryURL: scenarioMemoriesDirectoryURL)
+    return EzraMemoryStore(memoriesDirectoryURL: scenarioMemoriesDirectoryURL)
 }
 
 /// Round 21b: the standing context of a scenario sits in a folder next to the scenario's notes folder, like
 /// its memories (never inside it, and never the real context folder: the notes root is a temporary folder).
-func agentContextStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> ClickyAgentContextStore {
+func agentContextStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> EzraAgentContextStore {
     let scenarioContextDirectoryURL = notesRootDirectoryURL.appendingPathComponent("\(scenarioIdentifier)-context", isDirectory: true)
-    return ClickyAgentContextStore(directoryURL: scenarioContextDirectoryURL)
+    return EzraAgentContextStore(directoryURL: scenarioContextDirectoryURL)
 }
 
 /// The raw profile file, so a scoring step can check that no secret value reached the disk.
-func profileFileContents(of profileStore: ClickyProfileStore) -> String? {
+func profileFileContents(of profileStore: EzraProfileStore) -> String? {
     try? String(contentsOf: profileStore.profileFileURL, encoding: .utf8)
 }
 
-func forgetOutcomeRecord(_ forgetOutcome: ClickyForgetOutcome?) -> Any {
+func forgetOutcomeRecord(_ forgetOutcome: EzraForgetOutcome?) -> Any {
     guard let forgetOutcome else {
         return NSNull()
     }
@@ -206,11 +206,11 @@ func seedDate(fromDayText dayText: String) -> Date {
 
 // MARK: - drawing (round 6)
 
-func drawingPointRecord(_ point: ClickyDrawingPoint) -> [String: Any] {
+func drawingPointRecord(_ point: EzraDrawingPoint) -> [String: Any] {
     ["x": point.x, "y": point.y]
 }
 
-func explanationCardRowRecord(_ row: ClickyExplanationCardRow) -> [String: Any] {
+func explanationCardRowRecord(_ row: EzraExplanationCardRow) -> [String: Any] {
     var partTexts: [String] = []
     switch row {
     case .text(let text):
@@ -233,7 +233,7 @@ func explanationCardRowRecord(_ row: ClickyExplanationCardRow) -> [String: Any] 
 }
 
 /// One shape as plain numbers and text, in screenshot pixels, exactly as the app's parser read it.
-func drawingShapeRecord(_ shape: ClickyDrawingShape) -> [String: Any] {
+func drawingShapeRecord(_ shape: EzraDrawingShape) -> [String: Any] {
     switch shape {
     case .arrow(let tail, let head):
         return ["shapeKind": "arrow", "tail": drawingPointRecord(tail), "head": drawingPointRecord(head)]
@@ -263,7 +263,7 @@ func drawingShapeRecord(_ shape: ClickyDrawingShape) -> [String: Any] {
     }
 }
 
-func drawCommandRecord(_ parsedDrawCommand: ClickyParsedDrawCommand) -> [String: Any] {
+func drawCommandRecord(_ parsedDrawCommand: EzraParsedDrawCommand) -> [String: Any] {
     var commandRecord: [String: Any] = ["spokenFractionBeforeTag": parsedDrawCommand.spokenFractionBeforeTag]
     switch parsedDrawCommand.command {
     case .addMark(let shape, let screenNumber):
@@ -286,7 +286,7 @@ func drawCommandRecord(_ parsedDrawCommand: ClickyParsedDrawCommand) -> [String:
     return commandRecord
 }
 
-func drawingMarkRecord(_ mark: ClickyDrawingMark) -> [String: Any] {
+func drawingMarkRecord(_ mark: EzraDrawingMark) -> [String: Any] {
     [
         "markIdentifier": mark.markIdentifier,
         "shape": drawingShapeRecord(mark.shape),
@@ -294,7 +294,7 @@ func drawingMarkRecord(_ mark: ClickyDrawingMark) -> [String: Any] {
     ]
 }
 
-func rowCountOfExplanationCard(on drawingBoard: ClickyDrawingBoard) -> Int? {
+func rowCountOfExplanationCard(on drawingBoard: EzraDrawingBoard) -> Int? {
     guard let cardMark = drawingBoard.explanationCardMark, case .explanationCard(let card) = cardMark.shape else {
         return nil
     }
@@ -302,12 +302,12 @@ func rowCountOfExplanationCard(on drawingBoard: ClickyDrawingBoard) -> Int? {
 }
 
 /// The board as it would be after the earlier replies in `seedDrawTagTexts`, each parsed and applied the way
-/// the app does it for a reply (ClickyDrawTagParser.parse with the row count of the card on the board, then
-/// ClickyDrawingBoard.apply for every accepted command).
-func drawingBoard(fromSeedDrawTagTexts seedDrawTagTexts: [String]) -> ClickyDrawingBoard {
-    var drawingBoard = ClickyDrawingBoard()
+/// the app does it for a reply (EzraDrawTagParser.parse with the row count of the card on the board, then
+/// EzraDrawingBoard.apply for every accepted command).
+func drawingBoard(fromSeedDrawTagTexts seedDrawTagTexts: [String]) -> EzraDrawingBoard {
+    var drawingBoard = EzraDrawingBoard()
     for seedDrawTagText in seedDrawTagTexts {
-        let parsedSeedReply = ClickyDrawTagParser.parse(
+        let parsedSeedReply = EzraDrawTagParser.parse(
             seedDrawTagText,
             rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: drawingBoard)
         )
@@ -321,12 +321,12 @@ func drawingBoard(fromSeedDrawTagTexts seedDrawTagTexts: [String]) -> ClickyDraw
     return drawingBoard
 }
 
-/// The marks as the app hands them to the assembler (ClickyDrawingOverlayController.drawingMarksForPrompt):
+/// The marks as the app hands them to the assembler (EzraDrawingOverlayController.drawingMarksForPrompt):
 /// with one screen the list carries no screen number; with several, every mark carries the number of the
 /// screenshot it is on, and a mark drawn without `:screenN` is on the cursor's screen, which is screen 1.
-func drawingMarksForPrompt(on drawingBoard: ClickyDrawingBoard, screenCount: Int) -> [ClickyDrawingMark] {
+func drawingMarksForPrompt(on drawingBoard: EzraDrawingBoard, screenCount: Int) -> [EzraDrawingMark] {
     drawingBoard.marks.map { markOnBoard in
-        ClickyDrawingMark(
+        EzraDrawingMark(
             markNumber: markOnBoard.markNumber,
             shape: markOnBoard.shape,
             screenNumber: screenCount > 1 ? (markOnBoard.screenNumber ?? 1) : nil
@@ -415,11 +415,11 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
 
         // Round 14: the window title of the screen now, and the screen the last exchange of the history
         // was on (the app records it with each exchange; here the harness states it for the scenario).
-        // Both are built with the app's own `ClickyScreenDescription` so cleaning and comparing are the app's.
+        // Both are built with the app's own `EzraScreenDescription` so cleaning and comparing are the app's.
         let screenContextNow = scenarioInput["screenContextNow"] as? [String: Any]
         let screenContextOfHistory = scenarioInput["screenContextOfHistory"] as? [String: Any]
         let screenOfLastExchange = screenContextOfHistory.flatMap { screenContextOfHistoryObject in
-            ClickyScreenDescription.describing(
+            EzraScreenDescription.describing(
                 applicationName: screenContextOfHistoryObject["app"] as? String,
                 rawWindowTitle: screenContextOfHistoryObject["windowTitle"] as? String
             )
@@ -430,7 +430,7 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
         // document, `frontmostDocument`, a path relative to the temporary root) exactly as the app gives
         // them, and the output carries the tools array and the section the app would send. Without it the
         // record is exactly what it was.
-        var turnContext = ClickyTurnContext(
+        var turnContext = EzraTurnContext(
             userTranscript: userTranscript,
             frontmostApplicationBundleIdentifier: applicationBundleIdentifier,
             frontmostApplicationName: applicationName,
@@ -446,21 +446,21 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
         // asked something else. Without the object the prompt is exactly what it was.
         var walkthroughOutputFields: [String: Any] = [:]
         if let walkthroughInput = scenarioInput["walkthrough"] as? [String: Any] {
-            guard let stepCount = walkthroughInput["stepCount"] as? Int, stepCount >= 1, stepCount <= ClickyWalkthroughState.maximumStepCount,
+            guard let stepCount = walkthroughInput["stepCount"] as? Int, stepCount >= 1, stepCount <= EzraWalkthroughState.maximumStepCount,
                   let currentStep = walkthroughInput["currentStep"] as? Int, currentStep >= 1, currentStep <= stepCount else {
                 failWithMessage("walkthrough needs stepCount 1 to 12 and currentStep 1 to stepCount (\(scenarioIdentifier))")
             }
             let givenPlanTexts = (walkthroughInput["planTexts"] as? [String]) ?? []
             let planTexts = (1...stepCount).map { stepNumber in stepNumber <= givenPlanTexts.count ? givenPlanTexts[stepNumber - 1] : "step \(stepNumber)" }
-            var walkthroughUserWord: ClickyWalkthroughUserWord?
+            var walkthroughUserWord: EzraWalkthroughUserWord?
             if let userWordText = walkthroughInput["userWord"] as? String {
-                guard let parsedUserWord = ClickyWalkthroughUserWord(rawValue: userWordText), parsedUserWord != .stop else {
+                guard let parsedUserWord = EzraWalkthroughUserWord(rawValue: userWordText), parsedUserWord != .stop else {
                     failWithMessage("walkthrough userWord must be next, back, repeat or null (\(scenarioIdentifier))")
                 }
                 walkthroughUserWord = parsedUserWord
             }
-            let walkthroughState = ClickyWalkthroughState(stepCount: stepCount, planTexts: planTexts, currentStep: currentStep, startedAt: Date(), lastStepAt: Date())
-            turnContext.walkthroughPromptContext = ClickyWalkthroughPromptContext(state: walkthroughState, userWord: walkthroughUserWord)
+            let walkthroughState = EzraWalkthroughState(stepCount: stepCount, planTexts: planTexts, currentStep: currentStep, startedAt: Date(), lastStepAt: Date())
+            turnContext.walkthroughPromptContext = EzraWalkthroughPromptContext(state: walkthroughState, userWord: walkthroughUserWord)
             walkthroughOutputFields = [
                 "walkthroughSectionText": walkthroughState.promptSectionText(forUserWord: walkthroughUserWord),
                 // The transcript the app sends for this step word (send it as the user's message).
@@ -481,30 +481,30 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             let frontmostDocumentPath = (scenarioInput["frontmostDocument"] as? String).map {
                 workspace.rootDirectoryURL.appendingPathComponent($0).path
             }
-            let pathPolicy = ClickyFilePathPolicy(
+            let pathPolicy = EzraFilePathPolicy(
                 allowedFolderPaths: workspace.editableFolderURLs.map(\.path),
                 homeDirectoryPath: workspace.homeDirectoryPath,
                 frontmostDocumentPath: frontmostDocumentPath
             )
             turnContext.editableFolders = pathPolicy.allowedFolderURLs.map {
-                ClickyEditableFolderDescription(name: ClickyEditableFolders.displayName(forFolderPath: $0.path), path: $0.path)
+                EzraEditableFolderDescription(name: EzraEditableFolders.displayName(forFolderPath: $0.path), path: $0.path)
             }
-            turnContext.frontmostDocumentInEditableFolder = ClickyFileEditingPromptSection.frontmostDocumentDescription(
+            turnContext.frontmostDocumentInEditableFolder = EzraFileEditingPromptSection.frontmostDocumentDescription(
                 documentPath: frontmostDocumentPath,
                 policy: pathPolicy
             )
             fileEditingOutputFields = [
-                "tools": ClickyFileToolDefinitions.toolsArray(),
-                "filesSectionText": ClickyFileEditingPromptSection.sectionText(for: turnContext.editableFolders) ?? NSNull(),
-                "frontmostDocumentLine": ClickyFileEditingPromptSection.frontmostDocumentLine(for: turnContext.frontmostDocumentInEditableFolder) ?? NSNull(),
+                "tools": EzraFileToolDefinitions.toolsArray(),
+                "filesSectionText": EzraFileEditingPromptSection.sectionText(for: turnContext.editableFolders) ?? NSNull(),
+                "frontmostDocumentLine": EzraFileEditingPromptSection.frontmostDocumentLine(for: turnContext.frontmostDocumentInEditableFolder) ?? NSNull(),
                 "filesRootPath": workspace.rootDirectoryURL.path,
                 "folderPaths": workspace.editableFolderURLs.map(\.path),
                 // What the request carries beyond today's: 8000 output tokens and the tools, no tool_choice.
-                "maxTokens": ClickyFileEditingLimits.maximumOutputTokensWithTools,
+                "maxTokens": EzraFileEditingLimits.maximumOutputTokensWithTools,
             ]
         }
 
-        let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
+        let preparedPrompt = EzraPromptAssembler.prepareSystemPrompt(
             for: turnContext,
             promptsDirectoryURL: promptsDirectoryURL,
             noteStore: noteStore,
@@ -521,7 +521,7 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
                 "contextCharacterCount": preparedPrompt.contextCharacterCount,
                 "contextHiddenLineCount": preparedPrompt.contextHiddenLineCount,
                 // The 1-based numbers of the hidden lines, on the text as the editor shows it.
-                "contextHiddenLineNumbers": ClickyAgentContextText.hiddenLineNumbers(in: agentContextStore.currentText),
+                "contextHiddenLineNumbers": EzraAgentContextText.hiddenLineNumbers(in: agentContextStore.currentText),
             ]
         }
         outputRecords.append([
@@ -535,7 +535,7 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             // Round 21b: with a standing context the array holds its block between the two.
             "staticSystemPromptText": preparedPrompt.staticSystemPromptText,
             "dynamicSystemPromptText": preparedPrompt.dynamicSystemPromptText,
-            "systemBlocks": ClickySystemPromptBlocks.makeSystemBlocks(
+            "systemBlocks": EzraSystemPromptBlocks.makeSystemBlocks(
                 staticText: preparedPrompt.staticSystemPromptText,
                 contextText: preparedPrompt.contextSystemPromptText,
                 dynamicText: preparedPrompt.dynamicSystemPromptText
@@ -550,7 +550,7 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             "memoryTextsInStore": seedMemories == nil ? [] : memoryStore.loadMemories().map(\.text),
             // Round 6: the seeded marks, and the lines the app's "marks on screen" section lists for them.
             "drawingMarksOnScreen": drawingMarksOnScreen.map { drawingMarkRecord($0) },
-            "drawingMarksOnScreenLineTexts": drawingMarksOnScreen.map { ClickyDrawingMarksOnScreenText.lineText(for: $0) },
+            "drawingMarksOnScreenLineTexts": drawingMarksOnScreen.map { EzraDrawingMarksOnScreenText.lineText(for: $0) },
         ].merging(fileEditingOutputFields) { current, _ in current }.merging(walkthroughOutputFields) { current, _ in current }.merging(agentContextOutputFields) { current, _ in current })
     }
     writeJSON(outputRecords, toPath: outputPath)
@@ -561,13 +561,13 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
 /// Round 21: what the app's Accessibility snap would do with the reply's `[POINT:]` target, with the
 /// scenario's element boxes standing in for what Accessibility reports. The boxes are in the fixture's
 /// screenshot pixels, `[{ "x", "y", "width", "height", "role"?, "screen"? }]` (role defaults to AXButton,
-/// screen to 1). They are mapped to display points with the app's own `ClickyScreenshotToDisplayMapping`
+/// screen to 1). They are mapped to display points with the app's own `EzraScreenshotToDisplayMapping`
 /// (`screenshotSizeInPixels` and `displaySizeInPoints`, each `{ "width", "height" }`; without them pixels
 /// are taken as points), because the snap's limits (200 x 80, 6 points, 60 points) are in display points.
 /// The element under the point is the smallest box that holds it, as Accessibility answers with the
 /// deepest element there. Without `elementBoxes` the fields are null.
 func pointSnapRecord(
-    pointTarget: ClickyPointTarget?,
+    pointTarget: EzraPointTarget?,
     elementBoxInputs: [[String: Any]]?,
     screenshotSizeInput: [String: Any]?,
     displaySizeInput: [String: Any]?
@@ -581,13 +581,13 @@ func pointSnapRecord(
     func number(_ value: Any?) -> Double? { (value as? NSNumber)?.doubleValue }
     let screenshotWidth = number(screenshotSizeInput?["width"]) ?? 10_000
     let screenshotHeight = number(screenshotSizeInput?["height"]) ?? 10_000
-    let mapping = ClickyScreenshotToDisplayMapping(
+    let mapping = EzraScreenshotToDisplayMapping(
         screenshotWidthInPixels: screenshotWidth,
         screenshotHeightInPixels: screenshotHeight,
         displayWidthInPoints: number(displaySizeInput?["width"]) ?? screenshotWidth,
         displayHeightInPoints: number(displaySizeInput?["height"]) ?? screenshotHeight
     )
-    let modelDisplayPoint = mapping.displayPointFromTopLeft(forScreenshotPixel: ClickyDrawingPoint(x: pointTarget.x, y: pointTarget.y))
+    let modelDisplayPoint = mapping.displayPointFromTopLeft(forScreenshotPixel: EzraDrawingPoint(x: pointTarget.x, y: pointTarget.y))
     let modelPoint = CGPoint(x: modelDisplayPoint.x, y: modelDisplayPoint.y)
     let targetScreenNumber = pointTarget.screenNumber ?? 1
 
@@ -610,11 +610,11 @@ func pointSnapRecord(
         elementUnderPoint = (boxFrame, (elementBoxInput["role"] as? String) ?? "AXButton")
     }
 
-    let snapOutcome: ClickyPointSnapOutcome
+    let snapOutcome: EzraPointSnapOutcome
     var pointAfterSnap = modelPoint
     var distancePoints = 0
     if let elementUnderPoint {
-        switch ClickyPointSnap.decide(modelPointInDisplayPoints: modelPoint, elementFrameInDisplayPoints: elementUnderPoint.frame, elementRole: elementUnderPoint.role, elementBelongsToClicky: false) {
+        switch EzraPointSnap.decide(modelPointInDisplayPoints: modelPoint, elementFrameInDisplayPoints: elementUnderPoint.frame, elementRole: elementUnderPoint.role, elementBelongsToEzra: false) {
         case .snapped(let snappedPoint, let distance):
             snapOutcome = .snapped
             pointAfterSnap = snappedPoint
@@ -652,7 +652,7 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
         // The app passes the last exchange's assistant text so "forget that" can find what it saved.
         let previousAssistantHistoryText = replyInput["previousAssistantHistoryText"] as? String
         let profileFactTextsBefore = profileStore.loadFactTexts()
-        let finishedTurn = ClickyTurnFinisher.finishTurn(
+        let finishedTurn = EzraTurnFinisher.finishTurn(
             rawReplyText: rawReplyText,
             userTranscript: userTranscript,
             noteStore: noteStore,
@@ -663,7 +663,7 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
         // the row count of the card that is on the screen, then applied to the board in order.
         var drawingBoardForReply = drawingBoard(fromSeedDrawTagTexts: (replyInput["seedDrawTagTexts"] as? [String]) ?? [])
         let drawingMarksBeforeReply = drawingBoardForReply.marks
-        let parsedDrawReply = ClickyDrawTagParser.parse(
+        let parsedDrawReply = EzraDrawTagParser.parse(
             rawReplyText,
             rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: drawingBoardForReply)
         )
@@ -673,7 +673,7 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
                 drawCommandsThatChangedNothingCount += 1
             }
         }
-        let drawHistoryAssistantText = ClickyDrawTagParser.historyAssistantText(
+        let drawHistoryAssistantText = EzraDrawTagParser.historyAssistantText(
             rawReplyText: rawReplyText,
             finishedSpokenText: finishedTurn.spokenText,
             finishedHistoryAssistantText: finishedTurn.historyAssistantText,
@@ -690,7 +690,7 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             ] as [String: Any]
         }
         // Round 21: the walkthrough tags of the reply ([STEP:k of n] and [PLAN:k:text]), read by the app's own parser.
-        let walkthroughReplyTags = ClickyWalkthroughTags.parse(rawReplyText: rawReplyText)
+        let walkthroughReplyTags = EzraWalkthroughTags.parse(rawReplyText: rawReplyText)
         // Round 21 (stage 4): the point after the Accessibility snap, when the input gives element boxes.
         let pointSnapOutputFields = pointSnapRecord(
             pointTarget: finishedTurn.parsedReply.pointTarget,
@@ -724,7 +724,7 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             "profileFactTextsAfter": profileStore.loadFactTexts(),
             "profileFileContentsAfter": profileFileContents(of: profileStore) ?? NSNull(),
             "noteTextsAfter": noteStore.loadAllNotes().map(\.text),
-            // Round 6: what ClickyDrawTagParser accepted and dropped, and the board before and after.
+            // Round 6: what EzraDrawTagParser accepted and dropped, and the board before and after.
             "drawCommands": parsedDrawReply.commands.map { drawCommandRecord($0) },
             "ignoredDrawTagCount": parsedDrawReply.ignoredDrawTagCount,
             "drawCommandsThatChangedNothingCount": drawCommandsThatChangedNothingCount,
@@ -736,7 +736,7 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             "walkthroughStep": walkthroughReplyTags.stepNumber ?? NSNull(),
             "walkthroughStepCount": walkthroughReplyTags.stepCount ?? NSNull(),
             "planTexts": walkthroughReplyTags.planTexts,
-            "walkthroughHistoryAssistantText": ClickyWalkthroughTags.historyText(appending: walkthroughReplyTags, to: drawHistoryAssistantText),
+            "walkthroughHistoryAssistantText": EzraWalkthroughTags.historyText(appending: walkthroughReplyTags, to: drawHistoryAssistantText),
         ].merging(pointSnapOutputFields) { current, _ in current })
     }
     writeJSON(outputRecords, toPath: outputPath)
@@ -744,7 +744,7 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
 
 // MARK: - compact (round 16: offline, zero API calls)
 
-func memoryValidationRecord(_ validationResult: ClickyMemoryValidationResult) -> [String: Any] {
+func memoryValidationRecord(_ validationResult: EzraMemoryValidationResult) -> [String: Any] {
     [
         "keptMemoryTexts": validationResult.keptTexts,
         "ignoredLineCount": validationResult.ignoredLineCount,
@@ -757,11 +757,11 @@ func memoryValidationRecord(_ validationResult: ClickyMemoryValidationResult) ->
 }
 
 /// What the app would do with a chat that ended, without asking any model: its decision, the exact
-/// request body (built by the app's own `ClickyMemoryCompaction.makeRequestBody`, the same call the
+/// request body (built by the app's own `EzraMemoryCompaction.makeRequestBody`, the same call the
 /// runner makes), and the validation of a model output the harness supplies.
 func runCompact(inputPath: String, outputPath: String, promptsDirectoryPath: String) {
     let promptsDirectoryURL = URL(fileURLWithPath: promptsDirectoryPath, isDirectory: true)
-    let systemPromptText = ClickyMemoryCompaction.loadSystemPromptText(promptsDirectoryURL: promptsDirectoryURL)
+    let systemPromptText = EzraMemoryCompaction.loadSystemPromptText(promptsDirectoryURL: promptsDirectoryURL)
     var outputRecords: [[String: Any]] = []
 
     for compactInput in readJSONArray(atPath: inputPath) {
@@ -772,19 +772,19 @@ func runCompact(inputPath: String, outputPath: String, promptsDirectoryPath: Str
         // request). Timestamps are only there to make the chat well formed.
         let exchangeInputs = (compactInput["exchanges"] as? [[String: Any]]) ?? []
         let storedExchanges = exchangeInputs.enumerated().map { exchangeIndex, exchangeInput in
-            ClickyChatExchange(
+            EzraChatExchange(
                 userText: (exchangeInput["user"] as? String) ?? "",
                 inputMode: .typed,
-                replyDisplayText: (exchangeInput["clicky"] as? String) ?? "",
-                replyHistoryText: (exchangeInput["clicky"] as? String) ?? "",
+                replyDisplayText: (exchangeInput["ezra"] as? String) ?? "",
+                replyHistoryText: (exchangeInput["ezra"] as? String) ?? "",
                 timestamp: Date(timeIntervalSince1970: 1_700_000_000 + Double(exchangeIndex) * 30)
             )
         }
-        var chatToCompact = ClickyChat(createdAt: Date(timeIntervalSince1970: 1_700_000_000), project: ClickyChatProject.unknown, exchanges: storedExchanges)
+        var chatToCompact = EzraChat(createdAt: Date(timeIntervalSince1970: 1_700_000_000), project: EzraChatProject.unknown, exchanges: storedExchanges)
         chatToCompact.memoryCompactedExchangeCount = (compactInput["alreadyCompactedExchangeCount"] as? Int) ?? 0
 
         var outputRecord: [String: Any] = ["id": recordIdentifier]
-        switch ClickyMemoryCompactionPlanner.decision(for: chatToCompact) {
+        switch EzraMemoryCompactionPlanner.decision(for: chatToCompact) {
         case .nothingNew:
             outputRecord["decision"] = "nothingNew"
         case .skippedAsTooShort(let coveringExchangeCount):
@@ -797,16 +797,16 @@ func runCompact(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             // The `<known>` list the app sends: the record's profile facts and memories, picked by the
             // app's own `knownTexts` (memories get today's date; their date only breaks ties).
             let existingMemoriesForKnownList = ((compactInput["existingMemoryTexts"] as? [String]) ?? []).map { memoryText in
-                ClickyMemory(id: UUID(), text: memoryText, createdAt: Date(), sourceChatID: nil)
+                EzraMemory(id: UUID(), text: memoryText, createdAt: Date(), sourceChatID: nil)
             }
-            let knownTexts = ClickyMemoryCompaction.knownTexts(
+            let knownTexts = EzraMemoryCompaction.knownTexts(
                 profileFactTexts: (compactInput["existingProfileFactTexts"] as? [String]) ?? [],
                 memories: existingMemoriesForKnownList,
                 forExchanges: exchangesInRequest,
                 now: Date()
             )
             outputRecord["knownTexts"] = knownTexts
-            let requestBody = ClickyMemoryCompaction.makeRequestBody(forExchanges: exchangesInRequest, knownTexts: knownTexts, systemPromptText: systemPromptText)
+            let requestBody = EzraMemoryCompaction.makeRequestBody(forExchanges: exchangesInRequest, knownTexts: knownTexts, systemPromptText: systemPromptText)
             outputRecord["requestBody"] = requestBody
             if let requestBodyData = try? JSONSerialization.data(withJSONObject: requestBody, options: [.sortedKeys]),
                let requestBodyJSONText = String(data: requestBodyData, encoding: .utf8) {
@@ -815,7 +815,7 @@ func runCompact(inputPath: String, outputPath: String, promptsDirectoryPath: Str
         }
 
         if let modelOutput = compactInput["modelOutput"] as? String {
-            let validationResult = ClickyMemoryOutputValidator.validate(
+            let validationResult = EzraMemoryOutputValidator.validate(
                 modelOutput: modelOutput,
                 existingMemoryTexts: (compactInput["existingMemoryTexts"] as? [String]) ?? [],
                 existingProfileFactTexts: (compactInput["existingProfileFactTexts"] as? [String]) ?? []
@@ -830,7 +830,7 @@ func runCompact(inputPath: String, outputPath: String, promptsDirectoryPath: Str
 
 // MARK: - intent (offline, zero API calls, no files)
 
-func forgetRequestRecord(_ forgetRequest: ClickyForgetRequest?) -> Any {
+func forgetRequestRecord(_ forgetRequest: EzraForgetRequest?) -> Any {
     guard let forgetRequest else {
         return NSNull()
     }
@@ -861,14 +861,14 @@ func runIntent(inputPath: String, outputPath: String) {
         outputRecords.append([
             "id": intentInput["id"] as? String ?? transcript,
             "transcript": transcript,
-            "statesLastingFactOrPreference": ClickyProfileIntentDetector.transcriptStatesLastingFactOrPreference(transcript),
-            "looksLikeASecret": ClickyProfileIntentDetector.textLooksLikeASecret(transcript),
-            "forgetRequest": forgetRequestRecord(ClickyProfileIntentDetector.forgetRequest(in: transcript)),
-            "noteSaveText": ClickyNoteIntentDetector.explicitSaveRequestNoteText(in: transcript) ?? NSNull(),
-            "noteSavingIntent": ClickyNoteIntentDetector.transcriptMentionsSavingIntent(transcript),
-            "asksToRecallNotes": ClickyNoteIntentDetector.transcriptAsksToRecallNotes(transcript),
+            "statesLastingFactOrPreference": EzraProfileIntentDetector.transcriptStatesLastingFactOrPreference(transcript),
+            "looksLikeASecret": EzraProfileIntentDetector.textLooksLikeASecret(transcript),
+            "forgetRequest": forgetRequestRecord(EzraProfileIntentDetector.forgetRequest(in: transcript)),
+            "noteSaveText": EzraNoteIntentDetector.explicitSaveRequestNoteText(in: transcript) ?? NSNull(),
+            "noteSavingIntent": EzraNoteIntentDetector.transcriptMentionsSavingIntent(transcript),
+            "asksToRecallNotes": EzraNoteIntentDetector.transcriptAsksToRecallNotes(transcript),
             // Round 21: what the words mean to a walkthrough in progress ("next", "back", "repeat", "stop" or null).
-            "walkthroughWord": ClickyWalkthroughWords.userWord(forTranscript: transcript)?.rawValue ?? NSNull(),
+            "walkthroughWord": EzraWalkthroughWords.userWord(forTranscript: transcript)?.rawValue ?? NSNull(),
         ])
     }
     writeJSON(outputRecords, toPath: outputPath)
@@ -890,37 +890,37 @@ func check(_ name: String, _ passed: Bool, _ detail: String = "") {
 
 func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     // Parser: POINT grammar.
-    let screenTwoParse = ClickyReplyTagParser.parse("that's on the other monitor. [POINT:400,300:terminal:screen2]")
+    let screenTwoParse = EzraReplyTagParser.parse("that's on the other monitor. [POINT:400,300:terminal:screen2]")
     check("parser: :screen2 suffix", screenTwoParse.pointTarget?.screenNumber == 2 && screenTwoParse.pointTarget?.label == "terminal" && screenTwoParse.spokenText == "that's on the other monitor.", "\(screenTwoParse)")
-    let noneParse = ClickyReplyTagParser.parse("i don't see that. [POINT:none]")
+    let noneParse = EzraReplyTagParser.parse("i don't see that. [POINT:none]")
     check("parser: POINT:none gives nil target", noneParse.pointTarget == nil && noneParse.spokenText == "i don't see that.", "\(noneParse)")
-    let decimalParse = ClickyReplyTagParser.parse("ok. [POINT:12.5,40.25:save button]")
+    let decimalParse = EzraReplyTagParser.parse("ok. [POINT:12.5,40.25:save button]")
     check("parser: decimal coordinates", decimalParse.pointTarget?.x == 12.5 && decimalParse.pointTarget?.y == 40.25, "\(decimalParse)")
-    let trailingPeriodParse = ClickyReplyTagParser.parse("click the run button. [POINT:136,46:run button].")
+    let trailingPeriodParse = EzraReplyTagParser.parse("click the run button. [POINT:136,46:run button].")
     check("parser: punctuation after tag tolerated", trailingPeriodParse.pointTarget?.x == 136 && trailingPeriodParse.spokenText == "click the run button.", "\(trailingPeriodParse)")
-    let midTextParse = ClickyReplyTagParser.parse("see [POINT:10,20:save] over there. then press enter.")
+    let midTextParse = EzraReplyTagParser.parse("see [POINT:10,20:save] over there. then press enter.")
     check("parser: mid-text POINT tag", midTextParse.pointTarget?.label == "save" && midTextParse.spokenText == "see over there. then press enter.", "\(midTextParse)")
-    let lowercaseParse = ClickyReplyTagParser.parse("try this. [point:5,6:thing]")
+    let lowercaseParse = EzraReplyTagParser.parse("try this. [point:5,6:thing]")
     check("parser: lowercase tag name", lowercaseParse.pointTarget?.x == 5, "\(lowercaseParse)")
-    let spacedLabelParse = ClickyReplyTagParser.parse("hit it. [POINT: 5 , 6 : save button ]")
+    let spacedLabelParse = EzraReplyTagParser.parse("hit it. [POINT: 5 , 6 : save button ]")
     check("parser: spaced label trimmed", spacedLabelParse.pointTarget?.label == "save button" && spacedLabelParse.pointTarget?.x == 5, "\(spacedLabelParse)")
-    let lastPointWinsParse = ClickyReplyTagParser.parse("[POINT:1,1:a] first. [POINT:9,9:b]")
+    let lastPointWinsParse = EzraReplyTagParser.parse("[POINT:1,1:a] first. [POINT:9,9:b]")
     check("parser: last POINT wins", lastPointWinsParse.pointTarget?.label == "b", "\(lastPointWinsParse)")
-    let truncatedParse = ClickyReplyTagParser.parse("sure, that's the export menu. [POINT:12,")
+    let truncatedParse = EzraReplyTagParser.parse("sure, that's the export menu. [POINT:12,")
     check("parser: truncated POINT fragment stripped", truncatedParse.pointTarget == nil && truncatedParse.spokenText == "sure, that's the export menu.", "\(truncatedParse)")
-    let truncatedNoteParse = ClickyReplyTagParser.parse("got it. [NOTE:the wifi is lant")
+    let truncatedNoteParse = EzraReplyTagParser.parse("got it. [NOTE:the wifi is lant")
     check("parser: truncated NOTE fragment stripped", truncatedNoteParse.noteTexts.isEmpty && truncatedNoteParse.spokenText == "got it.", "\(truncatedNoteParse)")
 
     // Parser: NOTE grammar.
-    let threeNotesParse = ClickyReplyTagParser.parse("a [NOTE:one fact] b [POINT:1,2:x] c [NOTE:two fact] d [NOTE:three fact]")
+    let threeNotesParse = EzraReplyTagParser.parse("a [NOTE:one fact] b [POINT:1,2:x] c [NOTE:two fact] d [NOTE:three fact]")
     check("parser: 1-3 NOTE tags in any order with POINT", threeNotesParse.noteTexts == ["one fact", "two fact", "three fact"] && threeNotesParse.pointTarget?.x == 1, "\(threeNotesParse)")
-    let fourNotesParse = ClickyReplyTagParser.parse("[NOTE:a1] [NOTE:b2] [NOTE:c3] [NOTE:d4]")
+    let fourNotesParse = EzraReplyTagParser.parse("[NOTE:a1] [NOTE:b2] [NOTE:c3] [NOTE:d4]")
     check("parser: NOTE cap of 3", fourNotesParse.noteTexts.count == 3 && !fourNotesParse.spokenText.contains("NOTE"), "\(fourNotesParse)")
-    let multilineNoteParse = ClickyReplyTagParser.parse("ok. [NOTE:line one\nline two]")
+    let multilineNoteParse = EzraReplyTagParser.parse("ok. [NOTE:line one\nline two]")
     check("parser: newline collapsed in NOTE", multilineNoteParse.noteTexts == ["line one line two"], "\(multilineNoteParse)")
-    let longNoteParse = ClickyReplyTagParser.parse("ok. [NOTE:\(String(repeating: "x", count: 500))]")
+    let longNoteParse = EzraReplyTagParser.parse("ok. [NOTE:\(String(repeating: "x", count: 500))]")
     check("parser: NOTE capped at 400 chars", (longNoteParse.noteTexts.first?.count ?? 0) == 400, "\(longNoteParse.noteTexts.first?.count ?? -1)")
-    let emptyNoteParse = ClickyReplyTagParser.parse("ok. [NOTE:   ]")
+    let emptyNoteParse = EzraReplyTagParser.parse("ok. [NOTE:   ]")
     check("parser: empty NOTE dropped", emptyNoteParse.noteTexts.isEmpty, "\(emptyNoteParse)")
 
     // Intent detector: save phrases (positive) and questions (negative).
@@ -929,43 +929,43 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
         "make a note of the meeting time", "note that the deploy is on friday", "note to self call mom",
         "write down the flight number", "jot down ideas for the demo", "save a note about the bug",
         "don't forget that the car is at the shop", "keep in mind that the client prefers email",
-        "hey clicky, please remember that i like tea", "can you note that the server is down", "remember: buy milk",
+        "hey ezra, please remember that i like tea", "can you note that the server is down", "remember: buy milk",
     ]
     let negativeNonSavePhrases = [
         "do you remember when we talked about xcode", "what's the capital of france", "what does git status do",
         "how do i commit in xcode", "what's on my screen", "remind me what i said about the wifi",
         "why is my build failing", "what's the weather", "where is the run button",
     ]
-    let missedPositives = positiveSavePhrases.filter { ClickyNoteIntentDetector.explicitSaveRequestNoteText(in: $0) == nil }
-    let falseSaves = negativeNonSavePhrases.filter { ClickyNoteIntentDetector.explicitSaveRequestNoteText(in: $0) != nil }
+    let missedPositives = positiveSavePhrases.filter { EzraNoteIntentDetector.explicitSaveRequestNoteText(in: $0) == nil }
+    let falseSaves = negativeNonSavePhrases.filter { EzraNoteIntentDetector.explicitSaveRequestNoteText(in: $0) != nil }
     check("intent: 14 save phrases detected", missedPositives.isEmpty, "missed: \(missedPositives)")
     check("intent: 9 non-save phrases not detected as saves", falseSaves.isEmpty, "false saves: \(falseSaves)")
-    check("intent: dictated text extracted", ClickyNoteIntentDetector.explicitSaveRequestNoteText(in: "remember that my dentist is friday at 3") == "my dentist is friday at 3")
+    check("intent: dictated text extracted", EzraNoteIntentDetector.explicitSaveRequestNoteText(in: "remember that my dentist is friday at 3") == "my dentist is friday at 3")
     // "remember this" is a save request, but the text must come from the screen, so no dictated text is returned.
-    check("intent: 'remember this' is save intent with no dictated text", ClickyNoteIntentDetector.explicitSaveRequestNoteText(in: "remember this") == nil && ClickyNoteIntentDetector.transcriptMentionsSavingIntent("remember this"))
-    check("intent: loose save language", ClickyNoteIntentDetector.transcriptMentionsSavingIntent("can you jot that in my notes"))
-    check("intent: recall phrases", ClickyNoteIntentDetector.transcriptAsksToRecallNotes("what did i tell you about the wifi") && ClickyNoteIntentDetector.transcriptAsksToRecallNotes("what do you remember about my car"))
-    check("intent: plain question is not recall", !ClickyNoteIntentDetector.transcriptAsksToRecallNotes("when's my dentist"))
+    check("intent: 'remember this' is save intent with no dictated text", EzraNoteIntentDetector.explicitSaveRequestNoteText(in: "remember this") == nil && EzraNoteIntentDetector.transcriptMentionsSavingIntent("remember this"))
+    check("intent: loose save language", EzraNoteIntentDetector.transcriptMentionsSavingIntent("can you jot that in my notes"))
+    check("intent: recall phrases", EzraNoteIntentDetector.transcriptAsksToRecallNotes("what did i tell you about the wifi") && EzraNoteIntentDetector.transcriptAsksToRecallNotes("what do you remember about my car"))
+    check("intent: plain question is not recall", !EzraNoteIntentDetector.transcriptAsksToRecallNotes("when's my dentist"))
 
     // Tag gate: a NOTE tag without save language is rejected; dictated fallback still saves.
     let temporaryRootURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(evalNotesFolderNamePrefix)selftest-\(UUID().uuidString)", isDirectory: true)
-    let selfTestNoteStore = ClickyNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("gate", isDirectory: true))
-    let gatedTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "the sky is blue. [NOTE:the sky is blue]", userTranscript: "what's the capital of france", noteStore: selfTestNoteStore)
+    let selfTestNoteStore = EzraNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("gate", isDirectory: true))
+    let gatedTurn = EzraTurnFinisher.finishTurn(rawReplyText: "the sky is blue. [NOTE:the sky is blue]", userTranscript: "what's the capital of france", noteStore: selfTestNoteStore)
     check("gate: NOTE tag without save language rejected", gatedTurn.savedNoteTexts.isEmpty && !FileManager.default.fileExists(atPath: selfTestNoteStore.notesDirectoryURL.path), "\(gatedTurn.savedNoteTexts)")
-    let fallbackTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it. [POINT:none]", userTranscript: "remember that my dentist is friday at 3", noteStore: selfTestNoteStore)
+    let fallbackTurn = EzraTurnFinisher.finishTurn(rawReplyText: "got it. [POINT:none]", userTranscript: "remember that my dentist is friday at 3", noteStore: selfTestNoteStore)
     check("gate: dictated fallback saves when tag missing", fallbackTurn.savedNoteTexts == ["my dentist is friday at 3"], "\(fallbackTurn.savedNoteTexts)")
-    let historyTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it, noted. [NOTE:my dentist is friday at 3]", userTranscript: "remember that my dentist is friday at 3", noteStore: selfTestNoteStore)
+    let historyTurn = EzraTurnFinisher.finishTurn(rawReplyText: "got it, noted. [NOTE:my dentist is friday at 3]", userTranscript: "remember that my dentist is friday at 3", noteStore: selfTestNoteStore)
     check("gate: spoken text has no tag and history keeps it", historyTurn.spokenText == "got it, noted." && historyTurn.historyAssistantText.contains("[NOTE:my dentist is friday at 3]"), "\(historyTurn.spokenText) | \(historyTurn.historyAssistantText)")
 
     // Store: layout, round trip, dedupe, hand edits, unwritable folder.
-    let layoutStore = ClickyNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("layout", isDirectory: true))
+    let layoutStore = EzraNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("layout", isDirectory: true))
     let fixedSaveDate = Date(timeIntervalSince1970: 1_700_000_000)
     let layoutNote = try? layoutStore.saveNote(text: "cabin wifi is lantern42", savedAt: fixedSaveDate)
-    let dayFileName = ClickyNoteStore.dayFileName(for: fixedSaveDate)
+    let dayFileName = EzraNoteStore.dayFileName(for: fixedSaveDate)
     let layoutFileContents = (try? String(contentsOf: layoutStore.notesDirectoryURL.appendingPathComponent(dayFileName), encoding: .utf8)) ?? ""
-    let expectedTimeText = ClickyNoteStore.formattedDate(fixedSaveDate, dateFormat: "HH:mm")
+    let expectedTimeText = EzraNoteStore.formattedDate(fixedSaveDate, dateFormat: "HH:mm")
     check("store: creates folder on first save", FileManager.default.fileExists(atPath: layoutStore.notesDirectoryURL.path) && layoutNote != nil)
-    check("store: header and line format", layoutFileContents.hasPrefix("# Clicky notes ") && layoutFileContents.contains("- \(expectedTimeText) — cabin wifi is lantern42"), layoutFileContents)
+    check("store: header and line format", layoutFileContents.hasPrefix("# Ezra notes ") && layoutFileContents.contains("- \(expectedTimeText) — cabin wifi is lantern42"), layoutFileContents)
     check("store: round trip", layoutStore.loadAllNotes().contains { $0.text == "cabin wifi is lantern42" })
     _ = try? layoutStore.saveNote(text: "cabin wifi is lantern42", savedAt: fixedSaveDate)
     let linesAfterDuplicate = ((try? String(contentsOf: layoutStore.notesDirectoryURL.appendingPathComponent(dayFileName), encoding: .utf8)) ?? "").components(separatedBy: "\n").filter { $0.contains("cabin wifi") }
@@ -978,7 +978,7 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     let blockerFileURL = temporaryRootURL.appendingPathComponent("blocker-file")
     try? FileManager.default.createDirectory(at: temporaryRootURL, withIntermediateDirectories: true)
     try? "not a folder".write(to: blockerFileURL, atomically: true, encoding: .utf8)
-    let unwritableStore = ClickyNoteStore(notesDirectoryURL: blockerFileURL.appendingPathComponent("sub", isDirectory: true))
+    let unwritableStore = EzraNoteStore(notesDirectoryURL: blockerFileURL.appendingPathComponent("sub", isDirectory: true))
     var unwritableSaveThrew = false
     do { _ = try unwritableStore.saveNote(text: "will fail") } catch { unwritableSaveThrew = true }
     check("store: unwritable folder throws, no crash", unwritableSaveThrew)
@@ -986,7 +986,7 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     check("store: blank note throws", blankNoteThrew)
 
     // Retrieval: 30 notes, the cabin wifi note must be in the top 3 for a matching question.
-    let retrievalStore = ClickyNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("retrieval", isDirectory: true))
+    let retrievalStore = EzraNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("retrieval", isDirectory: true))
     let filler = ["bought oat milk for the office", "the printer on floor two is jammed", "call the plumber about the sink",
                   "renew the car registration in march", "the gym closes early on fridays", "sam likes window seats",
                   "the quarterly report draft is in the shared drive", "dentist moved to thursday mornings"]
@@ -1001,7 +1001,7 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     let fullRecallNotes = retrievalStore.notesRelevant(toTranscript: "what did I tell you", wantsFullRecall: true)
     let fullRecallIsNewestFirst = zip(fullRecallNotes, fullRecallNotes.dropFirst()).allSatisfy { $0.savedAt >= $1.savedAt }
     check("retrieval: full recall at most 20, newest first", fullRecallNotes.count <= 20 && fullRecallIsNewestFirst && fullRecallNotes.count == 20, "count \(fullRecallNotes.count)")
-    let capStore = ClickyNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("caps", isDirectory: true))
+    let capStore = EzraNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("caps", isDirectory: true))
     let longPaddingText = String(repeating: "project alpha detail ", count: 15)
     for index in 0..<30 {
         _ = try? capStore.saveNote(text: "\(longPaddingText) number \(index)", savedAt: Date().addingTimeInterval(-Double(index) * 3_600))
@@ -1009,19 +1009,19 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     let cappedNotes = capStore.notesRelevant(toTranscript: "project alpha detail status", wantsFullRecall: false)
     let cappedCharacterTotal = cappedNotes.reduce(0) { $0 + $1.text.count }
     check("retrieval: 8 note and 1500 char caps hold", cappedNotes.count <= 8 && cappedCharacterTotal <= 1500, "count \(cappedNotes.count), chars \(cappedCharacterTotal)")
-    let emptyStore = ClickyNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("empty-never-created", isDirectory: true))
-    let emptyStorePrompt = ClickyPromptAssembler.prepareSystemPrompt(
-        for: ClickyTurnContext(userTranscript: "what's the weather", frontmostApplicationBundleIdentifier: "com.apple.Safari", frontmostApplicationName: "Safari", screenCount: 1, currentDate: Date()),
+    let emptyStore = EzraNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("empty-never-created", isDirectory: true))
+    let emptyStorePrompt = EzraPromptAssembler.prepareSystemPrompt(
+        for: EzraTurnContext(userTranscript: "what's the weather", frontmostApplicationBundleIdentifier: "com.apple.Safari", frontmostApplicationName: "Safari", screenCount: 1, currentDate: Date()),
         promptsDirectoryURL: URL(fileURLWithPath: promptsDirectoryPath, isDirectory: true), noteStore: emptyStore)
     check("retrieval: empty store omits notes section", !emptyStorePrompt.systemPromptText.contains("saved notes, most relevant first"))
 
     // Skills: bundle-id and name selection, cap, order, body only when selected, malformed skipped.
     let skillsDirectoryURL = URL(fileURLWithPath: promptsDirectoryPath, isDirectory: true)
-    let loadedSkills = ClickySkillLibrary.loadSkills(fromDirectory: skillsDirectoryURL)
+    let loadedSkills = EzraSkillLibrary.loadSkills(fromDirectory: skillsDirectoryURL)
     func selectedNames(_ transcript: String, _ bundleIdentifier: String?, _ applicationName: String?) -> [String] {
-        ClickySkillLibrary.selectSkills(
+        EzraSkillLibrary.selectSkills(
             from: loadedSkills,
-            for: ClickySkillSelectionContext(userTranscript: transcript, frontmostApplicationBundleIdentifier: bundleIdentifier, frontmostApplicationName: applicationName)
+            for: EzraSkillSelectionContext(userTranscript: transcript, frontmostApplicationBundleIdentifier: bundleIdentifier, frontmostApplicationName: applicationName)
         ).map(\.skillName)
     }
     let skillExpectations: [(String, [String], String?, String?, String)] = [
@@ -1043,21 +1043,21 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     let capNames = selectedNames("swiftui build failed in xcode terminal", "com.apple.dt.Xcode", "Xcode")
     check("skills: at most 2 selected", capNames.count <= 2, "\(capNames)")
     check("skills: deterministic order", selectedNames("why did this fail", "com.apple.Terminal", "Terminal") == selectedNames("why did this fail", "com.apple.Terminal", "Terminal"))
-    let malformedSkillParsed = ClickySkillLibrary.parseSkill(fromMarkdown: "no front matter here", fileName: "bad.md")
+    let malformedSkillParsed = EzraSkillLibrary.parseSkill(fromMarkdown: "no front matter here", fileName: "bad.md")
     check("skills: malformed file skipped", malformedSkillParsed == nil)
-    let noBodySkillParsed = ClickySkillLibrary.parseSkill(fromMarkdown: "---\nname: empty\n---\n", fileName: "empty.md")
+    let noBodySkillParsed = EzraSkillLibrary.parseSkill(fromMarkdown: "---\nname: empty\n---\n", fileName: "empty.md")
     check("skills: front matter without body skipped", noBodySkillParsed == nil)
-    let safariWeatherPrompt = ClickyPromptAssembler.prepareSystemPrompt(
-        for: ClickyTurnContext(userTranscript: "what's the weather", frontmostApplicationBundleIdentifier: "com.apple.Safari", frontmostApplicationName: "Safari", screenCount: 1, currentDate: Date()),
+    let safariWeatherPrompt = EzraPromptAssembler.prepareSystemPrompt(
+        for: EzraTurnContext(userTranscript: "what's the weather", frontmostApplicationBundleIdentifier: "com.apple.Safari", frontmostApplicationName: "Safari", screenCount: 1, currentDate: Date()),
         promptsDirectoryURL: skillsDirectoryURL, noteStore: emptyStore)
     check("skills: body absent when not selected", !safariWeatherPrompt.systemPromptText.contains("skill guidance for this question"))
 
     // Round 21: the drawing, card and 3D scene formats are skills (draw, card, scene), always included
     // when they match, so they never push an app skill out. The brief's seven cases first.
     func round21SelectedNames(_ transcript: String, _ bundleIdentifier: String?, _ applicationName: String?, marksOnScreen: Bool = false, sceneOnScreen: Bool = false, walkthroughActive: Bool = false) -> [String] {
-        ClickySkillLibrary.selectSkills(
+        EzraSkillLibrary.selectSkills(
             from: loadedSkills,
-            for: ClickySkillSelectionContext(
+            for: EzraSkillSelectionContext(
                 userTranscript: transcript,
                 frontmostApplicationBundleIdentifier: bundleIdentifier,
                 frontmostApplicationName: applicationName,
@@ -1092,35 +1092,35 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     // (app) skills only, as in round 20; the format skills come on top.
     let xcodeWorstCaseNames = round21SelectedNames("make it bigger", "com.apple.dt.Xcode", "Xcode", marksOnScreen: true)
     let xcodeWorstCaseOrdinaryCharacters = loadedSkills.filter { xcodeWorstCaseNames.contains($0.skillName) && !$0.isAlwaysIncludedWhenSelected }.reduce(0) { $0 + $1.bodyText.count }
-    check("round 21 skills: draw, card, xcode and coding_general come in together; the two app skills fit round 20's cap on their own", Set(xcodeWorstCaseNames) == ["draw", "card", "xcode", "coding_general"] && xcodeWorstCaseOrdinaryCharacters <= ClickySkillLibrary.maximumOrdinarySkillBodyCharacterCountPerTurn, "\(xcodeWorstCaseNames) \(xcodeWorstCaseOrdinaryCharacters)")
+    check("round 21 skills: draw, card, xcode and coding_general come in together; the two app skills fit round 20's cap on their own", Set(xcodeWorstCaseNames) == ["draw", "card", "xcode", "coding_general"] && xcodeWorstCaseOrdinaryCharacters <= EzraSkillLibrary.maximumOrdinarySkillBodyCharacterCountPerTurn, "\(xcodeWorstCaseNames) \(xcodeWorstCaseOrdinaryCharacters)")
     let xcodeSceneWorstCaseNames = round21SelectedNames("make it bigger", "com.apple.dt.Xcode", "Xcode", marksOnScreen: true, sceneOnScreen: true)
     check("round 21 skills: with a scene on screen too, all five fit", Set(xcodeSceneWorstCaseNames) == ["draw", "card", "scene", "xcode", "coding_general"], "\(xcodeSceneWorstCaseNames)")
     check("round 21 skills: a third ordinary skill is still refused", round21SelectedNames("swiftui build failed in xcode terminal", "com.apple.dt.Xcode", "Xcode", marksOnScreen: true).filter { !["draw", "card", "scene"].contains($0) }.count == 2)
     // Round 21: walkthroughs. The tags are never spoken, the plan comes back in history, and the section
     // says which step to give.
     let walkthroughReplyText = "[STEP:1 of 3] first, stage the file. [DRAW:circle:120,400:30] [PLAN:1:stage the file] [PLAN:2:write the message] [PLAN:3:press commit] [POINT:none]"
-    let walkthroughTags = ClickyWalkthroughTags.parse(rawReplyText: walkthroughReplyText)
+    let walkthroughTags = EzraWalkthroughTags.parse(rawReplyText: walkthroughReplyText)
     check("round 21 walkthrough: the step and plan tags are read and never spoken", walkthroughTags.stepNumber == 1 && walkthroughTags.stepCount == 3 && walkthroughTags.planTexts == ["stage the file", "write the message", "press commit"]
-          && ClickyReplyTagParser.parse(walkthroughReplyText).spokenText == "first, stage the file." && ClickyReplyTagParser.parse("ok. [STEP:2 o").spokenText == "ok.")
-    if let begunWalkthrough = ClickyWalkthroughState.beginning(fromReplyTags: walkthroughTags, now: Date()) {
+          && EzraReplyTagParser.parse(walkthroughReplyText).spokenText == "first, stage the file." && EzraReplyTagParser.parse("ok. [STEP:2 o").spokenText == "ok.")
+    if let begunWalkthrough = EzraWalkthroughState.beginning(fromReplyTags: walkthroughTags, now: Date()) {
         check("round 21 walkthrough: \"next\" asks for step 2 with the brief's words", begunWalkthrough.promptSectionText(forUserWord: .next) == "walkthrough in progress (the user is following your steps one at a time):\n- plan: 1. stage the file; 2. write the message; 3. press commit.\n- step 1 is done. the user said \"next\": give step 2 now, starting with [STEP:2 of 3].")
     } else {
         check("round 21 walkthrough: the reply begins a walkthrough", false)
     }
-    check("round 21 walkthrough: the control words", ClickyWalkthroughWords.userWord(forTranscript: "Next.") == .next && ClickyWalkthroughWords.userWord(forTranscript: "next step please") == .next && ClickyWalkthroughWords.userWord(forTranscript: "go back a step please") == .back
-          && ClickyWalkthroughWords.userWord(forTranscript: "repeat that step please") == .repeatStep && ClickyWalkthroughWords.userWord(forTranscript: "stop") == .stop && ClickyWalkthroughWords.userWord(forTranscript: "what does staged mean") == nil)
+    check("round 21 walkthrough: the control words", EzraWalkthroughWords.userWord(forTranscript: "Next.") == .next && EzraWalkthroughWords.userWord(forTranscript: "next step please") == .next && EzraWalkthroughWords.userWord(forTranscript: "go back a step please") == .back
+          && EzraWalkthroughWords.userWord(forTranscript: "repeat that step please") == .repeatStep && EzraWalkthroughWords.userWord(forTranscript: "stop") == .stop && EzraWalkthroughWords.userWord(forTranscript: "what does staged mean") == nil)
     // Round 21: the snap with element boxes standing in for Accessibility.
-    let snapRecord = pointSnapRecord(pointTarget: ClickyPointTarget(x: 140, y: 40, label: "run", screenNumber: nil), elementBoxInputs: [["x": 136, "y": 33, "width": 28, "height": 26, "role": "AXButton"], ["x": 0, "y": 0, "width": 800, "height": 60, "role": "AXToolbar"]], screenshotSizeInput: nil, displaySizeInput: nil)
+    let snapRecord = pointSnapRecord(pointTarget: EzraPointTarget(x: 140, y: 40, label: "run", screenNumber: nil), elementBoxInputs: [["x": 136, "y": 33, "width": 28, "height": 26, "role": "AXButton"], ["x": 0, "y": 0, "width": 800, "height": 60, "role": "AXToolbar"]], screenshotSizeInput: nil, displaySizeInput: nil)
     check("round 21 snap: a point on a small button in the fixture snaps to its centre", snapRecord["pointSnapOutcome"] as? String == "snapped" && (snapRecord["pointTargetAfterSnap"] as? [String: Double]) == ["x": 150, "y": 46])
-    check("round 21 snap: without element boxes the fields are null", pointSnapRecord(pointTarget: ClickyPointTarget(x: 1, y: 1, label: nil, screenNumber: nil), elementBoxInputs: nil, screenshotSizeInput: nil, displaySizeInput: nil)["pointSnapOutcome"] is NSNull)
-    let baseFileTextForRound21 = (try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("clicky_base_system_prompt.md"), encoding: .utf8)) ?? ""
+    check("round 21 snap: without element boxes the fields are null", pointSnapRecord(pointTarget: EzraPointTarget(x: 1, y: 1, label: nil, screenNumber: nil), elementBoxInputs: nil, screenshotSizeInput: nil, displaySizeInput: nil)["pointSnapOutcome"] is NSNull)
+    let baseFileTextForRound21 = (try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("ezra_base_system_prompt.md"), encoding: .utf8)) ?? ""
     check("round 21 prompt: the base prompt holds no draw, card or scene tag", !baseFileTextForRound21.contains("[DRAW:") && !baseFileTextForRound21.contains("[CARD:") && !baseFileTextForRound21.contains("[SCENE:"))
 
     // Prompt: base file loads, right-now block present, budget.
-    let xcodePrompt = ClickyPromptAssembler.prepareSystemPrompt(
-        for: ClickyTurnContext(userTranscript: "build failed with no such module", frontmostApplicationBundleIdentifier: "com.apple.dt.Xcode", frontmostApplicationName: "Xcode", screenCount: 2, currentDate: Date()),
+    let xcodePrompt = EzraPromptAssembler.prepareSystemPrompt(
+        for: EzraTurnContext(userTranscript: "build failed with no such module", frontmostApplicationBundleIdentifier: "com.apple.dt.Xcode", frontmostApplicationName: "Xcode", screenCount: 2, currentDate: Date()),
         promptsDirectoryURL: skillsDirectoryURL, noteStore: emptyStore)
-    check("prompt: base file loaded (not emergency prompt)", !xcodePrompt.systemPromptText.contains("you're clicky, a friendly companion in the user's menu bar. reply in one short"))
+    check("prompt: base file loaded (not emergency prompt)", !xcodePrompt.systemPromptText.contains("you're ezra, a friendly companion in the user's menu bar. reply in one short"))
     check("prompt: right-now block has bundle id and screen count", xcodePrompt.systemPromptText.contains("com.apple.dt.Xcode") && xcodePrompt.systemPromptText.contains("2 screens"))
     // Size guards. These are regression tripwires against the prompt quietly growing, not quality checks.
     // The original limits (700 words, 1800 tokens) were set from the round 1 prompt and tripped in round 2
@@ -1129,7 +1129,7 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     // trimmed the base prompt to 757 words. The limits below sit about 10 percent above the largest size
     // seen so far (round 2), so a prompt that grows past its round 2 size fails this check and has to be
     // justified, while ordinary wording edits do not.
-    let baseWordCount = ((try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("clicky_base_system_prompt.md"), encoding: .utf8)) ?? "").split(whereSeparator: \.isWhitespace).count
+    let baseWordCount = ((try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("ezra_base_system_prompt.md"), encoding: .utf8)) ?? "").split(whereSeparator: \.isWhitespace).count
     // Round 6: the base prompt grew from 849 to 1,247 words when it started teaching drawing on the screen
     // and the explanation card (the keyword-triggered draw skill was folded into it). The guard is raised to
     // 1,300 so it still catches further growth; the old limit was 875.
@@ -1139,14 +1139,14 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     check("prompt: assembled xcode prompt about 2.7k tokens or less (chars/4)", approximateTokenCount <= 2700, "about \(approximateTokenCount) tokens")
 
     // Round 4A: static and dynamic system prompt parts, and the two-block `system` array.
-    let baseFileText = ((try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("clicky_base_system_prompt.md"), encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let baseFileText = ((try? String(contentsOf: skillsDirectoryURL.appendingPathComponent("ezra_base_system_prompt.md"), encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     check("blocks: static part is the trimmed base prompt file", xcodePrompt.staticSystemPromptText == baseFileText && !baseFileText.isEmpty)
     check("blocks: static part identical across different turn contexts", xcodePrompt.staticSystemPromptText == safariWeatherPrompt.staticSystemPromptText && xcodePrompt.staticSystemPromptText == emptyStorePrompt.staticSystemPromptText)
     check("blocks: dynamic part differs between contexts", xcodePrompt.dynamicSystemPromptText != safariWeatherPrompt.dynamicSystemPromptText)
     check("blocks: dynamic part is never empty in the app (right-now block)", !xcodePrompt.dynamicSystemPromptText.isEmpty && !safariWeatherPrompt.dynamicSystemPromptText.isEmpty)
-    check("blocks: combined text == static + separator + dynamic", xcodePrompt.systemPromptText == xcodePrompt.staticSystemPromptText + ClickyPromptAssembler.systemPromptSectionSeparator + xcodePrompt.dynamicSystemPromptText)
+    check("blocks: combined text == static + separator + dynamic", xcodePrompt.systemPromptText == xcodePrompt.staticSystemPromptText + EzraPromptAssembler.systemPromptSectionSeparator + xcodePrompt.dynamicSystemPromptText)
     check("blocks: static part carries no date or app name", !xcodePrompt.staticSystemPromptText.contains("right now:") && !xcodePrompt.staticSystemPromptText.contains("com.apple.dt.Xcode"))
-    let twoBlocks = ClickySystemPromptBlocks.makeSystemBlocks(staticText: xcodePrompt.staticSystemPromptText, dynamicText: xcodePrompt.dynamicSystemPromptText)
+    let twoBlocks = EzraSystemPromptBlocks.makeSystemBlocks(staticText: xcodePrompt.staticSystemPromptText, dynamicText: xcodePrompt.dynamicSystemPromptText)
     let firstBlockCacheControl = twoBlocks.first?["cache_control"] as? [String: String]
     check("blocks: two blocks, cached static first, uncached dynamic second",
           twoBlocks.count == 2
@@ -1159,10 +1159,10 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
           && Set(twoBlocks[0].keys) == Set(["type", "text", "cache_control"])
           && Set(twoBlocks[1].keys) == Set(["type", "text"]),
           "\(twoBlocks.map { Array($0.keys).sorted() })")
-    let oneBlockEmpty = ClickySystemPromptBlocks.makeSystemBlocks(staticText: xcodePrompt.staticSystemPromptText, dynamicText: "")
-    let oneBlockWhitespace = ClickySystemPromptBlocks.makeSystemBlocks(staticText: xcodePrompt.staticSystemPromptText, dynamicText: " \n\t ")
+    let oneBlockEmpty = EzraSystemPromptBlocks.makeSystemBlocks(staticText: xcodePrompt.staticSystemPromptText, dynamicText: "")
+    let oneBlockWhitespace = EzraSystemPromptBlocks.makeSystemBlocks(staticText: xcodePrompt.staticSystemPromptText, dynamicText: " \n\t ")
     check("blocks: blank dynamic part sends one cached block", oneBlockEmpty.count == 1 && oneBlockWhitespace.count == 1 && (oneBlockEmpty[0]["cache_control"] as? [String: String]) == ["type": "ephemeral"])
-    check("blocks: blank static part is left out", ClickySystemPromptBlocks.makeSystemBlocks(staticText: "  ", dynamicText: "x").count == 1)
+    check("blocks: blank static part is left out", EzraSystemPromptBlocks.makeSystemBlocks(staticText: "  ", dynamicText: "x").count == 1)
     // Both parts must survive a JSON round trip unchanged (the driver hands them to the harness as JSON).
     let roundTripData = (try? JSONSerialization.data(withJSONObject: twoBlocks)) ?? Data()
     let roundTripBlocks = ((try? JSONSerialization.jsonObject(with: roundTripData)) as? [[String: Any]]) ?? []
@@ -1171,80 +1171,80 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
     check("blocks: static part is at least 2400 chars (well above 512 tokens)", xcodePrompt.staticSystemPromptText.count >= 2400, "\(xcodePrompt.staticSystemPromptText.count) chars")
 
     // Round 4B: PROFILE tag grammar.
-    let profileTagParse = ClickyReplyTagParser.parse("got it, i'll remember that. [PROFILE:i use neovim as my editor] [POINT:none]")
+    let profileTagParse = EzraReplyTagParser.parse("got it, i'll remember that. [PROFILE:i use neovim as my editor] [POINT:none]")
     check("profile parser: PROFILE tag parsed and stripped", profileTagParse.profileTexts == ["i use neovim as my editor"] && profileTagParse.spokenText == "got it, i'll remember that." && profileTagParse.pointTarget == nil, "\(profileTagParse)")
-    let profileCapParse = ClickyReplyTagParser.parse("[PROFILE:a1] [PROFILE:b2] [PROFILE:c3]")
+    let profileCapParse = EzraReplyTagParser.parse("[PROFILE:a1] [PROFILE:b2] [PROFILE:c3]")
     check("profile parser: cap of 2, all tags stripped", profileCapParse.profileTexts.count == 2 && !profileCapParse.spokenText.uppercased().contains("PROFILE"), "\(profileCapParse)")
-    let truncatedProfileParse = ClickyReplyTagParser.parse("got it. [PROFILE:i use neo")
+    let truncatedProfileParse = EzraReplyTagParser.parse("got it. [PROFILE:i use neo")
     check("profile parser: truncated PROFILE fragment stripped", truncatedProfileParse.profileTexts.isEmpty && truncatedProfileParse.spokenText == "got it.", "\(truncatedProfileParse)")
-    let longProfileParse = ClickyReplyTagParser.parse("ok. [PROFILE:\(String(repeating: "y", count: 300))]")
+    let longProfileParse = EzraReplyTagParser.parse("ok. [PROFILE:\(String(repeating: "y", count: 300))]")
     check("profile parser: fact capped at 200 chars", (longProfileParse.profileTexts.first?.count ?? 0) == 200, "\(longProfileParse.profileTexts.first?.count ?? -1)")
 
     // Round 4B: the profile gate. A tag saves only with spoken lasting-fact language, never on a secret.
-    let profileGateStore = ClickyProfileStore(profileDirectoryURL: temporaryRootURL.appendingPathComponent("profile-gate", isDirectory: true))
-    let profileGateNoteStore = ClickyNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("profile-gate", isDirectory: true))
-    let ungatedProfileTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "sure. [PROFILE:the user prefers python] [POINT:none]", userTranscript: "what's this page about", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let profileGateStore = EzraProfileStore(profileDirectoryURL: temporaryRootURL.appendingPathComponent("profile-gate", isDirectory: true))
+    let profileGateNoteStore = EzraNoteStore(notesDirectoryURL: temporaryRootURL.appendingPathComponent("profile-gate", isDirectory: true))
+    let ungatedProfileTurn = EzraTurnFinisher.finishTurn(rawReplyText: "sure. [PROFILE:the user prefers python] [POINT:none]", userTranscript: "what's this page about", noteStore: profileGateNoteStore, profileStore: profileGateStore)
     check("profile gate: tag without spoken lasting-fact language is dropped", ungatedProfileTurn.savedProfileFactTexts.isEmpty && ungatedProfileTurn.droppedProfileTagCount == 1 && profileGateStore.loadFactTexts().isEmpty, "\(ungatedProfileTurn.savedProfileFactTexts)")
-    let savedProfileTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it, i'll remember that. [PROFILE:i use neovim as my editor] [POINT:none]", userTranscript: "i use neovim as my editor", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let savedProfileTurn = EzraTurnFinisher.finishTurn(rawReplyText: "got it, i'll remember that. [PROFILE:i use neovim as my editor] [POINT:none]", userTranscript: "i use neovim as my editor", noteStore: profileGateNoteStore, profileStore: profileGateStore)
     check("profile gate: spoken lasting fact saves, history keeps the tag", savedProfileTurn.savedProfileFactTexts == ["i use neovim as my editor"] && profileGateStore.loadFactTexts() == ["i use neovim as my editor"] && savedProfileTurn.historyAssistantText.contains("[PROFILE:i use neovim as my editor]") && savedProfileTurn.spokenText == "got it, i'll remember that.", "\(savedProfileTurn.savedProfileFactTexts) | \(savedProfileTurn.historyAssistantText)")
-    let silentSaveTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "tabs it is. [PROFILE:i prefer tabs over spaces] [POINT:none]", userTranscript: "i prefer tabs over spaces", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let silentSaveTurn = EzraTurnFinisher.finishTurn(rawReplyText: "tabs it is. [PROFILE:i prefer tabs over spaces] [POINT:none]", userTranscript: "i prefer tabs over spaces", noteStore: profileGateNoteStore, profileStore: profileGateStore)
     check("profile gate: a save the reply did not confirm gets a spoken confirmation", silentSaveTurn.spokenText.contains("i'll remember that"), silentSaveTurn.spokenText)
-    let secretProfileTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it, i'll remember that. [PROFILE:anthropic key sk-ant-FAKEFAKEFAKE1234] [POINT:none]", userTranscript: "i always use sk-ant-FAKEFAKEFAKE1234 as my anthropic key", noteStore: profileGateNoteStore, profileStore: profileGateStore)
-    check("profile gate: secret-looking fact is not saved and clicky says it won't keep it", !profileGateStore.loadFactTexts().contains { $0.contains("FAKEFAKE") } && secretProfileTurn.droppedProfileTagCount == 1 && secretProfileTurn.spokenText == "i won't keep that.", "\(secretProfileTurn.spokenText) | \(profileGateStore.loadFactTexts())")
-    let passwordProfileTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "noted. [PROFILE:password is hunter2]", userTranscript: "i always use hunter2 as my password", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let secretProfileTurn = EzraTurnFinisher.finishTurn(rawReplyText: "got it, i'll remember that. [PROFILE:anthropic key sk-ant-FAKEFAKEFAKE1234] [POINT:none]", userTranscript: "i always use sk-ant-FAKEFAKEFAKE1234 as my anthropic key", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    check("profile gate: secret-looking fact is not saved and ezra says it won't keep it", !profileGateStore.loadFactTexts().contains { $0.contains("FAKEFAKE") } && secretProfileTurn.droppedProfileTagCount == 1 && secretProfileTurn.spokenText == "i won't keep that.", "\(secretProfileTurn.spokenText) | \(profileGateStore.loadFactTexts())")
+    let passwordProfileTurn = EzraTurnFinisher.finishTurn(rawReplyText: "noted. [PROFILE:password is hunter2]", userTranscript: "i always use hunter2 as my password", noteStore: profileGateNoteStore, profileStore: profileGateStore)
     check("profile gate: password keyword blocks the save", !profileGateStore.loadFactTexts().contains { $0.contains("hunter2") } && passwordProfileTurn.spokenText.contains("i won't keep that"), "\(profileGateStore.loadFactTexts())")
 
     // Round 4B: replacement by subject, dedupe, forget variants.
-    let replaceTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it, i'll remember that. [PROFILE:i use vs code as my editor now]", userTranscript: "i switched, i use vs code as my editor now", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let replaceTurn = EzraTurnFinisher.finishTurn(rawReplyText: "got it, i'll remember that. [PROFILE:i use vs code as my editor now]", userTranscript: "i switched, i use vs code as my editor now", noteStore: profileGateNoteStore, profileStore: profileGateStore)
     let factsAfterReplace = profileGateStore.loadFactTexts()
     check("profile store: new editor fact replaces old editor fact, unrelated fact stays", !factsAfterReplace.contains("i use neovim as my editor") && factsAfterReplace.contains("i use vs code as my editor now") && factsAfterReplace.contains("i prefer tabs over spaces") && replaceTurn.savedProfileFactTexts.count == 1, "\(factsAfterReplace)")
-    let forgetSpecificTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget my editor", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let forgetSpecificTurn = EzraTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget my editor", noteStore: profileGateNoteStore, profileStore: profileGateStore)
     check("forget: 'forget my editor' removes only the editor fact", forgetSpecificTurn.forgetOutcome?.kind == .removed && profileGateStore.loadFactTexts() == ["i prefer tabs over spaces"] && forgetSpecificTurn.spokenText == "okay, i've forgotten that.", "\(profileGateStore.loadFactTexts()) | \(forgetSpecificTurn.spokenText)")
-    let forgetEverythingTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget everything", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let forgetEverythingTurn = EzraTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget everything", noteStore: profileGateNoteStore, profileStore: profileGateStore)
     check("forget: 'forget everything' is refused and removes nothing", forgetEverythingTurn.forgetOutcome?.kind == .refusedToWipeEverything && profileGateStore.loadFactTexts() == ["i prefer tabs over spaces"], "\(profileGateStore.loadFactTexts())")
-    let forgetThatNothingTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget that", noteStore: profileGateNoteStore, profileStore: profileGateStore, previousAssistantHistoryText: "the run button is top left. ")
+    let forgetThatNothingTurn = EzraTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget that", noteStore: profileGateNoteStore, profileStore: profileGateStore, previousAssistantHistoryText: "the run button is top left. ")
     check("forget: 'forget that' with nothing saved last turn removes nothing", forgetThatNothingTurn.forgetOutcome?.kind == .noMatch && profileGateStore.loadFactTexts() == ["i prefer tabs over spaces"] && forgetThatNothingTurn.spokenText == "i didn't forget anything. i don't have that saved.", "\(profileGateStore.loadFactTexts()) | \(forgetThatNothingTurn.spokenText)")
-    let forgetThatAfterSaveTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget that", noteStore: profileGateNoteStore, profileStore: profileGateStore, previousAssistantHistoryText: "got it, i'll remember that. [PROFILE:i prefer tabs over spaces]")
+    let forgetThatAfterSaveTurn = EzraTurnFinisher.finishTurn(rawReplyText: "okay. [POINT:none]", userTranscript: "forget that", noteStore: profileGateNoteStore, profileStore: profileGateStore, previousAssistantHistoryText: "got it, i'll remember that. [PROFILE:i prefer tabs over spaces]")
     check("forget: 'forget that' right after a save removes exactly that fact", forgetThatAfterSaveTurn.forgetOutcome?.kind == .removed && profileGateStore.loadFactTexts().isEmpty, "\(profileGateStore.loadFactTexts())")
-    let dontForgetTurn = ClickyTurnFinisher.finishTurn(rawReplyText: "got it, noted. [NOTE:buy milk on the way home]", userTranscript: "don't forget to buy milk on the way home", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let dontForgetTurn = EzraTurnFinisher.finishTurn(rawReplyText: "got it, noted. [NOTE:buy milk on the way home]", userTranscript: "don't forget to buy milk on the way home", noteStore: profileGateNoteStore, profileStore: profileGateStore)
     check("forget: 'don't forget to ...' is a note save, not a forget", dontForgetTurn.forgetOutcome == nil && dontForgetTurn.savedNoteTexts == ["buy milk on the way home"], "\(String(describing: dontForgetTurn.forgetOutcome)) | \(dontForgetTurn.savedNoteTexts)")
 
     // Round 4B: injection budget with 25 facts, file untouched.
-    let budgetProfileStore = ClickyProfileStore(profileDirectoryURL: temporaryRootURL.appendingPathComponent("profile-budget", isDirectory: true))
+    let budgetProfileStore = EzraProfileStore(profileDirectoryURL: temporaryRootURL.appendingPathComponent("profile-budget", isDirectory: true))
     try? FileManager.default.createDirectory(at: budgetProfileStore.profileDirectoryURL, withIntermediateDirectories: true)
     let twentyFiveFactLines = (1...25).map { "- fact number \($0) about something distinct \(String(repeating: "x", count: 40))" }
-    try? ("# Clicky profile\n\n" + twentyFiveFactLines.joined(separator: "\n") + "\n").write(to: budgetProfileStore.profileFileURL, atomically: true, encoding: .utf8)
+    try? ("# Ezra profile\n\n" + twentyFiveFactLines.joined(separator: "\n") + "\n").write(to: budgetProfileStore.profileFileURL, atomically: true, encoding: .utf8)
     let budgetedFacts = budgetProfileStore.factTextsWithinInjectionBudget()
-    let budgetedCharacterCount = budgetedFacts.reduce(0) { $0 + $1.count + ClickyProfileStore.injectedLineOverheadCharacterCount }
+    let budgetedCharacterCount = budgetedFacts.reduce(0) { $0 + $1.count + EzraProfileStore.injectedLineOverheadCharacterCount }
     check("profile budget: 25 facts inject at most 20 and 1000 chars, newest kept", budgetedFacts.count <= 20 && budgetedCharacterCount <= 1000 && budgetedFacts.last?.hasPrefix("fact number 25") == true && budgetProfileStore.loadFactTexts().count == 25, "count \(budgetedFacts.count), chars \(budgetedCharacterCount)")
 
     // Round 6: draw, card and row tags through the app's parsers and board.
     let drawSampleReplyText = "the search field is up here. [DRAW:circle:640,52:38] and this is the run button. [DRAW:callout:150,46:run button] [POINT:none]"
-    let drawSampleFinishedTurn = ClickyTurnFinisher.finishTurn(rawReplyText: drawSampleReplyText, userTranscript: "circle the search field", noteStore: profileGateNoteStore, profileStore: profileGateStore)
+    let drawSampleFinishedTurn = EzraTurnFinisher.finishTurn(rawReplyText: drawSampleReplyText, userTranscript: "circle the search field", noteStore: profileGateNoteStore, profileStore: profileGateStore)
     check("draw: tags never reach the spoken text", drawSampleFinishedTurn.spokenText == "the search field is up here. and this is the run button.", drawSampleFinishedTurn.spokenText)
-    let drawSampleParsedReply = ClickyDrawTagParser.parse(drawSampleReplyText)
+    let drawSampleParsedReply = EzraDrawTagParser.parse(drawSampleReplyText)
     check("draw: two commands accepted, none ignored, POINT none kept", drawSampleParsedReply.commands.count == 2 && drawSampleParsedReply.ignoredDrawTagCount == 0 && drawSampleFinishedTurn.parsedReply.pointTarget == nil, "\(drawSampleParsedReply.commands.count) / \(drawSampleParsedReply.ignoredDrawTagCount)")
     let nineCircleReplyText = (1...9).map { "[DRAW:circle:\($0 * 10),50:20]" }.joined(separator: " ")
-    let nineCircleParsedReply = ClickyDrawTagParser.parse(nineCircleReplyText)
-    check("draw: ninth draw tag is dropped by the per-reply limit", nineCircleParsedReply.commands.count == ClickyDrawTagParser.maximumDrawTagCountPerReply && nineCircleParsedReply.ignoredDrawTagCount == 1, "\(nineCircleParsedReply.commands.count) / \(nineCircleParsedReply.ignoredDrawTagCount)")
-    let malformedDrawParsedReply = ClickyDrawTagParser.parse("here. [DRAW:circle:640] [ROW:text:no card to go on] [POINT:none]")
+    let nineCircleParsedReply = EzraDrawTagParser.parse(nineCircleReplyText)
+    check("draw: ninth draw tag is dropped by the per-reply limit", nineCircleParsedReply.commands.count == EzraDrawTagParser.maximumDrawTagCountPerReply && nineCircleParsedReply.ignoredDrawTagCount == 1, "\(nineCircleParsedReply.commands.count) / \(nineCircleParsedReply.ignoredDrawTagCount)")
+    let malformedDrawParsedReply = EzraDrawTagParser.parse("here. [DRAW:circle:640] [ROW:text:no card to go on] [POINT:none]")
     check("draw: malformed tag and a row without a card are ignored", malformedDrawParsedReply.commands.isEmpty && malformedDrawParsedReply.ignoredDrawTagCount == 2, "\(malformedDrawParsedReply.commands.count) / \(malformedDrawParsedReply.ignoredDrawTagCount)")
-    let cardSampleParsedReply = ClickyDrawTagParser.parse("here's how. [CARD:how it works] first. [ROW:flow:guess > compare > adjust] then. [ROW:boxes:a|b -> c] [POINT:none]")
-    var cardSampleBoard = ClickyDrawingBoard()
+    let cardSampleParsedReply = EzraDrawTagParser.parse("here's how. [CARD:how it works] first. [ROW:flow:guess > compare > adjust] then. [ROW:boxes:a|b -> c] [POINT:none]")
+    var cardSampleBoard = EzraDrawingBoard()
     for cardSampleCommand in cardSampleParsedReply.commands {
         _ = cardSampleBoard.apply(cardSampleCommand.command)
     }
     check("card: one card with two rows lands on the board", cardSampleParsedReply.commands.count == 3 && rowCountOfExplanationCard(on: cardSampleBoard) == 2, "\(cardSampleParsedReply.commands.count) / \(String(describing: rowCountOfExplanationCard(on: cardSampleBoard)))")
     let seededBoard = drawingBoard(fromSeedDrawTagTexts: ["[DRAW:circle:150,46:20] [DRAW:box:10,125:210,34]", "[CARD:how it works] [ROW:flow:guess > compare]"])
     check("draw seed: three marks m1, m2, m3 with a one-row card", seededBoard.marks.map(\.markIdentifier) == ["m1", "m2", "m3"] && rowCountOfExplanationCard(on: seededBoard) == 1, "\(seededBoard.marks.map(\.markIdentifier))")
-    let rowOnSeededCardParsedReply = ClickyDrawTagParser.parse("added. [ROW:text:one more line] [POINT:none]", rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: seededBoard))
+    let rowOnSeededCardParsedReply = EzraDrawTagParser.parse("added. [ROW:text:one more line] [POINT:none]", rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: seededBoard))
     check("draw seed: a lone row goes on the card that is on screen", rowOnSeededCardParsedReply.commands.count == 1 && rowOnSeededCardParsedReply.ignoredDrawTagCount == 0)
-    let marksOnScreenSectionText = ClickyDrawingMarksOnScreenText.sectionText(for: drawingMarksForPrompt(on: seededBoard, screenCount: 1)) ?? ""
+    let marksOnScreenSectionText = EzraDrawingMarksOnScreenText.sectionText(for: drawingMarksForPrompt(on: seededBoard, screenCount: 1)) ?? ""
     check("draw seed: marks on screen text lists every id and no screen number with one screen", marksOnScreenSectionText.contains("m1: circle at 150,46 radius 20") && marksOnScreenSectionText.contains("m3: card titled") && !marksOnScreenSectionText.contains("(screen"), marksOnScreenSectionText)
-    let twoScreenMarksOnScreenSectionText = ClickyDrawingMarksOnScreenText.sectionText(for: drawingMarksForPrompt(on: seededBoard, screenCount: 2)) ?? ""
+    let twoScreenMarksOnScreenSectionText = EzraDrawingMarksOnScreenText.sectionText(for: drawingMarksForPrompt(on: seededBoard, screenCount: 2)) ?? ""
     check("draw seed: with two screens every mark carries its screen", twoScreenMarksOnScreenSectionText.contains("m1: circle at 150,46 radius 20 (screen 1)"), twoScreenMarksOnScreenSectionText)
-    let ordinaryTurnPrompt = ClickyPromptAssembler.prepareSystemPrompt(
-        for: ClickyTurnContext(userTranscript: "what is a closure", frontmostApplicationBundleIdentifier: "com.apple.dt.Xcode", frontmostApplicationName: "Xcode", screenCount: 1, currentDate: Date()),
+    let ordinaryTurnPrompt = EzraPromptAssembler.prepareSystemPrompt(
+        for: EzraTurnContext(userTranscript: "what is a closure", frontmostApplicationBundleIdentifier: "com.apple.dt.Xcode", frontmostApplicationName: "Xcode", screenCount: 1, currentDate: Date()),
         promptsDirectoryURL: URL(fileURLWithPath: promptsDirectoryPath, isDirectory: true), noteStore: profileGateNoteStore, profileStore: nil
     )
     check("draw: an ordinary turn's prompt has no marks on screen section", !ordinaryTurnPrompt.systemPromptText.contains("marks on screen ("))
@@ -1331,7 +1331,7 @@ func substitutingRootPlaceholder(in value: Any, rootPath: String) -> Any {
     return value
 }
 
-func diffLineRecord(_ diffLine: ClickyDiffLine) -> [String: Any] {
+func diffLineRecord(_ diffLine: EzraDiffLine) -> [String: Any] {
     let kindName: String
     switch diffLine.kind {
     case .context: kindName = "context"
@@ -1347,13 +1347,13 @@ func diffLineRecord(_ diffLine: ClickyDiffLine) -> [String: Any] {
     ]
 }
 
-func fileChangeRecord(_ change: ClickyFileChange) -> [String: Any] {
-    let cardContent = ClickyChangeCardContent.make(for: [change])
+func fileChangeRecord(_ change: EzraFileChange) -> [String: Any] {
+    let cardContent = EzraChangeCardContent.make(for: [change])
     return [
         "action": change.action.rawValue,
         "relativePath": change.relativePath,
         "summary": change.summary,
-        "historyLine": ClickyChangeHistoryText.proposalLine(for: change),
+        "historyLine": EzraChangeHistoryText.proposalLine(for: change),
         "diffLines": change.diffPreviewLines.map(diffLineRecord),
         "hiddenDiffLineCount": change.hiddenDiffLineCount,
         "noteText": cardContent.sections.first?.noteText ?? NSNull(),
@@ -1393,12 +1393,12 @@ func runTool(inputPath: String, outputPath: String, notesRootPath: String) {
         let frontmostDocumentPath = (toolRecord["frontmostDocument"] as? String).map {
             workspace.rootDirectoryURL.appendingPathComponent($0).path
         }
-        let pathPolicy = ClickyFilePathPolicy(
+        let pathPolicy = EzraFilePathPolicy(
             allowedFolderPaths: workspace.editableFolderURLs.map(\.path),
             homeDirectoryPath: workspace.homeDirectoryPath,
             frontmostDocumentPath: frontmostDocumentPath
         )
-        let toolSession = ClickyFileToolTurnSession(policy: pathPolicy)
+        let toolSession = EzraFileToolTurnSession(policy: pathPolicy)
 
         var toolCalls: [[String: Any]] = (toolRecord["calls"] as? [[String: Any]]) ?? []
         if toolCalls.isEmpty, let toolName = toolRecord["toolName"] as? String {
@@ -1445,10 +1445,10 @@ func runFinishFiles(inputPath: String, outputPath: String) {
         let usedFileTools = (record["usedFileTools"] as? Bool) ?? (queuedChangeCount > 0)
         var outputRecord: [String: Any] = [
             "id": recordIdentifier,
-            "honestText": ClickyFileEditingHonesty.honestSpokenText(spokenText, queuedChangeCount: queuedChangeCount, usedFileTools: usedFileTools),
+            "honestText": EzraFileEditingHonesty.honestSpokenText(spokenText, queuedChangeCount: queuedChangeCount, usedFileTools: usedFileTools),
         ]
         if let transcript = record["transcript"] as? String {
-            switch ClickyChangeConfirmationPhrases.intent(forTranscript: transcript) {
+            switch EzraChangeConfirmationPhrases.intent(forTranscript: transcript) {
             case .confirm?: outputRecord["intent"] = "confirm"
             case .cancel?: outputRecord["intent"] = "cancel"
             case .undo?: outputRecord["intent"] = "undo"

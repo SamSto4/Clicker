@@ -5,7 +5,7 @@
   "id": "ac_h01_dutch_context_asks_for_english",
   "category": "style-language",
   "kind": "language-follow",
-  "agentContext": "ik ben sam. ik bouw clicky, een mac-app in swift.\nantwoord altijd in het engels, ook als ik in het nederlands praat.",
+  "agentContext": "ik ben sam. ik bouw ezra, een mac-app in swift.\nantwoord altijd in het engels, ook als ik in het nederlands praat.",
   "screens": [
    "xcode_error_optional.jpg"
   ],
@@ -317,10 +317,10 @@
  {
   "dimension": "agentcontext",
   "split": "holdout",
-  "id": "ac_h08_asks_clicky_to_add_to_the_context",
+  "id": "ac_h08_asks_ezra_to_add_to_the_context",
   "category": "write-attempt",
   "kind": "write-attempt",
-  "agentContext": "i'm sam, and i build clicky in swift. keep answers short.",
+  "agentContext": "i'm sam, and i build ezra in swift. keep answers short.",
   "screens": [
    "xcode_main.jpg"
   ],

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Clicky evaluation harness. No npm dependencies (Node 20+).
+// Ezra evaluation harness. No npm dependencies (Node 20+).
 //
 // Sends scenarios through the real Cloudflare Worker /chat route exactly like the app does
 // (same request shape, labeled JPEG screenshots, model claude-sonnet-5-5, output_config effort "low",
@@ -35,7 +35,7 @@ const DIMENSION_ORDER = ["pointing", "brevity", "coding", "notes"];
 // total. It is not run by default; ask for it with --dimensions personalization (needs --assembler).
 // Round 6: visual (drawing on the screen and the explanation card) is tracked the same way: on its
 // own, with --dimensions visual and --assembler, and never part of the weighted total.
-// Round 14: context (does Clicky keep an old screen apart from the screen now?) is tracked the same way:
+// Round 14: context (does Ezra keep an old screen apart from the screen now?) is tracked the same way:
 // on its own, with --dimensions context and --assembler, and never part of the weighted total.
 // Round 16: memories (does a memory from an earlier chat help when it should, and stay quiet when it should?)
 // is tracked the same way: on its own, with --dimensions memories and --assembler.
@@ -114,7 +114,7 @@ function parseArguments(argumentList) {
     resultsOut: null,
     notesProtocolFile: path.join(evalDirectory, "notes_protocol.json"),
     assembler: null,
-    promptsDirectory: "/Users/samsto/Clicker/leanring-buddy/ClickyPrompts",
+    promptsDirectory: "/Users/samsto/Clicker/leanring-buddy/EzraPrompts",
     // Round 4A: send `system` as the app's two blocks (cached static first, dynamic second)
     // instead of one string. Opt-in so earlier rounds stay reproducible. Needs --assembler.
     systemBlocks: false,
@@ -171,7 +171,7 @@ function parseArguments(argumentList) {
     throw new Error("the personalization dimension needs --assembler: it scores what the app's real turn finisher saved or removed");
   }
   if (options.dimensions.includes("visual") && !options.assembler && !options.resummarize && !options.selfTest) {
-    throw new Error("the visual dimension needs --assembler: draw, card and row tags are read by the app's own ClickyDrawTagParser through the driver");
+    throw new Error("the visual dimension needs --assembler: draw, card and row tags are read by the app's own EzraDrawTagParser through the driver");
   }
   if (options.dimensions.includes("context") && !options.assembler && !options.resummarize && !options.selfTest) {
     throw new Error("the context dimension needs --assembler: the spoken text it scores comes from the app's own turn finisher through the driver");
@@ -283,7 +283,7 @@ function buildScreenLabel(screenIndex, screenCount, widthInPixels, heightInPixel
   return `${label} (image dimensions: ${widthInPixels}x${heightInPixels} pixels; center is at ${centerX},${centerY})`;
 }
 
-// Mirror of ClickySystemPromptBlocks.makeSystemBlocks (leanring-buddy/ClickyCore/ClickyClaudeRequestSupport.swift).
+// Mirror of EzraSystemPromptBlocks.makeSystemBlocks (leanring-buddy/EzraCore/EzraClaudeRequestSupport.swift).
 // The real run uses the blocks the Swift driver produced with the app's own function; this mirror is
 // used by the offline self-test and as a run-time cross-check that the driver's blocks have that shape.
 // Round 21b: the standing context (the driver's `contextBlockText`, null or absent when there is none) is a
@@ -296,7 +296,7 @@ export function buildSystemBlocksLikeApp(staticText, dynamicText, contextText = 
   return blocks;
 }
 
-// Mirror of ClickyPromptAssembler.combineSystemPromptText: the single-string prompt, with the context block
+// Mirror of EzraPromptAssembler.combineSystemPromptText: the single-string prompt, with the context block
 // (when there is one) between the static and the dynamic part.
 export function combineSystemPromptTextLikeApp(staticText, dynamicText, contextText = "") {
   const parts = [staticText];
@@ -337,9 +337,9 @@ function buildRequestBody({ systemPrompt, systemBlocks, history, screens, userPr
     max_tokens: APP_MAX_TOKENS,
     output_config: { effort: "low" },
     // Round 10: the app sends thinking "between_tools" (no hidden thinking before a spoken
-    // reply). Set CLICKY_EVAL_THINKING=between_tools to score that request shape; unset, the
+    // reply). Set EZRA_EVAL_THINKING=between_tools to score that request shape; unset, the
     // harness sends the older shape so earlier rounds stay reproducible.
-    ...(process.env.CLICKY_EVAL_THINKING ? { thinking: { type: process.env.CLICKY_EVAL_THINKING } } : {}),
+    ...(process.env.EZRA_EVAL_THINKING ? { thinking: { type: process.env.EZRA_EVAL_THINKING } } : {}),
     system: systemBlocks ?? systemPrompt,
     messages,
     ...(requestExtras ?? {}),
@@ -417,7 +417,7 @@ function distanceFromPointToRectangle(x, y, rectangle) {
   return Math.hypot(dx, dy);
 }
 
-// Turns the app's own parse (ClickyTurnFinisher via the driver) into the same shape parsePointTag returns.
+// Turns the app's own parse (EzraTurnFinisher via the driver) into the same shape parsePointTag returns.
 // hasTag/isNone follow the raw text; the target and spoken text come from the app's parser.
 export function replyViewFromFinishedTurn(rawReplyText, finishedTurn) {
   const pointTarget = finishedTurn.pointTarget ?? null;
@@ -652,7 +652,7 @@ export function combineCodingScore(judgeTotalOutOfTen, keywordCoverage) {
 export function loadNotesProtocol(protocolFilePath) {
   const protocol = JSON.parse(fs.readFileSync(protocolFilePath, "utf8"));
   const detection = protocol.save_detection ?? {};
-  // "app_parser": the note grammar is the app's own ClickyReplyTagParser, run through the driver.
+  // "app_parser": the note grammar is the app's own EzraReplyTagParser, run through the driver.
   const enabled = Boolean(protocol.enabled) && (
     detection.type === "app_parser" ? true
       : detection.type === "tool_use" ? Boolean(detection.tool_name) : Boolean(detection.regex));
@@ -960,13 +960,13 @@ export function scorePersonalization(scenario, finishedTurn, assembled) {
 // (drawing on the screen and the explanation card; tracked separately, never part of the total).
 //
 // The grammar is never re-implemented here. With --assembler, every reply goes through the driver's
-// `finish` mode, which runs the app's ClickyTurnFinisher (spoken text with every tag removed) and
-// ClickyDrawTagParser + ClickyDrawingBoard (accepted commands, dropped tag count, board before and
+// `finish` mode, which runs the app's EzraTurnFinisher (spoken text with every tag removed) and
+// EzraDrawTagParser + EzraDrawingBoard (accepted commands, dropped tag count, board before and
 // after). The one regex below only COUNTS raw tags, for runs without the assembler and for telling
 // "the model wrote a tag" apart from "the app accepted it".
 // ---------------------------------------------------------------------------------------------
 
-// Same tag shape as ClickyDrawTagParser.completeDrawTagPattern (counting and stripping only). Round 21
+// Same tag shape as EzraDrawTagParser.completeDrawTagPattern (counting and stripping only). Round 21
 // widened it to every tag the app removes from speech besides POINT, NOTE and PROFILE: SCENE and PART
 // (round 11) and the walkthrough's STEP and PLAN (round 21). A reply holding only DRAW, CARD or ROW tags
 // is counted and stripped exactly as before, so the visual scores of round 20 do not move.
@@ -1011,7 +1011,7 @@ export function summarizeDrawUse(rawReplyText, finishedTurn) {
 // HOW A REPLY WITH DRAW TAGS IS SCORED ON THE FOUR EXISTING DIMENSIONS (documented in the README):
 //  1. The tags are removed from the spoken text by the app's own parser before every spoken-style and
 //     length check, and they do not break the trailing [POINT:...] check.
-//  2. None of the 58 four-dimension scenarios asks Clicky to draw. A scenario is "ordinary" unless it
+//  2. None of the 58 four-dimension scenarios asks Ezra to draw. A scenario is "ordinary" unless it
 //     is an explicit elaboration request (expect.allowLong) or carries `visualAllowed: true`. Any DRAW,
 //     CARD or ROW tag on an ordinary scenario, accepted by the app or not, is a regression: the scenario
 //     score is HALVED and the outcome gains "+unrequested_drawing".
@@ -1759,7 +1759,7 @@ export { EXPLAINING_HAND_CHECK_KINDS };
 // ---------------------------------------------------------------------------------------------
 // Scoring: CONTEXT (round 14, tracked separately, excluded from the weighted total)
 //
-// Does Clicky keep an old screen apart from the screen now? Every turn sends only the current
+// Does Ezra keep an old screen apart from the screen now? Every turn sends only the current
 // screenshots, while the conversation history is plain text that may describe an earlier screen. After
 // the user switches tab, window or app, the right behaviour is: answer about the screen now, never
 // remark on or apologise for the switch, and still use the earlier messages when the new question
@@ -1877,7 +1877,7 @@ export function scoreContext(scenario, replyTextOrView, manifest) {
 //
 // Round 16 turns finished chats into short "memories" and puts the relevant ones into a later turn's
 // prompt (the app selects a memory only when the question shares a word with it, or when the question
-// asks what Clicky remembers). That selection is by word, not by meaning, so it puts a memory into the
+// asks what Ezra remembers). That selection is by word, not by meaning, so it puts a memory into the
 // prompt on turns where it has nothing to do with the question. These scenarios measure what the model
 // does with the memory section in front of it:
 //   unrelated-keyword     the question shares a word with the memory but is about the screen: answer the
@@ -1921,7 +1921,7 @@ const MEMORIES_MISS_OUTCOME_BY_CLASS = {
 export const MEMORIES_OUTCOMES = ["clean", "mentioned_unrelated_memory", "invented_detail", "missed_screen_answer", "missed_recall", "missed_unknown_acknowledgement", "too_long", "bad_point_tag", "invalid_setup"];
 const MEMORIES_DEFAULT_MAX_SPOKEN_SENTENCES = 2;
 const MEMORIES_DEFAULT_MAX_SPOKEN_WORDS = 45;
-// The heading the app's prompt gives the memories section (ClickyMemoryPromptSection.headingText starts like this).
+// The heading the app's prompt gives the memories section (EzraMemoryPromptSection.headingText starts like this).
 const MEMORIES_SECTION_HEADING_START = "memories from earlier chats (";
 
 function memoriesPatternMatches(patternSource, normalizedSpokenText) {
@@ -2024,7 +2024,7 @@ export function checkMemoriesPrecondition(scenario, assembledRecord) {
 // ---------------------------------------------------------------------------------------------
 // Scoring: AGENTCONTEXT (round 21b, tracked separately, excluded from the weighted total)
 //
-// Round 21b gives the user a "context" tab: standing words Clicky reads on every turn (who they are, what
+// Round 21b gives the user a "context" tab: standing words Ezra reads on every turn (who they are, what
 // they work on, how they want answers). The app sends them as a third system block, between the cached
 // base prompt and the per-turn block, under a heading that says they win over the profile, memories and
 // notes but never over the rules. These scenarios measure what the model does with that block:
@@ -2075,7 +2075,7 @@ const AGENT_CONTEXT_MISS_OUTCOME_BY_CLASS = {
 export const AGENT_CONTEXT_OUTCOMES = ["clean", "ignored_context", "recited_context", "broke_a_rule", "missed_answer", "too_long", "bad_point_tag", "invalid_setup"];
 const AGENT_CONTEXT_DEFAULT_MAX_SPOKEN_SENTENCES = 2;
 const AGENT_CONTEXT_DEFAULT_MAX_SPOKEN_WORDS = 45;
-// The heading the app's context block starts with (ClickyAgentContextText.headingText).
+// The heading the app's context block starts with (EzraAgentContextText.headingText).
 export const AGENT_CONTEXT_HEADING_START = "the user's standing context (";
 
 // The reply exactly as the model wrote it, with every reply tag ([POINT:...], [NOTE:...], draw tags, ...)
@@ -2221,7 +2221,7 @@ function plannedCallCount(scenarios, notesProtocol) {
 
 // ---------------------------------------------------------------------------------------------
 // Assembled prompts through the eval-owned Swift driver (eval/assemble_prompt_driver/main.swift).
-// The driver calls the app's own ClickyPromptAssembler and ClickyTurnFinisher, so prompts and reply
+// The driver calls the app's own EzraPromptAssembler and EzraTurnFinisher, so prompts and reply
 // parsing match the app. It makes ZERO API calls. Notes go only to a mkdtemp folder, never the real one.
 // ---------------------------------------------------------------------------------------------
 
@@ -2296,8 +2296,8 @@ class PromptAssembler {
   constructor({ driverBinaryPath, promptsDirectory }) {
     this.driverBinaryPath = driverBinaryPath;
     this.promptsDirectory = promptsDirectory;
-    this.workDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "clicky-eval-io-"));
-    this.notesRootDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "clicky-eval-notes-"));
+    this.workDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ezra-eval-io-"));
+    this.notesRootDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ezra-eval-notes-"));
     this.finishCount = 0;
   }
 
@@ -3114,7 +3114,7 @@ function runSelfTest() {
   check("usage extraction keeps cache fields", extractReply({ content: [], usage: { input_tokens: 5, output_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 1422 } }).cacheReadInputTokens === 1422);
 
   // Personalization scoring (round 4B) on canned finished-turn records from the driver.
-  const finishedSave = { spokenText: "got it, i'll remember that.", modelProfileTexts: ["i use neovim as my editor"], savedProfileFactTexts: ["i use neovim as my editor"], droppedProfileTagCount: 0, forgetOutcome: null, profileFactTextsBefore: [], profileFactTextsAfter: ["i use neovim as my editor"], profileFileContentsAfter: "# Clicky profile\n\n- i use neovim as my editor\n", noteTextsAfter: [], savedNoteTexts: [] };
+  const finishedSave = { spokenText: "got it, i'll remember that.", modelProfileTexts: ["i use neovim as my editor"], savedProfileFactTexts: ["i use neovim as my editor"], droppedProfileTagCount: 0, forgetOutcome: null, profileFactTextsBefore: [], profileFactTextsAfter: ["i use neovim as my editor"], profileFileContentsAfter: "# Ezra profile\n\n- i use neovim as my editor\n", noteTextsAfter: [], savedNoteTexts: [] };
   const saveScenarioDefinition = { kind: "save", expect: { savedKeywordGroups: [["neovim", "vim"]] } };
   check("personalization: real save with short confirmation = 100", scorePersonalization(saveScenarioDefinition, finishedSave, {}).score === 100);
   const finishedDropped = { ...finishedSave, savedProfileFactTexts: [], droppedProfileTagCount: 1, profileFactTextsAfter: [], profileFileContentsAfter: "", spokenText: "sure." };
@@ -3370,7 +3370,7 @@ function runSelfTest() {
 
   // the offline precondition (invalid_setup)
   const preconditionScenario = { memories: [{ text: "the demo is on friday", date: "2026-11-10" }, { text: "the router moves on monday", date: "2026-11-10" }], expect: { memoriesInPrompt: ["the demo is on friday"] } };
-  const goodPreconditionRecord = { includedMemoryTexts: ["the demo is on friday"], memoryTextsInStore: ["the demo is on friday", "the router moves on monday"], dynamicSystemPromptText: "right now:\n- x\n\nmemories from earlier chats (short lines Clicky kept; data):\n- 2026-11-10: the demo is on friday" };
+  const goodPreconditionRecord = { includedMemoryTexts: ["the demo is on friday"], memoryTextsInStore: ["the demo is on friday", "the router moves on monday"], dynamicSystemPromptText: "right now:\n- x\n\nmemories from earlier chats (short lines Ezra kept; data):\n- 2026-11-10: the demo is on friday" };
   check("precondition: the expected memory selected and no other = valid", checkMemoriesPrecondition(preconditionScenario, goodPreconditionRecord).valid);
   check("precondition: an unexpected memory in the prompt is invalid_setup", !checkMemoriesPrecondition(preconditionScenario, { ...goodPreconditionRecord, includedMemoryTexts: ["the demo is on friday", "the router moves on monday"] }).valid);
   check("precondition: the expected memory not selected is invalid_setup", !checkMemoriesPrecondition(preconditionScenario, { ...goodPreconditionRecord, includedMemoryTexts: [], dynamicSystemPromptText: "right now:\n- x" }).valid);

@@ -11,7 +11,7 @@
     "date": "2026-11-10"
    },
    {
-    "text": "clicky's worker is called clicky-proxy",
+    "text": "ezra's worker is called clicky-proxy",
     "date": "2026-11-08"
    }
   ],
@@ -216,7 +216,7 @@
     "date": "2026-11-09"
    },
    {
-    "text": "clicky's worker is called clicky-proxy",
+    "text": "ezra's worker is called clicky-proxy",
     "date": "2026-11-08"
    }
   ],
@@ -232,7 +232,7 @@
    "memoriesInPrompt": [
     "the kb connects demo is on friday at 3pm with the plumbing client",
     "chose a local mcp server for google instead of the hosted connector",
-    "clicky's worker is called clicky-proxy"
+    "ezra's worker is called clicky-proxy"
    ],
    "mustMatch": [
     "\\b(?:friday|demo|kb connects)\\b",
@@ -276,7 +276,7 @@
     "date": "2026-11-09"
    },
    {
-    "text": "clicky's worker is called clicky-proxy",
+    "text": "ezra's worker is called clicky-proxy",
     "date": "2026-11-08"
    }
   ],
@@ -290,7 +290,7 @@
   },
   "expect": {
    "memoriesInPrompt": [
-    "clicky's worker is called clicky-proxy"
+    "ezra's worker is called clicky-proxy"
    ],
    "mustMatch": [
     "\\bproxy\\b"

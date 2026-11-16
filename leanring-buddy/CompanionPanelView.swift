@@ -67,12 +67,12 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
-            // Show Clicky toggle — hidden for now
+            // Show Ezra toggle — hidden for now
             // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
             //     Spacer()
             //         .frame(height: 16)
             //
-            //     showClickyCursorToggleRow
+            //     showEzraCursorToggleRow
             //         .padding(.horizontal, 16)
             // }
 
@@ -110,7 +110,7 @@ struct CompanionPanelView: View {
                     .frame(width: 8, height: 8)
                     .shadow(color: statusDotColor.opacity(0.6), radius: 4)
 
-                Text("Clicky")
+                Text("Ezra")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
             }
@@ -122,7 +122,7 @@ struct CompanionPanelView: View {
                 .foregroundColor(DS.Colors.textTertiary)
 
             Button(action: {
-                NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+                NotificationCenter.default.post(name: .ezraDismissPanel, object: nil)
             }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
@@ -160,7 +160,7 @@ struct CompanionPanelView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if companionManager.allPermissionsGranted {
-            Text("You're all set. Hit Start to meet Clicky.")
+            Text("You're all set. Hit Start to meet Ezra.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -171,7 +171,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant all four below to keep using Clicky.")
+                Text("Some permissions were revoked. Grant all four below to keep using Ezra.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -188,7 +188,7 @@ struct CompanionPanelView: View {
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Nothing runs in the background. Clicky will only take a screenshot when you press the hot key. So, you can give that permission in peace. If you are still sus, eh, I can't do much there champ.")
+                Text("Nothing runs in the background. Ezra will only take a screenshot when you press the hot key. So, you can give that permission in peace. If you are still sus, eh, I can't do much there champ.")
                     .font(.system(size: 11))
                     .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
                     .fixedSize(horizontal: false, vertical: true)
@@ -563,9 +563,9 @@ struct CompanionPanelView: View {
 
 
 
-    // MARK: - Show Clicky Cursor Toggle
+    // MARK: - Show Ezra Cursor Toggle
 
-    private var showClickyCursorToggleRow: some View {
+    private var showEzraCursorToggleRow: some View {
         HStack {
             HStack(spacing: 8) {
                 Image(systemName: "cursorarrow")
@@ -573,7 +573,7 @@ struct CompanionPanelView: View {
                     .foregroundColor(DS.Colors.textTertiary)
                     .frame(width: 16)
 
-                Text("Show Clicky")
+                Text("Show Ezra")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
             }
@@ -581,8 +581,8 @@ struct CompanionPanelView: View {
             Spacer()
 
             Toggle("", isOn: Binding(
-                get: { companionManager.isClickyCursorEnabled },
-                set: { companionManager.setClickyCursorEnabled($0) }
+                get: { companionManager.isEzraCursorEnabled },
+                set: { companionManager.setEzraCursorEnabled($0) }
             ))
             .toggleStyle(.switch)
             .labelsHidden()
@@ -625,8 +625,8 @@ struct CompanionPanelView: View {
             Spacer()
 
             HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: ClickyPanelModelOption.sonnet.modelIdentifier)
-                modelOptionButton(label: "Opus", modelID: ClickyPanelModelOption.opus.modelIdentifier)
+                modelOptionButton(label: "Sonnet", modelID: EzraPanelModelOption.sonnet.modelIdentifier)
+                modelOptionButton(label: "Opus", modelID: EzraPanelModelOption.opus.modelIdentifier)
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -662,7 +662,7 @@ struct CompanionPanelView: View {
     // MARK: - Dictation
 
     /// The on/off switch for dictation (hold fn + option, speak, release: the words are pasted
-    /// where you were typing). Asking Clicky with control + option is unaffected by it.
+    /// where you were typing). Asking Ezra with control + option is unaffected by it.
     private var dictationRow: some View {
         HStack {
             HStack(spacing: 8) {
@@ -702,7 +702,7 @@ struct CompanionPanelView: View {
     // MARK: - Status Pill
 
     /// The on/off switch for the status pill: the small pill at the top of the screen that says
-    /// what Clicky is doing ("listening", "thinking", "speaking", "dictating").
+    /// what Ezra is doing ("listening", "thinking", "speaking", "dictating").
     private var statusPillRow: some View {
         HStack {
             HStack(spacing: 8) {
@@ -716,7 +716,7 @@ struct CompanionPanelView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(DS.Colors.textSecondary)
 
-                    Text("shows what clicky is doing")
+                    Text("shows what ezra is doing")
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.textTertiary)
                 }
@@ -742,7 +742,7 @@ struct CompanionPanelView: View {
 
     // MARK: - Chats
 
-    /// Opens the chat panel (the same panel a tap of option + command opens): type to Clicky and
+    /// Opens the chat panel (the same panel a tap of option + command opens): type to Ezra and
     /// browse past chats. A button, so it lights up under the pointer and shows the pointing hand.
     private var chatsRow: some View {
         Button(action: {
@@ -825,7 +825,7 @@ struct CompanionPanelView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "power")
                         .font(.system(size: 11, weight: .medium))
-                    Text("Quit Clicky")
+                    Text("Quit Ezra")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundColor(DS.Colors.textTertiary)

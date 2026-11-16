@@ -52,8 +52,8 @@ class OverlayWindow: NSWindow {
     }
 }
 
-// The cursor's shapes (round 20): today's triangle became `ClickyCursorShapeView` with the
-// triangle's very same points, next to the arrow, chevron, dot and ring (ClickyCursorViews.swift).
+// The cursor's shapes (round 20): today's triangle became `EzraCursorShapeView` with the
+// triangle's very same points, next to the arrow, chevron, dot and ring (EzraCursorViews.swift).
 
 // PreferenceKey for tracking bubble size
 struct SizePreferenceKey: PreferenceKey {
@@ -124,7 +124,7 @@ struct BlueCursorView: View {
     /// Changes to face the direction of travel when navigating to a target.
     /// Since round 20 it is the pointer angle of every pointed shape (they all rest at -35°); a round
     /// shape (dot, ring) is drawn at its own rest angle whatever this says, see `displayedRotationDegrees`.
-    @State private var triangleRotationDegrees: Double = ClickyCursorShape.pointedShapeRestAngleDegrees
+    @State private var triangleRotationDegrees: Double = EzraCursorShape.pointedShapeRestAngleDegrees
 
     /// Speech bubble text shown when pointing at a detected element.
     @State private var navigationBubbleText: String = ""
@@ -157,7 +157,7 @@ struct BlueCursorView: View {
     private let onboardingVideoPlayerWidth: CGFloat = 330
     private let onboardingVideoPlayerHeight: CGFloat = 186
 
-    private let fullWelcomeMessage = "hey! i'm clicky"
+    private let fullWelcomeMessage = "hey! i'm ezra"
 
     private let navigationPointerPhrases = [
         "right here!",
@@ -205,7 +205,7 @@ struct BlueCursorView: View {
 
     /// The cursor's look from the LOOK section: colour, shape, size and glow. The default is today's
     /// blue triangle exactly.
-    private var cursorStyle: ClickyCursorStyle {
+    private var cursorStyle: EzraCursorStyle {
         companionManager.cursorStyle
     }
 
@@ -245,7 +245,7 @@ struct BlueCursorView: View {
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(cursorColour)
-                            .shadow(color: cursorColour.opacity(ClickyCursorStyle.bubbleShadowOpacity), radius: ClickyCursorStyle.bubbleShadowRadius, x: 0, y: 0)
+                            .shadow(color: cursorColour.opacity(EzraCursorStyle.bubbleShadowOpacity), radius: EzraCursorStyle.bubbleShadowRadius, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -289,7 +289,7 @@ struct BlueCursorView: View {
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(cursorColour)
-                            .shadow(color: cursorColour.opacity(ClickyCursorStyle.bubbleShadowOpacity), radius: ClickyCursorStyle.bubbleShadowRadius, x: 0, y: 0)
+                            .shadow(color: cursorColour.opacity(EzraCursorStyle.bubbleShadowOpacity), radius: EzraCursorStyle.bubbleShadowRadius, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -320,8 +320,8 @@ struct BlueCursorView: View {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(cursorColour)
                             .shadow(
-                                color: cursorColour.opacity(ClickyCursorStyle.bubbleShadowOpacity + (1.0 - navigationBubbleScale) * 1.0),
-                                radius: ClickyCursorStyle.bubbleShadowRadius + (1.0 - navigationBubbleScale) * 16,
+                                color: cursorColour.opacity(EzraCursorStyle.bubbleShadowOpacity + (1.0 - navigationBubbleScale) * 1.0),
+                                radius: EzraCursorStyle.bubbleShadowRadius + (1.0 - navigationBubbleScale) * 16,
                                 x: 0, y: 0
                             )
                     )
@@ -357,9 +357,9 @@ struct BlueCursorView: View {
             // 16-point frame, turned to the pointer angle, with one glow of radius
             // 8 + (flight scale − 1) × 20 (the glow's second shadow is clear, radius 0). A round
             // shape is never turned (its displayed angle is always 0°).
-            ClickyStyledCursorShapeView(cursorStyle: cursorStyle, cursorColour: cursorColour)
+            EzraStyledCursorShapeView(cursorStyle: cursorStyle, cursorColour: cursorColour)
                 .rotationEffect(.degrees(cursorStyle.shape.displayedRotationDegrees(pointerRotationDegrees: triangleRotationDegrees)))
-                .modifier(ClickyCursorGlowModifier(cursorGlow: cursorStyle.glow, cursorColour: cursorColour, flightScale: buddyFlightScale))
+                .modifier(EzraCursorGlowModifier(cursorGlow: cursorStyle.glow, cursorColour: cursorColour, flightScale: buddyFlightScale))
                 .scaleEffect(buddyFlightScale)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
                 .position(cursorPosition)
@@ -377,7 +377,7 @@ struct BlueCursorView: View {
 
             // Blue waveform — replaces the triangle while listening (green while dictating). Its
             // glow and size follow the cursor style (today's at the default).
-            ClickyCursorWaveformView(
+            EzraCursorWaveformView(
                 audioPowerLevel: companionManager.currentAudioPowerLevel,
                 barColor: cursorFeedbackColor,
                 glowRadius: cursorStyle.glow.feedbackGlowRadius,
@@ -391,7 +391,7 @@ struct BlueCursorView: View {
 
             // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS).
             // Its glow and size follow the cursor style (today's at the default).
-            ClickyCursorSpinnerView(
+            EzraCursorSpinnerView(
                 spinnerColor: cursorFeedbackColor,
                 glowRadius: cursorStyle.glow.feedbackGlowRadius,
                 glowOpacity: cursorStyle.glow.feedbackGlowOpacity,
@@ -658,7 +658,7 @@ struct BlueCursorView: View {
 
         // Rotate back to default pointer angle now that we've arrived (-35°, the rest angle of every
         // pointed shape; a round shape shows 0° whatever this says)
-        triangleRotationDegrees = ClickyCursorShape.pointedShapeRestAngleDegrees
+        triangleRotationDegrees = EzraCursorShape.pointedShapeRestAngleDegrees
 
         // Reset navigation bubble state — start small for the scale-bounce entrance
         navigationBubbleText = ""
@@ -749,7 +749,7 @@ struct BlueCursorView: View {
         navigationAnimationTimer = nil
         buddyNavigationMode = .followingCursor
         isReturningToCursor = false
-        triangleRotationDegrees = ClickyCursorShape.pointedShapeRestAngleDegrees
+        triangleRotationDegrees = EzraCursorShape.pointedShapeRestAngleDegrees
         buddyFlightScale = 1.0
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
@@ -787,8 +787,8 @@ struct BlueCursorView: View {
     }
 }
 
-// The cursor's waveform and spinner moved to ClickyCursorViews.swift in round 20
-// (`ClickyCursorWaveformView`, `ClickyCursorSpinnerView`), so the LOOK preview can show them too.
+// The cursor's waveform and spinner moved to EzraCursorViews.swift in round 20
+// (`EzraCursorWaveformView`, `EzraCursorSpinnerView`), so the LOOK preview can show them too.
 
 // MARK: - Dictation Label
 
@@ -814,8 +814,8 @@ private struct DictationLabelView: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(isNotice ? noticeColour : DS.Colors.overlayDictationAccent)
                     .shadow(
-                        color: (isNotice ? noticeColour : DS.Colors.overlayDictationAccent).opacity(ClickyCursorStyle.bubbleShadowOpacity),
-                        radius: ClickyCursorStyle.bubbleShadowRadius, x: 0, y: 0
+                        color: (isNotice ? noticeColour : DS.Colors.overlayDictationAccent).opacity(EzraCursorStyle.bubbleShadowOpacity),
+                        radius: EzraCursorStyle.bubbleShadowRadius, x: 0, y: 0
                     )
             )
             .frame(maxWidth: 340, alignment: isPlacedLeftOfCursor ? .trailing : .leading)
@@ -829,10 +829,10 @@ class OverlayWindowManager {
     private var overlayWindows: [OverlayWindow] = []
     var hasShownOverlayBefore = false
 
-    /// Draws Clicky's marks (arrows, circles, labels, ...) on top of each screen's overlay. It
+    /// Draws Ezra's marks (arrows, circles, labels, ...) on top of each screen's overlay. It
     /// uses these overlay windows instead of windows of its own, so it is told here whenever the
     /// windows are created or taken away.
-    let drawingOverlayController = ClickyDrawingOverlayController()
+    let drawingOverlayController = EzraDrawingOverlayController()
 
     func showOverlay(onScreens screens: [NSScreen], companionManager: CompanionManager) {
         // Hide any existing overlays

@@ -17,21 +17,21 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     /// Sends once each time Escape is pressed anywhere in the system (key repeat from holding the
     /// key is ignored). The tap is listen-only, so Escape still reaches whichever app has focus;
-    /// the subscriber decides whether Clicky has anything to interrupt.
+    /// the subscriber decides whether Ezra has anything to interrupt.
     let escapeKeyPressedPublisher = PassthroughSubject<Void, Never>()
 
     /// What the dictation shortcut (hold fn + option, double-tap to lock) asks for. It is worked
     /// out from the same event tap as the ask shortcut, so no second tap is needed. The two
     /// shortcuts cannot match at once: dictation is exactly fn + option and asking needs control.
-    let dictationChordActionPublisher = PassthroughSubject<ClickyDictationChordAction, Never>()
+    let dictationChordActionPublisher = PassthroughSubject<EzraDictationChordAction, Never>()
 
     /// Sends when a clean tap of option + command is recognised: open the chat panel, or close it
     /// if it is open. Worked out from the same event tap as everything else here (no second tap).
     /// The tap is listen-only, so every key still reaches the app in front.
-    let chatPanelTapActionPublisher = PassthroughSubject<ClickyChatPanelTapAction, Never>()
+    let chatPanelTapActionPublisher = PassthroughSubject<EzraChatPanelTapAction, Never>()
 
     /// Sends when the user scrolls anywhere in the system, at most once every
-    /// `scrollWheelMinimumSecondsBetweenReports`. Marks Clicky drew on the screen point at page
+    /// `scrollWheelMinimumSecondsBetweenReports`. Marks Ezra drew on the screen point at page
     /// content, so they fade when that content moves. Scroll events come from the same listen-only
     /// tap as the keys (no second tap), and are never swallowed.
     let scrollWheelScrolledPublisher = PassthroughSubject<Void, Never>()
@@ -42,7 +42,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     private var lastScrollWheelReportUptimeSeconds: TimeInterval = 0
 
     /// When the push-to-talk keys were last released, on the same clock as
-    /// `ClickyTurnMetrics.currentUptimeSeconds`. It is taken here, where the release is first
+    /// `EzraTurnMetrics.currentUptimeSeconds`. It is taken here, where the release is first
     /// seen, so the delay before the transcript and reply is measured from the real key release
     /// and not from a later hop to another queue. Cleared on the next press, so a release from an
     /// earlier utterance is never mistaken for this one's.
@@ -56,12 +56,12 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// that finds nothing due and has to be scheduled again.
     private static let dictationChordWakeUpSlackSeconds: TimeInterval = 0.002
 
-    private var dictationChordStateMachine = ClickyDictationChordStateMachine()
+    private var dictationChordStateMachine = EzraDictationChordStateMachine()
     private var dictationChordWakeUpWorkItem: DispatchWorkItem?
 
     /// Recognises the clean tap of option + command that opens the chat panel. It needs no timer:
     /// whether the press was short enough is decided from the two timestamps at the release.
-    private var chatPanelTapStateMachine = ClickyChatPanelTapStateMachine()
+    private var chatPanelTapStateMachine = EzraChatPanelTapStateMachine()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -136,10 +136,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         // Without the tap the keys can no longer be watched, so a dictation in progress cannot
         // be ended by its release. Escape's rule (stop and insert nothing) is the safe ending.
-        publishDictationChordActions(dictationChordStateMachine.handleEscape(at: ClickyTurnMetrics.currentUptimeSeconds))
-        dictationChordStateMachine = ClickyDictationChordStateMachine()
+        publishDictationChordActions(dictationChordStateMachine.handleEscape(at: EzraTurnMetrics.currentUptimeSeconds))
+        dictationChordStateMachine = EzraDictationChordStateMachine()
         rescheduleDictationChordWakeUp()
-        chatPanelTapStateMachine = ClickyChatPanelTapStateMachine()
+        chatPanelTapStateMachine = EzraChatPanelTapStateMachine()
 
         if let globalEventTapRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), globalEventTapRunLoopSource, .commonModes)
@@ -163,11 +163,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             // Key releases that happened while the tap was off were never seen, so the dictation
             // chord may be waiting for a release that already happened. Ask the system which
             // modifiers are held right now and let the chord catch up.
-            let modifiersHeldNow = ClickyDictationModifierSet(
+            let modifiersHeldNow = EzraDictationModifierSet(
                 cgEventFlagsRawValue: CGEventSource.flagsState(.combinedSessionState).rawValue
             )
             publishDictationChordActions(
-                dictationChordStateMachine.handleModifiersChanged(modifiersHeldNow, at: ClickyTurnMetrics.currentUptimeSeconds)
+                dictationChordStateMachine.handleModifiersChanged(modifiersHeldNow, at: EzraTurnMetrics.currentUptimeSeconds)
             )
             rescheduleDictationChordWakeUp()
             // The same for the panel's tap: a press whose release was missed must not fire later.
@@ -180,7 +180,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         if eventType == .scrollWheel {
             // Option + command + scroll is the screen zoom gesture, not a tap of the two keys.
             _ = chatPanelTapStateMachine.handleNonModifierKeyDown()
-            let currentUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+            let currentUptimeSeconds = EzraTurnMetrics.currentUptimeSeconds
             if currentUptimeSeconds - lastScrollWheelReportUptimeSeconds >= Self.scrollWheelMinimumSecondsBetweenReports {
                 lastScrollWheelReportUptimeSeconds = currentUptimeSeconds
                 scrollWheelScrolledPublisher.send()
@@ -188,9 +188,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
-        // The command-V that Clicky posts to paste dictated text passes through this tap too. It
+        // The command-V that Ezra posts to paste dictated text passes through this tap too. It
         // is not the user pressing a key, so it must not count as "another key during a hold".
-        if event.getIntegerValueField(.eventSourceUserData) == ClickyDictationInsertion.syntheticKeystrokeUserData {
+        if event.getIntegerValueField(.eventSourceUserData) == EzraDictationInsertion.syntheticKeystrokeUserData {
             return Unmanaged.passUnretained(event)
         }
 
@@ -222,7 +222,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             shortcutTransitionPublisher.send(.pressed)
         case .released:
             isShortcutCurrentlyPressed = false
-            lastShortcutReleaseUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+            lastShortcutReleaseUptimeSeconds = EzraTurnMetrics.currentUptimeSeconds
             shortcutTransitionPublisher.send(.released)
         }
 
@@ -235,13 +235,13 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// press (Escape included, so option + command + Escape never opens the panel). A key press
     /// anywhere cancels a tap in progress; the keys themselves are never swallowed.
     private func feedChatPanelTap(eventType: CGEventType, event: CGEvent) {
-        let chatPanelTapActions: [ClickyChatPanelTapAction]
+        let chatPanelTapActions: [EzraChatPanelTapAction]
         switch eventType {
         case .flagsChanged:
-            let modifiersHeldNow = ClickyDictationModifierSet(cgEventFlagsRawValue: event.flags.rawValue)
+            let modifiersHeldNow = EzraDictationModifierSet(cgEventFlagsRawValue: event.flags.rawValue)
             chatPanelTapActions = chatPanelTapStateMachine.handleModifiersChanged(
                 modifiersHeldNow,
-                at: ClickyTurnMetrics.currentUptimeSeconds
+                at: EzraTurnMetrics.currentUptimeSeconds
             )
         case .keyDown:
             chatPanelTapActions = chatPanelTapStateMachine.handleNonModifierKeyDown()
@@ -258,11 +258,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Hands one tap event to the dictation chord. The timestamps come from the same uptime clock
     /// as the metrics, taken here where the event is first seen.
     private func feedDictationChord(eventType: CGEventType, eventKeyCode: UInt16, event: CGEvent) {
-        let currentUptimeSeconds = ClickyTurnMetrics.currentUptimeSeconds
+        let currentUptimeSeconds = EzraTurnMetrics.currentUptimeSeconds
 
         switch eventType {
         case .flagsChanged:
-            let modifiersHeldNow = ClickyDictationModifierSet(cgEventFlagsRawValue: event.flags.rawValue)
+            let modifiersHeldNow = EzraDictationModifierSet(cgEventFlagsRawValue: event.flags.rawValue)
             publishDictationChordActions(
                 dictationChordStateMachine.handleModifiersChanged(modifiersHeldNow, at: currentUptimeSeconds)
             )
@@ -281,7 +281,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         rescheduleDictationChordWakeUp()
     }
 
-    private func publishDictationChordActions(_ dictationChordActions: [ClickyDictationChordAction]) {
+    private func publishDictationChordActions(_ dictationChordActions: [EzraDictationChordAction]) {
         for dictationChordAction in dictationChordActions {
             dictationChordActionPublisher.send(dictationChordAction)
         }
@@ -296,7 +296,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
         guard let pendingDeadlineUptimeSeconds = dictationChordStateMachine.pendingDeadlineUptimeSeconds else { return }
 
-        let secondsUntilDeadline = max(0, pendingDeadlineUptimeSeconds - ClickyTurnMetrics.currentUptimeSeconds)
+        let secondsUntilDeadline = max(0, pendingDeadlineUptimeSeconds - EzraTurnMetrics.currentUptimeSeconds)
         let wakeUpWorkItem = DispatchWorkItem { [weak self] in
             self?.wakeUpDictationChord()
         }
@@ -309,7 +309,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     private func wakeUpDictationChord() {
         publishDictationChordActions(
-            dictationChordStateMachine.advanceTime(to: ClickyTurnMetrics.currentUptimeSeconds)
+            dictationChordStateMachine.advanceTime(to: EzraTurnMetrics.currentUptimeSeconds)
         )
         // If the deadline has still not quite passed, this schedules another short wait.
         rescheduleDictationChordWakeUp()

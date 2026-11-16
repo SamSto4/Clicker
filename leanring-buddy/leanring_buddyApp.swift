@@ -30,17 +30,26 @@ struct leanring_buddyApp: App {
 @MainActor
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
-    private let companionManager = CompanionManager()
+    private let companionManager: CompanionManager
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
+    override init() {
+        // The app was renamed Ezra (15 Nov 2026) and its data folders move to their new names once.
+        // That happens here, before CompanionManager exists, because its stores (chats, timers,
+        // memories, notes and the rest) read those folders from the moment it is made.
+        EzraDataFolderMigration.moveDataFoldersAtLaunch()
+        companionManager = CompanionManager()
+        super.init()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🎯 Clicky: Starting...")
-        print("🎯 Clicky: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
+        print("🎯 Ezra: Starting...")
+        print("🎯 Ezra: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
-        ClickyAnalytics.configure()
-        ClickyAnalytics.trackAppOpened()
+        EzraAnalytics.configure()
+        EzraAnalytics.trackAppOpened()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
@@ -65,9 +74,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if loginItemService.status != .enabled {
             do {
                 try loginItemService.register()
-                print("🎯 Clicky: Registered as login item")
+                print("🎯 Ezra: Registered as login item")
             } catch {
-                print("⚠️ Clicky: Failed to register as login item: \(error)")
+                print("⚠️ Ezra: Failed to register as login item: \(error)")
             }
         }
     }
@@ -83,7 +92,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         do {
             try updaterController.updater.start()
         } catch {
-            print("⚠️ Clicky: Sparkle updater failed to start: \(error)")
+            print("⚠️ Ezra: Sparkle updater failed to start: \(error)")
         }
     }
 }

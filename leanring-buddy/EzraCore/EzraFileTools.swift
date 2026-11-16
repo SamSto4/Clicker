@@ -1,0 +1,799 @@
+import Foundation
+
+// Round 17 (file editing): the five client tools Claude may call, how their input is read, and the
+// per-turn session that runs them. The two read tools run at once; the three proposal tools only
+// queue a change (nothing touches the disk until the user confirms). Foundation only.
+
+// MARK: - The five tools
+
+nonisolated enum EzraFileToolName: String, CaseIterable, Equatable {
+    case listFolder = "list_folder"
+    case readFile = "read_file"
+    case proposeEdit = "propose_edit"
+    case proposeNewFile = "propose_new_file"
+    case proposeDelete = "propose_delete"
+    /// Round 19: last, so the five round 17 tools keep their place in the cached prefix.
+    case findFile = "find_file"
+}
+
+nonisolated enum EzraFileToolDefinitions {
+    /// The `tools` array of a chat request, exactly as sent. The order and the text are fixed, so
+    /// the cached prefix (tools come before the system prompt) is the same on every turn. There is
+    /// no `tool_choice`: forcing a tool is a 400 on Sonnet 5.5, and `auto` is the default.
+    static func toolsArray() -> [[String: Any]] {
+        let pathDescription = "Absolute path, a path starting with ~, a path starting with a folder's name (project/README.md), or a path relative to the open document's folder."
+        let summaryDescription = "One short line saying what the change does, for the user."
+        return [
+            [
+                "name": EzraFileToolName.listFolder.rawValue,
+                // Round 19 added the last sentence: listing folders to find a file by name took the
+                // model two extra requests in the live eval.
+                "description": "List the files and folders inside a folder the user lets you edit, to find a file. Returns at most \(EzraFileEditingLimits.maximumListedEntries) entries with their sizes. To find a file by name, use find_file instead.",
+                "input_schema": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": "The folder. \(pathDescription) Use \".\" for the open document's folder."],
+                    ],
+                    "required": ["path"],
+                ] as [String: Any],
+            ],
+            [
+                "name": EzraFileToolName.readFile.rawValue,
+                "description": "Read a text file inside the folders you may edit. Returns numbered lines, at most \(EzraFileEditingLimits.maximumLinesPerRead) lines or \(EzraFileEditingLimits.maximumBytesPerRead / 1024) KB per call; pass start_line and end_line to read another part. Read a file before you propose a change to it.",
+                "input_schema": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": pathDescription],
+                        "start_line": ["type": "integer", "description": "First line to return, counting from 1."],
+                        "end_line": ["type": "integer", "description": "Last line to return."],
+                    ],
+                    "required": ["path"],
+                ] as [String: Any],
+            ],
+            [
+                "name": EzraFileToolName.proposeEdit.rawValue,
+                "description": "Propose replacing one exact piece of text in a file. Nothing is written until the user confirms with return or by saying yes, so never say the change is done. old_text must occur in the file exactly once (include surrounding lines if it does not); new_text must differ from it. Read the file first and propose the smallest change that does the job.",
+                "input_schema": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": pathDescription],
+                        "old_text": ["type": "string", "description": "The exact text to replace, copied from the file without the line numbers."],
+                        "new_text": ["type": "string", "description": "The text that replaces it."],
+                        "summary": ["type": "string", "description": summaryDescription],
+                    ],
+                    "required": ["path", "old_text", "new_text", "summary"],
+                ] as [String: Any],
+            ],
+            [
+                "name": EzraFileToolName.proposeNewFile.rawValue,
+                "description": "Propose creating a new text file. It is refused if the file already exists. Nothing is written until the user confirms with return or by saying yes.",
+                "input_schema": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": pathDescription],
+                        "content": ["type": "string", "description": "Everything that goes in the file."],
+                        "summary": ["type": "string", "description": summaryDescription],
+                    ],
+                    "required": ["path", "content", "summary"],
+                ] as [String: Any],
+            ],
+            [
+                "name": EzraFileToolName.proposeDelete.rawValue,
+                "description": "Propose deleting one file. It moves to the Trash only when the user confirms with return or by saying yes; nothing happens before.",
+                "input_schema": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": pathDescription],
+                        "summary": ["type": "string", "description": summaryDescription],
+                    ],
+                    "required": ["path", "summary"],
+                ] as [String: Any],
+            ],
+            [
+                // Round 19 (J): opening a file the model had to find took 4 to 5 requests because it
+                // listed folders twice first. This finds it by name in one call.
+                "name": EzraFileToolName.findFile.rawValue,
+                "description": "Find files by name in the folders you may edit: a file name or a part of it, case-insensitive. Use it when you know the name but not the folder, instead of listing folders.",
+                "input_schema": [
+                    "type": "object",
+                    "properties": [
+                        "name": ["type": "string", "description": "The file name or a part of it, such as Compose.swift or compose."],
+                    ],
+                    "required": ["name"],
+                ] as [String: Any],
+            ],
+        ]
+    }
+}
+
+/// Round 19: how far `find_file` looks (the orchestrator's amendment 9 adds the folders it skips and
+/// the two stops; the round 19 review added dist, target, vendor, .next and out).
+nonisolated enum EzraFindFileLimits {
+    static let maximumListedMatches = 20
+    /// Files at most this many folders below an allowed folder ("project/1/2/3/4/5/6/a.txt" is found,
+    /// one folder deeper is not).
+    static let maximumDepth = 6
+    /// The search stops after this many entries, or after this long, and says so.
+    static let maximumVisitedEntries = 5000
+    static let timeLimitSeconds: TimeInterval = 1
+    /// Folders of build output and installed packages: large, and never what the user means.
+    static let skippedFolderNames: Set<String> = [
+        "node_modules", ".build", "build", "DerivedData", "Pods", ".venv", "venv", "__pycache__",
+        "dist", "target", "vendor", ".next", "out",
+    ]
+}
+
+// MARK: - Reading a tool call
+
+nonisolated enum EzraFileToolCall: Equatable {
+    case listFolder(path: String)
+    case readFile(path: String, startLine: Int?, endLine: Int?)
+    case proposeEdit(path: String, oldText: String, newText: String, summary: String)
+    case proposeNewFile(path: String, content: String, summary: String)
+    case proposeDelete(path: String, summary: String)
+    case findFile(name: String)
+
+    /// The tool call, or the short sentence that tells the model what was wrong with it.
+    static func parse(toolName: String, input: [String: Any]) -> Result<EzraFileToolCall, EzraFileToolInputError> {
+        guard let knownToolName = EzraFileToolName(rawValue: toolName) else {
+            return .failure(EzraFileToolInputError(message: "i don't have a tool called \(toolName)."))
+        }
+
+        func requiredText(_ fieldName: String) -> Result<String, EzraFileToolInputError> {
+            guard let value = input[fieldName] as? String else {
+                return .failure(EzraFileToolInputError(message: "\(toolName) needs a text value for \(fieldName)."))
+            }
+            return .success(value)
+        }
+        /// A summary is only a label for the user, so a missing one is not an error.
+        func optionalSummary() -> String {
+            (input["summary"] as? String) ?? ""
+        }
+        func optionalWholeNumber(_ fieldName: String) -> Result<Int?, EzraFileToolInputError> {
+            guard let rawValue = input[fieldName], !(rawValue is NSNull) else {
+                return .success(nil)
+            }
+            guard let number = rawValue as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue == number.doubleValue.rounded() else {
+                return .failure(EzraFileToolInputError(message: "\(toolName) needs a whole number for \(fieldName)."))
+            }
+            return .success(number.intValue)
+        }
+
+        switch knownToolName {
+        case .listFolder:
+            switch requiredText("path") {
+            case .failure(let error): return .failure(error)
+            case .success(let path): return .success(.listFolder(path: path))
+            }
+        case .readFile:
+            switch (requiredText("path"), optionalWholeNumber("start_line"), optionalWholeNumber("end_line")) {
+            case (.failure(let error), _, _), (_, .failure(let error), _), (_, _, .failure(let error)):
+                return .failure(error)
+            case (.success(let path), .success(let startLine), .success(let endLine)):
+                return .success(.readFile(path: path, startLine: startLine, endLine: endLine))
+            }
+        case .proposeEdit:
+            switch (requiredText("path"), requiredText("old_text"), requiredText("new_text")) {
+            case (.failure(let error), _, _), (_, .failure(let error), _), (_, _, .failure(let error)):
+                return .failure(error)
+            case (.success(let path), .success(let oldText), .success(let newText)):
+                return .success(.proposeEdit(path: path, oldText: oldText, newText: newText, summary: optionalSummary()))
+            }
+        case .proposeNewFile:
+            switch (requiredText("path"), requiredText("content")) {
+            case (.failure(let error), _), (_, .failure(let error)):
+                return .failure(error)
+            case (.success(let path), .success(let content)):
+                return .success(.proposeNewFile(path: path, content: content, summary: optionalSummary()))
+            }
+        case .proposeDelete:
+            switch requiredText("path") {
+            case .failure(let error): return .failure(error)
+            case .success(let path): return .success(.proposeDelete(path: path, summary: optionalSummary()))
+            }
+        case .findFile:
+            switch requiredText("name") {
+            case .failure(let error): return .failure(error)
+            case .success(let name): return .success(.findFile(name: name))
+            }
+        }
+    }
+}
+
+nonisolated struct EzraFileToolInputError: Error, Equatable {
+    let message: String
+}
+
+// MARK: - The result of one tool call
+
+nonisolated struct EzraFileToolResult: Equatable {
+    /// What the model reads as the `tool_result` content.
+    let text: String
+    /// True for a refusal or a failure; the loop sends it with `is_error`.
+    let isError: Bool
+
+    static func success(_ text: String) -> EzraFileToolResult {
+        EzraFileToolResult(text: text, isError: false)
+    }
+
+    static func failure(_ text: String) -> EzraFileToolResult {
+        EzraFileToolResult(text: text, isError: true)
+    }
+}
+
+// MARK: - The session of one turn
+
+/// Runs the tool calls of one turn against one path policy, and keeps what the turn used and
+/// queued: the number of calls, the bytes read, and the proposed changes. The tool loop calls
+/// `execute` for each `tool_use` block, one after the other.
+nonisolated final class EzraFileToolTurnSession: @unchecked Sendable {
+    /// The reply to a proposal that was queued. The model must not say the change is done.
+    static let changeQueuedResultText = "queued; the user must confirm with return or a spoken yes before anything is written."
+
+    static let toolCallLimitResultText = "you have used all \(EzraFileEditingLimits.maximumToolCallsPerTurn) tool calls allowed in one turn. stop calling tools and tell the user what you found so far."
+    static let bytesReadLimitResultText = "you have read as much as one turn allows (\(EzraFileEditingLimits.maximumBytesReadPerTurn / 1024) KB). stop reading and tell the user what you found so far."
+    static let changeCountLimitResultText = "at most \(EzraFileEditingLimits.maximumChangesPerTurn) changes can be queued in one turn. tell the user to confirm these first, then ask again for the rest."
+
+    private let policy: EzraFilePathPolicy
+    private let fileManager: FileManager
+    private let lock = NSLock()
+
+    private var queuedChangesStorage: [EzraFileChange] = []
+    private var toolCallCountStorage = 0
+    private var bytesReadStorage = 0
+
+    init(policy: EzraFilePathPolicy, fileManager: FileManager = .default) {
+        self.policy = policy
+        self.fileManager = fileManager
+    }
+
+    var queuedChanges: [EzraFileChange] {
+        lock.lock(); defer { lock.unlock() }
+        return queuedChangesStorage
+    }
+
+    var toolCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return toolCallCountStorage
+    }
+
+    /// The bytes of file text returned to the model by `read_file`.
+    var bytesRead: Int {
+        lock.lock(); defer { lock.unlock() }
+        return bytesReadStorage
+    }
+
+    /// Runs one tool call. Never throws: every problem comes back as a short sentence the model can
+    /// act on.
+    func execute(toolName: String, input: [String: Any]) -> EzraFileToolResult {
+        lock.lock(); defer { lock.unlock() }
+
+        toolCallCountStorage += 1
+        if toolCallCountStorage > EzraFileEditingLimits.maximumToolCallsPerTurn {
+            return .failure(Self.toolCallLimitResultText)
+        }
+
+        let toolCall: EzraFileToolCall
+        switch EzraFileToolCall.parse(toolName: toolName, input: input) {
+        case .failure(let inputError):
+            return .failure(inputError.message)
+        case .success(let parsedToolCall):
+            toolCall = parsedToolCall
+        }
+
+        switch toolCall {
+        case .listFolder(let path):
+            return listFolder(rawPath: path)
+        case .readFile(let path, let startLine, let endLine):
+            return readFile(rawPath: path, startLine: startLine, endLine: endLine)
+        case .proposeEdit(let path, let oldText, let newText, let summary):
+            return proposeEdit(rawPath: path, oldText: oldText, newText: newText, rawSummary: summary)
+        case .proposeNewFile(let path, let content, let summary):
+            return proposeNewFile(rawPath: path, content: content, rawSummary: summary)
+        case .proposeDelete(let path, let summary):
+            return proposeDelete(rawPath: path, rawSummary: summary)
+        case .findFile(let name):
+            return findFile(rawName: name)
+        }
+    }
+
+    // MARK: - find_file (round 19)
+
+    /// Files whose name holds the words, in every allowed folder, listed as the other tools write
+    /// paths ("project/Sources/Compose.swift"). Reads no file, so `bytesRead` is unchanged.
+    private func findFile(rawName: String) -> EzraFileToolResult {
+        let search = Self.findFiles(
+            named: rawName,
+            policy: policy,
+            fileManager: fileManager,
+            maximumVisitedEntries: EzraFindFileLimits.maximumVisitedEntries,
+            timeLimitSeconds: EzraFindFileLimits.timeLimitSeconds
+        )
+        return Self.findFileResult(forName: rawName, search: search)
+    }
+
+    /// What one search found. `stopReason` is set when it stopped before it had looked everywhere.
+    struct FindFileSearch: Equatable {
+        enum StopReason: Equatable {
+            case tooManyEntries
+            case timeLimit
+        }
+        var displayPaths: [String] = []
+        var stopReason: StopReason?
+    }
+
+    /// Walks every allowed folder (files at most `EzraFindFileLimits.maximumDepth` folders below it)
+    /// for file names that hold the name, case and accents ignored. Never looks inside a `.git` folder,
+    /// a protected name or a build or package folder, and every match goes through the path policy, so
+    /// a link that points out or a protected path is never listed. The limits are parameters so the
+    /// checks can reach them quickly.
+    ///
+    /// The walk is breadth first (round 19 review): the folders of one depth, in every allowed folder,
+    /// are all listed before any folder one deeper, so the entry budget is spent on the files nearest
+    /// the top first. Walking one folder to the bottom before the next had missed a file at the top of
+    /// the last folder of a 10,200-entry tree. Each folder is read entry by entry (only its own
+    /// entries; the walk queues the subfolders itself), so a huge folder still stops at the budget.
+    static func findFiles(
+        named rawName: String,
+        policy: EzraFilePathPolicy,
+        fileManager: FileManager,
+        maximumVisitedEntries: Int,
+        timeLimitSeconds: TimeInterval
+    ) -> FindFileSearch {
+        var search = FindFileSearch()
+        let wantedName = EzraActionText.normalizedForComparison((rawName.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).lastPathComponent)
+        guard !wantedName.isEmpty else {
+            return search
+        }
+        let searchDeadline = Date().addingTimeInterval(timeLimitSeconds)
+        var visitedEntryCount = 0
+        // The allowed folders are depth 0. A folder is listed when its depth is at most the maximum:
+        // its files are then at most that many folders below the allowed folder.
+        var foldersToListAtThisDepth = policy.allowedFolderURLs
+        var depthOfTheFoldersBeingListed = 0
+        walk: while !foldersToListAtThisDepth.isEmpty {
+            var foldersToListAtTheNextDepth: [URL] = []
+            for folderURL in foldersToListAtThisDepth {
+                guard let enumerator = fileManager.enumerator(
+                    at: folderURL,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                    options: [.skipsSubdirectoryDescendants]
+                ) else {
+                    continue
+                }
+                for case let entryURL as URL in enumerator {
+                    visitedEntryCount += 1
+                    if visitedEntryCount > maximumVisitedEntries {
+                        search.stopReason = .tooManyEntries
+                        break walk
+                    }
+                    if visitedEntryCount % 100 == 0, Date() > searchDeadline {
+                        search.stopReason = .timeLimit
+                        break walk
+                    }
+                    let entryName = entryURL.lastPathComponent
+                    let resourceValues = try? entryURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                    let isFolder = resourceValues?.isDirectory == true && resourceValues?.isSymbolicLink != true
+                    if EzraProtectedFileNames.isGitFolderName(entryName) || EzraProtectedFileNames.nameIsProtected(entryName) {
+                        continue
+                    }
+                    if isFolder {
+                        let folderIsWithinTheDepth = depthOfTheFoldersBeingListed + 1 <= EzraFindFileLimits.maximumDepth
+                        if folderIsWithinTheDepth && !EzraFindFileLimits.skippedFolderNames.contains(entryName) {
+                            foldersToListAtTheNextDepth.append(entryURL)
+                        }
+                        continue
+                    }
+                    guard EzraActionText.normalizedForComparison(entryName).contains(wantedName) else {
+                        continue
+                    }
+                    guard case .success(let resolvedPath) = policy.resolve(rawPath: entryURL.path, intent: .existingItem) else {
+                        continue
+                    }
+                    search.displayPaths.append(displayPath(of: resolvedPath))
+                }
+            }
+            foldersToListAtThisDepth = foldersToListAtTheNextDepth
+            depthOfTheFoldersBeingListed += 1
+        }
+        search.displayPaths.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        return search
+    }
+
+    /// "found 2 files: website/README.md, docs/README.md", at most 20 paths and "and N more" past that,
+    /// or "no file named 'x' in the folders you may edit."; a search that stopped early says so.
+    static func findFileResult(forName rawName: String, search: FindFileSearch) -> EzraFileToolResult {
+        let shownName = EzraActionText.oneLine(rawName, maximumCharacters: 60).replacingOccurrences(of: "'", with: "")
+        guard !shownName.isEmpty else {
+            return .failure("find_file needs a file name or a part of one.")
+        }
+        var resultText: String
+        if search.displayPaths.isEmpty {
+            resultText = "no file named '\(shownName)' in the folders you may edit."
+        } else {
+            let listedPaths = search.displayPaths.prefix(EzraFindFileLimits.maximumListedMatches).joined(separator: ", ")
+            let fileCount = search.displayPaths.count
+            resultText = "found \(fileCount) \(fileCount == 1 ? "file" : "files"): \(listedPaths)"
+            if fileCount > EzraFindFileLimits.maximumListedMatches {
+                resultText += ", and \(fileCount - EzraFindFileLimits.maximumListedMatches) more"
+            }
+        }
+        switch search.stopReason {
+        case .tooManyEntries:
+            resultText += " (the search stopped after \(EzraFindFileLimits.maximumVisitedEntries) entries; there may be more. ask for a longer name or list the folder.)"
+        case .timeLimit:
+            resultText += " (the search stopped after \(Int(EzraFindFileLimits.timeLimitSeconds)) second; there may be more. ask for a longer name or list the folder.)"
+        case nil:
+            break
+        }
+        return .success(resultText)
+    }
+
+    // MARK: - list_folder
+
+    private func listFolder(rawPath: String) -> EzraFileToolResult {
+        switch policy.resolve(rawPath: rawPath, intent: .existingItem) {
+        case .failure(let refusal):
+            // "." or an empty path with several folders and no open document: show the folders.
+            let trimmedPath = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedPath.isEmpty || trimmedPath == "." {
+                switch refusal {
+                case .existsInSeveralFolders, .emptyPath, .doesNotExist:
+                    if !policy.allowedFolderURLs.isEmpty {
+                        let folderLines = policy.allowedFolderURLs.map { "\(EzraEditableFolders.displayName(forFolderPath: $0.path)) (\($0.path))" }
+                        return .success("folders you may edit:\n" + folderLines.joined(separator: "\n"))
+                    }
+                default:
+                    break
+                }
+            }
+            return .failure(refusal.message)
+        case .success(let resolvedPath):
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: resolvedPath.fileURL.path, isDirectory: &isDirectory) else {
+                return .failure(EzraFilePathRefusal.doesNotExist.message)
+            }
+            guard isDirectory.boolValue else {
+                return .failure("that is a file, not a folder. use read_file.")
+            }
+            guard let entryURLs = try? fileManager.contentsOfDirectory(
+                at: resolvedPath.fileURL,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey],
+                options: []
+            ) else {
+                return .failure("i couldn't list that folder.")
+            }
+
+            var hiddenEntryCount = 0
+            var visibleEntries: [(name: String, description: String)] = []
+            for entryURL in entryURLs {
+                let entryName = entryURL.lastPathComponent
+                if EzraProtectedFileNames.isGitFolderName(entryName) || EzraProtectedFileNames.nameIsProtected(entryName) {
+                    hiddenEntryCount += 1
+                    continue
+                }
+                let resourceValues = try? entryURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey])
+                if resourceValues?.isSymbolicLink == true {
+                    visibleEntries.append((entryName, "\(entryName) (link)"))
+                } else if resourceValues?.isDirectory == true {
+                    visibleEntries.append((entryName, "\(entryName)/ (folder)"))
+                } else {
+                    let sizeText = EzraByteCountText.text(forByteCount: resourceValues?.fileSize ?? 0)
+                    visibleEntries.append((entryName, "\(entryName) (file, \(sizeText))"))
+                }
+            }
+            visibleEntries.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+            let displayPath = Self.displayPath(of: resolvedPath)
+            var resultLines: [String] = []
+            if visibleEntries.isEmpty {
+                resultLines.append("\(displayPath) is empty.")
+            } else if visibleEntries.count > EzraFileEditingLimits.maximumListedEntries {
+                resultLines.append("\(displayPath): the first \(EzraFileEditingLimits.maximumListedEntries) of \(visibleEntries.count) entries:")
+            } else {
+                resultLines.append("\(displayPath): \(visibleEntries.count) \(visibleEntries.count == 1 ? "entry" : "entries"):")
+            }
+            resultLines.append(contentsOf: visibleEntries.prefix(EzraFileEditingLimits.maximumListedEntries).map(\.description))
+            if hiddenEntryCount > 0 {
+                resultLines.append("(\(hiddenEntryCount) \(hiddenEntryCount == 1 ? "entry is" : "entries are") hidden: not readable or editable)")
+            }
+            return .success(resultLines.joined(separator: "\n"))
+        }
+    }
+
+    // MARK: - read_file
+
+    private func readFile(rawPath: String, startLine: Int?, endLine: Int?) -> EzraFileToolResult {
+        if bytesReadStorage >= EzraFileEditingLimits.maximumBytesReadPerTurn {
+            return .failure(Self.bytesReadLimitResultText)
+        }
+        let resolvedPath: EzraResolvedFilePath
+        switch policy.resolve(rawPath: rawPath, intent: .existingItem) {
+        case .failure(let refusal): return .failure(refusal.message)
+        case .success(let path): resolvedPath = path
+        }
+        let fileText: String
+        switch EzraFileTextReader.readText(at: resolvedPath.fileURL, fileManager: fileManager) {
+        case .failure(let readFailure): return .failure(readFailure.message)
+        case .success(let text): fileText = text
+        }
+
+        let fileLines = EzraTextLines.lines(of: fileText)
+        let displayPath = Self.displayPath(of: resolvedPath)
+        if fileLines.isEmpty {
+            return .success("\(displayPath) is empty.")
+        }
+
+        let firstLineNumber = max(1, startLine ?? 1)
+        if firstLineNumber > fileLines.count {
+            return .failure("that file has only \(fileLines.count) \(fileLines.count == 1 ? "line" : "lines").")
+        }
+        let requestedLastLineNumber = min(fileLines.count, endLine ?? fileLines.count)
+        if requestedLastLineNumber < firstLineNumber {
+            return .failure("end_line is before start_line.")
+        }
+        let cappedLastLineNumber = min(requestedLastLineNumber, firstLineNumber + EzraFileEditingLimits.maximumLinesPerRead - 1)
+
+        let windowRange = (firstLineNumber - 1)..<cappedLastLineNumber
+        let secretLineIndexes = EzraFileContentRedaction.secretLineIndexes(in: fileLines, rangeToCheck: windowRange)
+
+        var numberedLines: [String] = []
+        var byteCountOfNumberedLines = 0
+        var lastLineNumberShown = firstLineNumber - 1
+        var hiddenSecretLineCount = 0
+        for lineIndex in windowRange {
+            let isSecret = secretLineIndexes.contains(lineIndex)
+            let numberedLine = "\(lineIndex + 1): " + EzraFileContentRedaction.visibleLine(fileLines[lineIndex], isSecret: isSecret)
+            let byteCountWithThisLine = byteCountOfNumberedLines + numberedLine.utf8.count + 1
+            // One line is always shown, however long, so a read always makes progress.
+            if byteCountWithThisLine > EzraFileEditingLimits.maximumBytesPerRead && !numberedLines.isEmpty {
+                break
+            }
+            numberedLines.append(numberedLine)
+            byteCountOfNumberedLines = byteCountWithThisLine
+            lastLineNumberShown = lineIndex + 1
+            if isSecret {
+                hiddenSecretLineCount += 1
+            }
+        }
+
+        var resultLines = ["\(displayPath), lines \(firstLineNumber)-\(lastLineNumberShown) of \(fileLines.count):"]
+        resultLines.append(contentsOf: numberedLines)
+        if lastLineNumberShown < requestedLastLineNumber {
+            resultLines.append("(cut after line \(lastLineNumberShown). to continue, call read_file with start_line \(lastLineNumberShown + 1).)")
+        }
+        if hiddenSecretLineCount > 0 {
+            // The live eval had the model ask the user to paste such a line into the chat; it must not.
+            resultLines.append("(\(hiddenSecretLineCount) \(hiddenSecretLineCount == 1 ? "line was" : "lines were") hidden: looked like a secret. you cannot change \(hiddenSecretLineCount == 1 ? "it" : "them"); never ask the user to paste a secret, they can change it themselves.)")
+        }
+        let resultText = resultLines.joined(separator: "\n")
+        bytesReadStorage += byteCountOfNumberedLines
+        return .success(resultText)
+    }
+
+    // MARK: - propose_edit
+
+    /// What the model is told when the text is missing, or sits on a line that is hidden from it.
+    /// The two are deliberately the same sentence: the model must not learn that a hidden line exists.
+    static let textNotFoundResultText = "i couldn't find old_text in that file. read the file again and copy old_text exactly, without the line numbers."
+
+    private func proposeEdit(rawPath: String, oldText modelOldText: String, newText modelNewText: String, rawSummary: String) -> EzraFileToolResult {
+        if queuedChangesStorage.count >= EzraFileEditingLimits.maximumChangesPerTurn {
+            return .failure(Self.changeCountLimitResultText)
+        }
+        let resolvedPath: EzraResolvedFilePath
+        switch policy.resolve(rawPath: rawPath, intent: .existingItem) {
+        case .failure(let refusal): return .failure(refusal.message)
+        case .success(let path): resolvedPath = path
+        }
+        if let conflictText = conflictWithQueuedChanges(forFileURL: resolvedPath.fileURL, newActionIsEdit: true) {
+            return .failure(conflictText)
+        }
+        let diskText: String
+        switch EzraFileTextReader.readText(at: resolvedPath.fileURL, fileManager: fileManager) {
+        case .failure(let readFailure): return .failure(readFailure.message)
+        case .success(let text): diskText = text
+        }
+
+        // Edits already queued for this file in this turn are applied first, in order, so this one
+        // is checked against the text the file will have when it comes up.
+        var textBeforeThisEdit = diskText
+        for queuedChange in queuedChangesStorage where queuedChange.fileURL == resolvedPath.fileURL && queuedChange.action == .edit {
+            if let queuedOldText = queuedChange.oldText, let queuedNewText = queuedChange.newText,
+               let queuedRange = textBeforeThisEdit.range(of: queuedOldText, options: [.literal]) {
+                textBeforeThisEdit.replaceSubrange(queuedRange, with: queuedNewText)
+            }
+        }
+
+        if modelOldText.isEmpty {
+            return .failure("old_text is empty. give the exact text to replace.")
+        }
+        let oldText = EzraTextLines.matchingLineEndings(of: modelOldText, toFileText: diskText)
+        let newText = EzraTextLines.matchingLineEndings(of: modelNewText, toFileText: diskText)
+        if oldText == newText {
+            return .failure("new_text is the same as old_text, so there is nothing to change.")
+        }
+
+        let matchRanges = Self.nonOverlappingRanges(of: oldText, in: textBeforeThisEdit)
+        if matchRanges.isEmpty {
+            return .failure(Self.textNotFoundResultText)
+        }
+        if matchRanges.count > 1 {
+            return .failure("old_text appears \(matchRanges.count) times in that file. add more surrounding lines so it matches exactly once.")
+        }
+        let matchRange = matchRanges[0]
+
+        // A match that touches a line hidden as a secret is refused as if it were not there.
+        let linesBeforeThisEdit = textBeforeThisEdit.components(separatedBy: "\n")
+        // Counted as unicode scalars: a Windows line break is one Character in Swift, not two.
+        let firstMatchedLineIndex = textBeforeThisEdit[..<matchRange.lowerBound].unicodeScalars.filter { $0 == "\n" }.count
+        var lastMatchedLineIndex = textBeforeThisEdit[..<matchRange.upperBound].unicodeScalars.filter { $0 == "\n" }.count
+        if oldText.hasSuffix("\n") {
+            lastMatchedLineIndex -= 1
+        }
+        lastMatchedLineIndex = max(firstMatchedLineIndex, min(lastMatchedLineIndex, linesBeforeThisEdit.count - 1))
+        let secretLineIndexes = EzraFileContentRedaction.secretLineIndexes(
+            in: linesBeforeThisEdit,
+            rangeToCheck: firstMatchedLineIndex..<(lastMatchedLineIndex + 1)
+        )
+        if (firstMatchedLineIndex...lastMatchedLineIndex).contains(where: { secretLineIndexes.contains($0) }) {
+            return .failure(Self.textNotFoundResultText)
+        }
+
+        var textAfterThisEdit = textBeforeThisEdit
+        textAfterThisEdit.replaceSubrange(matchRange, with: newText)
+        let diffLines = EzraLineDiff.hunks(
+            oldLines: EzraTextLines.lines(of: textBeforeThisEdit),
+            newLines: EzraTextLines.lines(of: textAfterThisEdit)
+        )
+        let diffPreview = EzraChangeDiffPreview.preview(of: diffLines)
+
+        queuedChangesStorage.append(EzraFileChange(
+            identifier: UUID(),
+            action: .edit,
+            fileURL: resolvedPath.fileURL,
+            allowedFolderURL: resolvedPath.allowedFolderURL,
+            relativePath: resolvedPath.relativePathInAllowedFolder,
+            summary: EzraChangeHistoryText.cleanedSummary(rawSummary),
+            oldText: oldText,
+            newText: newText,
+            newFileContent: nil,
+            diffPreviewLines: diffPreview.lines,
+            hiddenDiffLineCount: diffPreview.hiddenLineCount,
+            deletedFileDescription: nil
+        ))
+        return .success(Self.changeQueuedResultText)
+    }
+
+    // MARK: - propose_new_file
+
+    private func proposeNewFile(rawPath: String, content: String, rawSummary: String) -> EzraFileToolResult {
+        if queuedChangesStorage.count >= EzraFileEditingLimits.maximumChangesPerTurn {
+            return .failure(Self.changeCountLimitResultText)
+        }
+        let resolvedPath: EzraResolvedFilePath
+        switch policy.resolve(rawPath: rawPath, intent: .newFile) {
+        case .failure(let refusal): return .failure(refusal.message)
+        case .success(let path): resolvedPath = path
+        }
+        guard !resolvedPath.relativePathInAllowedFolder.isEmpty else {
+            return .failure("that is the folder itself. give a file name.")
+        }
+        // `attributesOfItem` does not follow links, so a link (even one that points nowhere) counts
+        // as something that exists and is not overwritten.
+        if (try? fileManager.attributesOfItem(atPath: resolvedPath.fileURL.path)) != nil {
+            return .failure("that file already exists. use propose_edit to change it.")
+        }
+        if queuedChangesStorage.contains(where: { $0.fileURL == resolvedPath.fileURL }) {
+            return .failure("a change for that file is already queued in this turn.")
+        }
+        if content.utf8.count > EzraFileEditingLimits.maximumFileBytes {
+            return .failure("that content is bigger than \(EzraFileEditingLimits.maximumFileBytes / 1024) KB, so a file that big is not created.")
+        }
+        if content.utf8.prefix(EzraFileEditingLimits.binarySniffByteCount).contains(0) {
+            return .failure("only plain text files can be created.")
+        }
+        // The folders above the file may not exist yet, but the nearest one that does must be a folder.
+        var nearestExistingAncestorURL = resolvedPath.fileURL.deletingLastPathComponent()
+        while (try? fileManager.attributesOfItem(atPath: nearestExistingAncestorURL.path)) == nil, nearestExistingAncestorURL.path != "/" {
+            nearestExistingAncestorURL = nearestExistingAncestorURL.deletingLastPathComponent()
+        }
+        var ancestorIsDirectory: ObjCBool = false
+        fileManager.fileExists(atPath: nearestExistingAncestorURL.path, isDirectory: &ancestorIsDirectory)
+        guard ancestorIsDirectory.boolValue else {
+            return .failure("a part of that path is a file, not a folder.")
+        }
+
+        let addedLines = EzraLineDiff.addedLines(of: EzraTextLines.lines(of: content))
+        let diffPreview = EzraChangeDiffPreview.preview(of: addedLines)
+        queuedChangesStorage.append(EzraFileChange(
+            identifier: UUID(),
+            action: .newFile,
+            fileURL: resolvedPath.fileURL,
+            allowedFolderURL: resolvedPath.allowedFolderURL,
+            relativePath: resolvedPath.relativePathInAllowedFolder,
+            summary: EzraChangeHistoryText.cleanedSummary(rawSummary),
+            oldText: nil,
+            newText: nil,
+            newFileContent: content,
+            diffPreviewLines: diffPreview.lines,
+            hiddenDiffLineCount: diffPreview.hiddenLineCount,
+            deletedFileDescription: nil
+        ))
+        return .success(Self.changeQueuedResultText)
+    }
+
+    // MARK: - propose_delete
+
+    private func proposeDelete(rawPath: String, rawSummary: String) -> EzraFileToolResult {
+        if queuedChangesStorage.count >= EzraFileEditingLimits.maximumChangesPerTurn {
+            return .failure(Self.changeCountLimitResultText)
+        }
+        let resolvedPath: EzraResolvedFilePath
+        switch policy.resolve(rawPath: rawPath, intent: .existingItem) {
+        case .failure(let refusal): return .failure(refusal.message)
+        case .success(let path): resolvedPath = path
+        }
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: resolvedPath.fileURL.path, isDirectory: &isDirectory) else {
+            return .failure(EzraFilePathRefusal.doesNotExist.message)
+        }
+        guard !isDirectory.boolValue else {
+            return .failure("i can only delete single files, not folders.")
+        }
+        if let conflictText = conflictWithQueuedChanges(forFileURL: resolvedPath.fileURL, newActionIsEdit: false) {
+            return .failure(conflictText)
+        }
+        let fileSize = ((try? fileManager.attributesOfItem(atPath: resolvedPath.fileURL.path))?[.size] as? NSNumber)?.intValue ?? 0
+        queuedChangesStorage.append(EzraFileChange(
+            identifier: UUID(),
+            action: .delete,
+            fileURL: resolvedPath.fileURL,
+            allowedFolderURL: resolvedPath.allowedFolderURL,
+            relativePath: resolvedPath.relativePathInAllowedFolder,
+            summary: EzraChangeHistoryText.cleanedSummary(rawSummary),
+            oldText: nil,
+            newText: nil,
+            newFileContent: nil,
+            diffPreviewLines: [],
+            hiddenDiffLineCount: 0,
+            deletedFileDescription: EzraByteCountText.text(forByteCount: fileSize)
+        ))
+        return .success(Self.changeQueuedResultText)
+    }
+
+    // MARK: - Shared
+
+    /// Two proposals for one file are fine when both are edits (they are applied in order). Any
+    /// other mix would leave the second one meaning something different from what was checked.
+    private func conflictWithQueuedChanges(forFileURL fileURL: URL, newActionIsEdit: Bool) -> String? {
+        for queuedChange in queuedChangesStorage where queuedChange.fileURL == fileURL {
+            if newActionIsEdit && queuedChange.action == .edit {
+                continue
+            }
+            return "a different change for that file is already queued in this turn."
+        }
+        return nil
+    }
+
+    private static func displayPath(of resolvedPath: EzraResolvedFilePath) -> String {
+        let folderName = resolvedPath.allowedFolderDisplayName
+        return resolvedPath.relativePathInAllowedFolder.isEmpty ? folderName : folderName + "/" + resolvedPath.relativePathInAllowedFolder
+    }
+
+    /// Every place `needle` occurs in `text`, none overlapping the one before it.
+    static func nonOverlappingRanges(of needle: String, in text: String) -> [Range<String.Index>] {
+        guard !needle.isEmpty else {
+            return []
+        }
+        var ranges: [Range<String.Index>] = []
+        var searchStartIndex = text.startIndex
+        while searchStartIndex < text.endIndex,
+              let foundRange = text.range(of: needle, options: [.literal], range: searchStartIndex..<text.endIndex) {
+            ranges.append(foundRange)
+            searchStartIndex = foundRange.upperBound
+        }
+        return ranges
+    }
+}

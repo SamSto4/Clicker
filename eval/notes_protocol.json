@@ -1,5 +1,5 @@
 {
-  "_comment": "Adapter for the NOTES dimension. save_detection 'app_parser' means: a save is a NOTE tag the MODEL wrote (parsed by the app's ClickyReplyTagParser via eval/assemble_prompt_driver). Notes for recall are injected by the app's ClickyPromptAssembler into each scenario's system prompt, so context_injection is 'none' here (no second injection).",
+  "_comment": "Adapter for the NOTES dimension. save_detection 'app_parser' means: a save is a NOTE tag the MODEL wrote (parsed by the app's EzraReplyTagParser via eval/assemble_prompt_driver). Notes for recall are injected by the app's EzraPromptAssembler into each scenario's system prompt, so context_injection is 'none' here (no second injection).",
   "enabled": true,
   "disabled_reason": null,
   "save_detection": {
