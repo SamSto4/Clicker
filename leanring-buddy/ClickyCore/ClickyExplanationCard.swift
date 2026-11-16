@@ -18,6 +18,12 @@ nonisolated enum ClickyExplanationCardRow: Equatable {
     case flow(nodeTexts: [String])
     /// A few dated points on a line.
     case timeline(points: [ClickyExplanationCardTimelinePoint])
+    /// Round 21: one line of code or a command, written in a monospaced face on a slightly darker
+    /// band. It wraps at characters (code has no spaces to break at) to at most three lines.
+    case code(String)
+    /// Round 21: a small table. The first row is the header; every row has the same number of
+    /// cells (two to four), and there are one to four rows.
+    case table(rows: [[String]])
 
     /// The word used for this row in a `[ROW:...]` tag.
     var tagKindName: String {
@@ -26,6 +32,8 @@ nonisolated enum ClickyExplanationCardRow: Equatable {
         case .boxes: return "boxes"
         case .flow: return "flow"
         case .timeline: return "timeline"
+        case .code: return "code"
+        case .table: return "table"
         }
     }
 
@@ -43,6 +51,10 @@ nonisolated enum ClickyExplanationCardRow: Equatable {
             return "flow:\(nodeTexts.joined(separator: " > "))"
         case .timeline(let points):
             return "timeline:" + points.map { "\($0.whenText)=\($0.whatText)" }.joined(separator: "|")
+        case .code(let codeText):
+            return "code:\(codeText)"
+        case .table(let tableRows):
+            return "table:" + tableRows.map { $0.joined(separator: "|") }.joined(separator: ";")
         }
     }
 }
@@ -72,6 +84,18 @@ nonisolated struct ClickyExplanationCard: Equatable {
     static let maximumBoxCountPerBoxesRow = 5
     static let minimumPartCountPerFlowOrTimelineRow = 2
     static let maximumPartCountPerFlowOrTimelineRow = 5
+
+    /// Round 21: a code row is one line of code or a command. Longer text is cut, like a text row.
+    static let maximumCodeRowCharacterCount = 90
+
+    /// Round 21: a table row. A cell is a word or two and is cut at the limit; a table outside the
+    /// column counts (or with rows of different lengths) is dropped, not cut, like a flow with too
+    /// many steps. Since the round 21 review a table of more than four rows keeps its first four.
+    static let maximumTableCellCharacterCount = 16
+    static let minimumTableColumnCount = 2
+    static let maximumTableColumnCount = 4
+    static let minimumTableRowCount = 1
+    static let maximumTableRowCount = 4
 
     let title: String
     let rows: [ClickyExplanationCardRow]
@@ -120,6 +144,19 @@ nonisolated struct ClickyExplanationCardLayoutMetrics: Equatable {
     var gapBetweenTimelineLineAndTextInPoints: Double = 14
     var maximumTimelineWhenWidthInPoints: Double = 96
     var gapBetweenTimelineWhenAndWhatInPoints: Double = 10
+    /// Round 21: a code row's lines and the band they sit on. Ninety characters of a 12 point
+    /// monospaced face need three lines at most on this card; a fourth is cut with "…".
+    var codeLineHeightInPoints: Double = 18
+    var maximumCodeRowLineCount: Int = 3
+    var codeBandHorizontalPaddingInPoints: Double = 8
+    var codeBandVerticalPaddingInPoints: Double = 4
+    /// Round 21: a table row's rows, the room under the header for its underline, and the air
+    /// between a cell's words and the lines beside it.
+    var tableRowHeightInPoints: Double = 22
+    var gapBelowTableHeaderInPoints: Double = 4
+    var tableCellHorizontalPaddingInPoints: Double = 5
+    /// The lines between the columns stop this far short of the table's top and bottom.
+    var tableColumnLineInsetInPoints: Double = 3
 
     var contentWidthInPoints: Double {
         cardWidthInPoints - 2 * paddingInPoints
@@ -134,6 +171,12 @@ nonisolated enum ClickyExplanationCardRowElement: Equatable {
     case arrow(tail: CGPoint, head: CGPoint)
     case timelineLine(start: CGPoint, end: CGPoint)
     case timelinePoint(dotCenter: CGPoint, whenText: String, whenFrame: CGRect, whatText: String, whatFrame: CGRect)
+    /// Round 21: one line of a code row, in the monospaced face. The row's frame is its band.
+    case codeLine(text: String, frame: CGRect)
+    /// Round 21: one cell of a table row; `frame` is where its words go (inside the column).
+    case tableCell(text: String, frame: CGRect, isHeader: Bool)
+    /// Round 21: a pencil line of a table: the header's underline, or a line between two columns.
+    case tableLine(start: CGPoint, end: CGPoint)
 }
 
 nonisolated struct ClickyExplanationCardRowLayout: Equatable {
@@ -174,11 +217,15 @@ nonisolated enum ClickyExplanationCardLayoutCalculator {
     /// points tall, and the full two and a half points would push its outline into its words.
     static let maximumWobbleDistanceOnCardInPoints: Double = 1.1
 
+    /// `codeTextWidthInPoints` measures a code row's text in the monospaced face (round 21). It is
+    /// optional so every caller from before code rows existed compiles unchanged; without it a code
+    /// row is measured with `rowTextWidthInPoints`.
     static func layout(
         for card: ClickyExplanationCard,
         metrics: ClickyExplanationCardLayoutMetrics,
         titleTextWidthInPoints: (String) -> Double,
-        rowTextWidthInPoints: (String) -> Double
+        rowTextWidthInPoints: (String) -> Double,
+        codeTextWidthInPoints: ((String) -> Double)? = nil
     ) -> ClickyExplanationCardLayout {
         let contentLeftX = metrics.paddingInPoints
         var nextTopY = metrics.paddingInPoints
@@ -206,7 +253,7 @@ nonisolated enum ClickyExplanationCardLayoutCalculator {
         var rowLayouts: [ClickyExplanationCardRowLayout] = []
         for (rowIndex, row) in card.rows.enumerated() {
             nextTopY += rowIndex == 0 ? metrics.gapBetweenTitleAndRowsInPoints : metrics.gapBetweenRowsInPoints
-            let rowLayout = self.rowLayout(for: row, topY: nextTopY, metrics: metrics, rowTextWidthInPoints: rowTextWidthInPoints)
+            let rowLayout = self.rowLayout(for: row, topY: nextTopY, metrics: metrics, rowTextWidthInPoints: rowTextWidthInPoints, codeTextWidthInPoints: codeTextWidthInPoints)
             rowLayouts.append(rowLayout)
             nextTopY = Double(rowLayout.frame.maxY)
         }
@@ -218,17 +265,32 @@ nonisolated enum ClickyExplanationCardLayoutCalculator {
         )
     }
 
-    /// One row placed with its top edge at `topY` in the card.
+    /// One row placed with its top edge at `topY` in the card. `codeTextWidthInPoints` is as in
+    /// `layout(for:...)`.
     static func rowLayout(
         for row: ClickyExplanationCardRow,
         topY: Double,
         metrics: ClickyExplanationCardLayoutMetrics,
-        rowTextWidthInPoints: (String) -> Double
+        rowTextWidthInPoints: (String) -> Double,
+        codeTextWidthInPoints: ((String) -> Double)? = nil
     ) -> ClickyExplanationCardRowLayout {
         let contentLeftX = metrics.paddingInPoints
         let contentWidth = metrics.contentWidthInPoints
 
         switch row {
+        case .code(let codeText):
+            return codeRowLayout(
+                for: codeText,
+                topY: topY,
+                metrics: metrics,
+                codeTextWidthInPoints: { measuredText in
+                    codeTextWidthInPoints?(measuredText) ?? rowTextWidthInPoints(measuredText)
+                }
+            )
+
+        case .table(let tableRows):
+            return tableRowLayout(for: tableRows, topY: topY, metrics: metrics)
+
         case .text(let text):
             let wrappedTextLines = wrappedLines(
                 of: text,
@@ -383,6 +445,139 @@ nonisolated enum ClickyExplanationCardLayoutCalculator {
         )
     }
 
+    // MARK: - A line of code (round 21)
+
+    /// The mark that ends a code row cut short after its last allowed line.
+    static let codeLineCutMark = "…"
+
+    /// The band of a code row: its lines in the monospaced face, wrapped at characters, inside a
+    /// little padding. The row's frame is the band, which the layer builder fills.
+    private static func codeRowLayout(
+        for codeText: String,
+        topY: Double,
+        metrics: ClickyExplanationCardLayoutMetrics,
+        codeTextWidthInPoints: (String) -> Double
+    ) -> ClickyExplanationCardRowLayout {
+        let contentLeftX = metrics.paddingInPoints
+        let contentWidth = metrics.contentWidthInPoints
+        let widestCodeLine = contentWidth - 2 * metrics.codeBandHorizontalPaddingInPoints
+        let wrappedCodeLines = characterWrappedLines(
+            of: codeText,
+            maximumLineWidthInPoints: widestCodeLine,
+            maximumLineCount: metrics.maximumCodeRowLineCount,
+            textWidthInPoints: codeTextWidthInPoints
+        )
+        var elements: [ClickyExplanationCardRowElement] = []
+        for (lineIndex, wrappedCodeLine) in wrappedCodeLines.enumerated() {
+            elements.append(.codeLine(
+                text: wrappedCodeLine,
+                frame: CGRect(
+                    x: contentLeftX + metrics.codeBandHorizontalPaddingInPoints,
+                    y: topY + metrics.codeBandVerticalPaddingInPoints + Double(lineIndex) * metrics.codeLineHeightInPoints,
+                    width: min(widestCodeLine, ceil(codeTextWidthInPoints(wrappedCodeLine))),
+                    height: metrics.codeLineHeightInPoints
+                )
+            ))
+        }
+        let rowHeight = 2 * metrics.codeBandVerticalPaddingInPoints + Double(max(1, wrappedCodeLines.count)) * metrics.codeLineHeightInPoints
+        return ClickyExplanationCardRowLayout(
+            frame: CGRect(x: contentLeftX, y: topY, width: contentWidth, height: rowHeight),
+            elements: elements
+        )
+    }
+
+    /// Breaks code into lines no wider than the limit at any character, because code often has no
+    /// spaces to break at. When more lines than allowed would be needed, the last allowed line
+    /// ends with "…" (as much of it as fits with the mark), so a cut is always visible.
+    static func characterWrappedLines(
+        of text: String,
+        maximumLineWidthInPoints: Double,
+        maximumLineCount: Int,
+        textWidthInPoints: (String) -> Double
+    ) -> [String] {
+        guard !text.isEmpty, maximumLineCount > 0 else {
+            return []
+        }
+        var lines: [String] = []
+        var currentLine = ""
+        for character in text {
+            let currentLineWithCharacter = currentLine + String(character)
+            // A line always takes at least one character, so even a very narrow card makes progress.
+            if !currentLine.isEmpty && textWidthInPoints(currentLineWithCharacter) > maximumLineWidthInPoints {
+                lines.append(currentLine)
+                currentLine = String(character)
+            } else {
+                currentLine = currentLineWithCharacter
+            }
+        }
+        if !currentLine.isEmpty {
+            lines.append(currentLine)
+        }
+        guard lines.count > maximumLineCount else {
+            return lines
+        }
+        var lastKeptLine = lines[maximumLineCount - 1]
+        while !lastKeptLine.isEmpty && textWidthInPoints(lastKeptLine + codeLineCutMark) > maximumLineWidthInPoints {
+            lastKeptLine.removeLast()
+        }
+        return Array(lines.prefix(maximumLineCount - 1)) + [lastKeptLine + codeLineCutMark]
+    }
+
+    // MARK: - A small table (round 21)
+
+    /// Equal columns across the card, one line per row, the header's underline in the gap below
+    /// it, and a line between each two columns. The pen draws the lines; the cells fade in. Words
+    /// wider than their cell are cut with an ellipsis by the layer that draws them.
+    private static func tableRowLayout(
+        for tableRows: [[String]],
+        topY: Double,
+        metrics: ClickyExplanationCardLayoutMetrics
+    ) -> ClickyExplanationCardRowLayout {
+        let contentLeftX = metrics.paddingInPoints
+        let contentWidth = metrics.contentWidthInPoints
+        let columnCount = max(1, tableRows.first?.count ?? 1)
+        let columnWidth = contentWidth / Double(columnCount)
+        let tableHeight = Double(tableRows.count) * metrics.tableRowHeightInPoints + metrics.gapBelowTableHeaderInPoints
+
+        var elements: [ClickyExplanationCardRowElement] = []
+        // The underline first, from left to right, then the lines between the columns, from the
+        // left: the order the pen takes.
+        let underlineY = topY + metrics.tableRowHeightInPoints + metrics.gapBelowTableHeaderInPoints / 2
+        elements.append(.tableLine(
+            start: CGPoint(x: contentLeftX, y: underlineY),
+            end: CGPoint(x: contentLeftX + contentWidth, y: underlineY)
+        ))
+        for columnIndex in 1..<max(1, columnCount) {
+            let lineX = contentLeftX + Double(columnIndex) * columnWidth
+            elements.append(.tableLine(
+                start: CGPoint(x: lineX, y: topY + metrics.tableColumnLineInsetInPoints),
+                end: CGPoint(x: lineX, y: topY + tableHeight - metrics.tableColumnLineInsetInPoints)
+            ))
+        }
+        for (tableRowIndex, cellTexts) in tableRows.enumerated() {
+            // The header sits at the top; the rows under it start below the underline's gap.
+            let tableRowTopY = tableRowIndex == 0
+                ? topY
+                : topY + metrics.gapBelowTableHeaderInPoints + Double(tableRowIndex) * metrics.tableRowHeightInPoints
+            for (columnIndex, cellText) in cellTexts.enumerated() {
+                elements.append(.tableCell(
+                    text: cellText,
+                    frame: CGRect(
+                        x: contentLeftX + Double(columnIndex) * columnWidth + metrics.tableCellHorizontalPaddingInPoints,
+                        y: tableRowTopY,
+                        width: max(0, columnWidth - 2 * metrics.tableCellHorizontalPaddingInPoints),
+                        height: metrics.tableRowHeightInPoints
+                    ),
+                    isHeader: tableRowIndex == 0
+                ))
+            }
+        }
+        return ClickyExplanationCardRowLayout(
+            frame: CGRect(x: contentLeftX, y: topY, width: contentWidth, height: tableHeight),
+            elements: elements
+        )
+    }
+
     // MARK: - Wrapping words
 
     /// Breaks text into lines no wider than the limit, at spaces. A single word wider than a line
@@ -453,7 +648,14 @@ nonisolated enum ClickyExplanationCardLayoutCalculator {
                     end: ClickyDrawingPoint(x: Double(end.x), y: Double(end.y))
                 )
                 isDrawnInMarkerInk = true
-            case .textLine, .timelinePoint:
+            case .tableLine(let start, let end):
+                // Round 21: a table's lines are pencil, like a box's outline, not marker ink.
+                elementShape = .underline(
+                    start: ClickyDrawingPoint(x: Double(start.x), y: Double(start.y)),
+                    end: ClickyDrawingPoint(x: Double(end.x), y: Double(end.y))
+                )
+                isDrawnInMarkerInk = false
+            case .textLine, .timelinePoint, .codeLine, .tableCell:
                 continue
             }
 
@@ -502,9 +704,10 @@ nonisolated enum ClickyExplanationCardLayoutCalculator {
             case .arrow(let tail, let head):
                 let shaftLength = Double(hypot(head.x - tail.x, head.y - tail.y))
                 penTravelLength += shaftLength + 2 * ClickyHandDrawnPathGenerator.arrowheadLengthInPoints(forShaftLength: shaftLength)
-            case .timelineLine(let start, let end):
+            case .timelineLine(let start, let end), .tableLine(let start, let end):
                 penTravelLength += Double(hypot(end.x - start.x, end.y - start.y))
-            case .timelinePoint:
+            case .timelinePoint, .codeLine, .tableCell:
+                // Round 21: a code line and a table's cells fade in; only a table's lines are drawn.
                 break
             }
         }

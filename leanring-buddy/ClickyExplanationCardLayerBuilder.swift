@@ -62,6 +62,11 @@ enum ClickyExplanationCardLayerBuilder {
     /// The tag fades in this fast; the pen then draws the leader line from it.
     static let calloutTagFadeInSeconds: Double = 0.2
 
+    /// Round 21: a code row is written in the system's monospaced face on a band of slightly darker
+    /// paper with small rounded corners.
+    static let codeFontSizeInPoints: CGFloat = 12
+    static let codeBandCornerRadiusInPoints: CGFloat = 4
+
     /// Core Animation layers accept extra values by key.
     private static let cardPaperLayerKey = "clickyCardPaperLayer"
     private static let cardPaperShadowLayerKey = "clickyCardPaperShadowLayer"
@@ -107,6 +112,12 @@ enum ClickyExplanationCardLayerBuilder {
         ClickyDrawingMarkLayerBuilder.roundedSystemFont(ofSize: calloutNumberFontSizeInPoints, weight: .bold)
     }
 
+    /// Round 21: the face of a code row. Code is read character by character, so it is the
+    /// system's monospaced face and not the handwriting.
+    static var codeFont: NSFont {
+        NSFont.monospacedSystemFont(ofSize: codeFontSizeInPoints, weight: .regular)
+    }
+
     private static func textSize(of text: String, font: NSFont) -> CGSize {
         let measuredSize = NSAttributedString(string: text, attributes: [.font: font]).size()
         return CGSize(width: ceil(measuredSize.width), height: ceil(measuredSize.height))
@@ -120,18 +131,25 @@ enum ClickyExplanationCardLayerBuilder {
         // A box must hold a line of words with a little air above and below.
         layoutMetrics.boxHeightInPoints = max(layoutMetrics.boxHeightInPoints, layoutMetrics.textLineHeightInPoints + 6)
         layoutMetrics.timelinePointHeightInPoints = max(layoutMetrics.timelinePointHeightInPoints, layoutMetrics.textLineHeightInPoints + 2)
+        // Round 21: a code line holds the monospaced face with a little air; a table row holds a
+        // line of the handwriting.
+        layoutMetrics.codeLineHeightInPoints = max(layoutMetrics.codeLineHeightInPoints, Double(textSize(of: "Ag", font: codeFont).height) + 2)
+        layoutMetrics.tableRowHeightInPoints = max(layoutMetrics.tableRowHeightInPoints, layoutMetrics.textLineHeightInPoints + 2)
         return layoutMetrics
     }
 
-    /// Where everything on the card goes, measured with the real typeface.
+    /// Where everything on the card goes, measured with the real typefaces (the handwriting, and
+    /// since round 21 the monospaced face for code rows).
     static func cardLayout(for card: ClickyExplanationCard) -> ClickyExplanationCardLayout {
         let titleFont = self.titleFont
         let rowFont = self.rowFont
+        let codeFont = self.codeFont
         return ClickyExplanationCardLayoutCalculator.layout(
             for: card,
             metrics: layoutMetrics,
             titleTextWidthInPoints: { Double(textSize(of: $0, font: titleFont).width) },
-            rowTextWidthInPoints: { Double(textSize(of: $0, font: rowFont).width) }
+            rowTextWidthInPoints: { Double(textSize(of: $0, font: rowFont).width) },
+            codeTextWidthInPoints: { Double(textSize(of: $0, font: codeFont).width) }
         )
     }
 
@@ -139,11 +157,13 @@ enum ClickyExplanationCardLayerBuilder {
     /// depend on the rows around it, so it is laid out alone.
     static func penTravelLengthInPoints(for row: ClickyExplanationCardRow) -> Double {
         let rowFont = self.rowFont
+        let codeFont = self.codeFont
         let rowLayout = ClickyExplanationCardLayoutCalculator.rowLayout(
             for: row,
             topY: 0,
             metrics: layoutMetrics,
-            rowTextWidthInPoints: { Double(textSize(of: $0, font: rowFont).width) }
+            rowTextWidthInPoints: { Double(textSize(of: $0, font: rowFont).width) },
+            codeTextWidthInPoints: { Double(textSize(of: $0, font: codeFont).width) }
         )
         return ClickyExplanationCardLayoutCalculator.penTravelLengthInPoints(for: rowLayout)
     }
@@ -376,8 +396,62 @@ enum ClickyExplanationCardLayerBuilder {
         var fillLayers: [CALayer] = []
         var textLayers: [CALayer] = []
 
+        // Round 21: a code row sits on a band of darker paper (the row's frame), which fades in with
+        // its lines.
+        let rowHoldsCode = rowLayout.elements.contains { element in
+            if case .codeLine = element { return true }
+            return false
+        }
+        if rowHoldsCode {
+            let codeBandLayer = CALayer()
+            codeBandLayer.frame = frameInCardLayer(forFrameInCard: rowLayout.frame)
+            codeBandLayer.cornerRadius = codeBandCornerRadiusInPoints
+            codeBandLayer.backgroundColor = NSColor(DS.Colors.overlayDrawingCardCodeBackground).cgColor
+            fillLayers.append(codeBandLayer)
+            revealSteps.append(RevealStep(layer: codeBandLayer, startShareOfPenTime: 0, endShareOfPenTime: 1, isUncoveredFromLeftToRight: false))
+        }
+        // Round 21: a table's cells appear row by row while the pen draws its lines, the header first.
+        let tableColumnCount = max(1, rowLayout.elements.filter { element in
+            if case .tableCell(_, _, true) = element { return true }
+            return false
+        }.count)
+        let tableCellCount = rowLayout.elements.filter { element in
+            if case .tableCell = element { return true }
+            return false
+        }.count
+        let tableRowCount = max(1, tableCellCount / tableColumnCount)
+        var tableCellIndex = 0
+
         for (elementIndex, element) in rowLayout.elements.enumerated() {
             switch element {
+            case .codeLine(let text, let frame):
+                let codeLineLayer = makeTextLayer(text: text, font: codeFont, color: textColor, frameInCard: frame, alignmentMode: .left, backingScaleFactor: backingScaleFactor)
+                textLayers.append(codeLineLayer)
+                revealSteps.append(RevealStep(layer: codeLineLayer, startShareOfPenTime: 0, endShareOfPenTime: 1, isUncoveredFromLeftToRight: false))
+
+            case .tableCell(let text, let frame, let isHeader):
+                let tableRowIndex = tableCellIndex / tableColumnCount
+                tableCellIndex += 1
+                // A blank cell (the top-left corner of a comparison, say) draws nothing.
+                guard !text.isEmpty else { continue }
+                let textHeight = textSize(of: text, font: rowFont).height
+                let cellTextLayer = makeTextLayer(
+                    text: text,
+                    font: rowFont,
+                    // The header in the darker ink of the timeline's dates, so it reads as a heading.
+                    color: isHeader ? NSColor(DS.Colors.overlayDrawingCardAccentText) : textColor,
+                    frameInCard: CGRect(x: frame.minX, y: frame.midY - textHeight / 2, width: frame.width, height: textHeight),
+                    alignmentMode: .left,
+                    backingScaleFactor: backingScaleFactor
+                )
+                textLayers.append(cellTextLayer)
+                let startShare = Double(tableRowIndex) / Double(tableRowCount) * 0.8
+                revealSteps.append(RevealStep(layer: cellTextLayer, startShareOfPenTime: startShare, endShareOfPenTime: startShare + 0.2, isUncoveredFromLeftToRight: false))
+
+            case .tableLine:
+                // Ink only: drawn below from the row's strokes (pencil).
+                break
+
             case .textLine(let text, let frame):
                 let textLayer = makeTextLayer(text: text, font: rowFont, color: textColor, frameInCard: frame, alignmentMode: .left, backingScaleFactor: backingScaleFactor)
                 textLayers.append(textLayer)

@@ -173,16 +173,24 @@ nonisolated enum ClickyScreenChange {
 
     /// The note for the per-turn prompt block, or nil when the screen did not change. It goes
     /// right after the "right now" block.
-    static func noteText(screenOfLastExchange: ClickyScreenDescription?, screenNow: ClickyScreenDescription?) -> String? {
+    ///
+    /// `walkthroughIsInProgress` (round 21 review, false by default so the note is byte for byte
+    /// what it was): while a step-by-step walkthrough is in progress its step may happen in an app the
+    /// user has just left ("go back to terminal"), which the no-remark line would forbid. Only then
+    /// that line names the one exception.
+    static func noteText(screenOfLastExchange: ClickyScreenDescription?, screenNow: ClickyScreenDescription?, walkthroughIsInProgress: Bool = false) -> String? {
         guard screenChanged(from: screenOfLastExchange, to: screenNow),
               let screenOfLastExchange,
               let earlierScreenText = screenText(for: screenOfLastExchange) else {
             return nil
         }
+        let noRemarkLineText = walkthroughIsInProgress
+            ? "- your earlier answers were right for that screen. never apologize for them, never say they were wrong, and never remark on the switch or on what is no longer visible (one exception: a walkthrough step that happens in another app may name that app and say to switch to it). just answer."
+            : "- your earlier answers were right for that screen. never apologize for them, never say they were wrong, and never remark on the switch or on what is no longer visible. just answer."
         return """
         earlier in this conversation:
         - the earlier messages were about another screen: \(earlierScreenText). that screen is not shown now; the screenshots show only what is on screen now.
-        - your earlier answers were right for that screen. never apologize for them, never say they were wrong, and never remark on the switch or on what is no longer visible. just answer.
+        \(noRemarkLineText)
         - answer about the screen now. if the question continues an earlier one, answer it from the conversation.
         """
     }

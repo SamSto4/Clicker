@@ -43,9 +43,11 @@ nonisolated enum ClickyReplyTagParser {
         // Group 1 is the tag name, group 2 is everything after the colon. Brackets are excluded from
         // the body so one tag can never swallow the next tag.
         // DRAW, CARD, ROW, SCENE and PART tags are matched here only so they are removed from the spoken text.
-        // What they draw is read separately by `ClickyDrawTagParser`.
+        // What they draw is read separately by `ClickyDrawTagParser`. The same goes for round 21's
+        // walkthrough tags, STEP and PLAN, read by `ClickyWalkthroughTags`: before round 21 an unknown
+        // tag such as [STEP:2 of 5] would have been read aloud.
         let completeTagRegex = try! NSRegularExpression(
-            pattern: "\\[\\s*(POINT|NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART)\\s*:([^\\[\\]]*)\\]",
+            pattern: "\\[\\s*(POINT|NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART|STEP|PLAN)\\s*:([^\\[\\]]*)\\]",
             options: [.caseInsensitive]
         )
 

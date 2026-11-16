@@ -36,6 +36,9 @@ nonisolated struct ClickyTurnContext {
     var runningTimers: [ClickyTimer] = []
     /// The persona setting (round 18). The default adds nothing to the prompt.
     var persona = ClickyPersona.default
+    /// Round 21: the walkthrough in progress and what the user said to it this turn. nil when there
+    /// is none, and then the prompt is exactly what it was.
+    var walkthroughPromptContext: ClickyWalkthroughPromptContext? = nil
 
     /// The screen of this turn, worked out the same way for the prompt, for the comparison with
     /// the last exchange and for the record kept with this turn's exchange.
@@ -64,6 +67,10 @@ nonisolated struct ClickyPreparedPrompt {
     /// The memories from earlier chats that were relevant to this question (round 16), in the order
     /// they appear in the prompt. Empty on most turns, which then get no memories section.
     var includedMemories: [ClickyMemory] = []
+    /// The characters of the selected skills' bodies together (round 21), for the metrics line, so
+    /// the trade of moving the formats out of the cached base prompt can be measured. 0 on a turn
+    /// that selects no skill.
+    var skillBodyCharacterCount: Int = 0
 }
 
 /// Builds the system prompt for each turn. Order matters: the static parts come first and the
@@ -111,7 +118,13 @@ nonisolated enum ClickyPromptAssembler {
                 userTranscript: turnContext.userTranscript,
                 frontmostApplicationBundleIdentifier: turnContext.frontmostApplicationBundleIdentifier,
                 frontmostApplicationName: turnContext.frontmostApplicationName,
-                drawingMarksAreOnScreen: !turnContext.drawingMarksOnScreen.isEmpty
+                drawingMarksAreOnScreen: !turnContext.drawingMarksOnScreen.isEmpty,
+                // Round 21: the 3D scene format is a skill of its own now, selected while a scene
+                // is on the screen so the reply can add a part to it.
+                sceneIsOnScreen: turnContext.drawingMarksOnScreen.contains { $0.shape.isScene },
+                // Round 21: while a walkthrough is in progress the step format must be in the prompt,
+                // even when the words ("repeat that step please") name no format.
+                walkthroughIsActive: turnContext.walkthroughPromptContext != nil
             )
         )
 
@@ -153,7 +166,10 @@ nonisolated enum ClickyPromptAssembler {
             selectedSkillNames: selectedSkills.map(\.skillName),
             includedNotes: includedNotes,
             includedProfileFactTexts: includedProfileFactTexts,
-            includedMemories: includedMemories
+            includedMemories: includedMemories,
+            skillBodyCharacterCount: selectedSkills.reduce(0) { characterCountSoFar, selectedSkill in
+                characterCountSoFar + selectedSkill.bodyText.count
+            }
         )
     }
 
@@ -200,10 +216,13 @@ nonisolated enum ClickyPromptAssembler {
 
         // Only after a switch of tab, window or app since the last exchange. The base prompt is
         // not touched (it is the cached block), so this per-turn block is where Clicky is told
-        // that the earlier messages were about another screen and not to remark on it.
+        // that the earlier messages were about another screen and not to remark on it. Round 21
+        // review: while a walkthrough is in progress the note lets a step name the app it happens
+        // in and say to switch to it.
         if let screenChangedNoteText = ClickyScreenChange.noteText(
             screenOfLastExchange: context.screenOfLastExchange,
-            screenNow: context.screenNow
+            screenNow: context.screenNow,
+            walkthroughIsInProgress: context.walkthroughPromptContext != nil
         ) {
             sectionTexts.append(screenChangedNoteText)
         }
@@ -212,6 +231,12 @@ nonisolated enum ClickyPromptAssembler {
         // the user currently sees that the screenshot cannot show.
         if let marksOnScreenSectionText = ClickyDrawingMarksOnScreenText.sectionText(for: context.drawingMarksOnScreen) {
             sectionTexts.append(marksOnScreenSectionText)
+        }
+
+        // Round 21: only while a walkthrough is in progress, right after the marks on screen (it is
+        // about what the user is doing on the screen now): the plan, and which step to give.
+        if let walkthroughPromptContext = context.walkthroughPromptContext {
+            sectionTexts.append(walkthroughPromptContext.state.promptSectionText(forUserWord: walkthroughPromptContext.userWord))
         }
 
         if !includedProfileFactTexts.isEmpty {

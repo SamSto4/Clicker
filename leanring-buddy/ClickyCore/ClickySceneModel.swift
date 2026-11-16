@@ -688,7 +688,9 @@ nonisolated enum ClickyScenePanelPlacement {
     }
 
     /// About where a mark is on the display (points from the top-left corner), so the panel can
-    /// keep off it. nil for the card and a scene, whose frames the app knows exactly.
+    /// keep off it. nil for the card and a scene, whose frames the app knows exactly, and for a
+    /// spotlight (round 21): its shade covers the whole screen, so counting it would leave the panel
+    /// no free corner at all.
     static func occupiedFrame(ofShapeInDisplayPoints shape: ClickyDrawingShape) -> CGRect? {
         switch shape {
         case .arrow(let firstEnd, let secondEnd), .underline(let firstEnd, let secondEnd):
@@ -715,7 +717,7 @@ nonisolated enum ClickyScenePanelPlacement {
                 width: 2 * assumedCalloutReachInPoints,
                 height: 2 * assumedCalloutReachInPoints
             )
-        case .explanationCard, .scene:
+        case .explanationCard, .scene, .spotlight:
             return nil
         }
     }

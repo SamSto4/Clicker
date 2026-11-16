@@ -66,6 +66,9 @@ nonisolated struct ClickyFollowUpListeningStateMachine {
     private(set) var noiseFloor = ClickyFollowUpListeningConstants.defaultNoiseFloor
 
     private var windowOpenedAt: TimeInterval = 0
+    /// With no speech within this long of the window opening, it gives up. Round 21: 45 seconds right
+    /// after a reply that gave a walkthrough step (the user is doing the step), else the usual 6.
+    private var noSpeechGiveUpSeconds = ClickyFollowUpListeningConstants.noSpeechGiveUpSeconds
     private var floorSampleSum = 0.0
     private var floorSampleCount = 0
     private var aboveSpeechThresholdSince: TimeInterval?
@@ -84,11 +87,14 @@ nonisolated struct ClickyFollowUpListeningStateMachine {
 
     init() {}
 
-    /// The microphone is on: the window is open from `moment`.
-    mutating func begin(at moment: TimeInterval) {
+    /// The microphone is on: the window is open from `moment`. `noSpeechGiveUpSeconds` is how long it
+    /// waits for speech to start (round 21: a parameter, so the window after a walkthrough step can
+    /// wait 45 seconds).
+    mutating func begin(at moment: TimeInterval, noSpeechGiveUpSeconds: TimeInterval = ClickyFollowUpListeningConstants.noSpeechGiveUpSeconds) {
         self = ClickyFollowUpListeningStateMachine()
         phase = .measuringNoiseFloor
         windowOpenedAt = moment
+        self.noSpeechGiveUpSeconds = noSpeechGiveUpSeconds
     }
 
     /// One reading of the audio level, with the time it was read at.
@@ -173,7 +179,7 @@ nonisolated struct ClickyFollowUpListeningStateMachine {
     }
 
     private mutating func giveUpIfNoSpeechCameInTime(at moment: TimeInterval) -> ClickyFollowUpListeningAction {
-        if moment - windowOpenedAt >= ClickyFollowUpListeningConstants.noSpeechGiveUpSeconds {
+        if moment - windowOpenedAt >= noSpeechGiveUpSeconds {
             phase = .finished
             return .giveUpSilently
         }
@@ -200,6 +206,13 @@ nonisolated struct ClickyFollowUpTurnCounter: Equatable {
 
     /// The user pressed the ask keys or typed a message: the user is in charge again.
     mutating func recordTheUserTookOver() {
+        followUpTurnsInARow = 0
+    }
+
+    /// Round 21 review: a walkthrough step turn ("next", "back", "repeat") whose reply really gave the
+    /// step it asked for. The user is following the steps, so the count starts again; the cap still
+    /// holds for every follow-up turn that is not a step (step words never count towards it).
+    mutating func recordAWalkthroughStepWasTaken() {
         followUpTurnsInARow = 0
     }
 }
@@ -240,6 +253,14 @@ nonisolated enum ClickyFollowUpTranscriptDecision: Equatable {
     case endPhrase
     /// Anything else: a normal spoken turn.
     case sendToModel
+    /// Round 21, only while a walkthrough is in progress: "next" (and the other words for it, see
+    /// `ClickyWalkthroughWords`): a step turn for the next step. It does not count towards the cap
+    /// on follow-up turns in a row.
+    case walkthroughNext
+    /// "back", "go back", "previous": a step turn for the step before.
+    case walkthroughBack
+    /// "repeat", "again", "say that again": a step turn for the same step.
+    case walkthroughRepeat
 
     static let endPhrases: Set<String> = [
         "thanks", "thank you", "that's all", "never mind", "stop", "goodbye", "ok thanks",
@@ -248,10 +269,21 @@ nonisolated enum ClickyFollowUpTranscriptDecision: Equatable {
         "um", "uh", "hmm", "hm", "mm", "mmm", "mhm", "uhh", "umm", "er", "erm", "ah", "eh",
     ]
 
-    static func decide(forTranscript transcript: String) -> ClickyFollowUpTranscriptDecision {
+    /// `walkthroughIsActive` (round 21, false by default so every earlier caller is unchanged): while
+    /// a walkthrough is in progress its step words are told apart; "stop" stays an end phrase, and
+    /// the app also ends the walkthrough for it.
+    static func decide(forTranscript transcript: String, walkthroughIsActive: Bool = false) -> ClickyFollowUpTranscriptDecision {
         let normalizedTranscript = ClickyChangeConfirmationPhrases.normalized(transcript)
         if normalizedTranscript.isEmpty {
             return .closeSilently
+        }
+        if walkthroughIsActive, let walkthroughWord = ClickyWalkthroughWords.userWord(forTranscript: transcript) {
+            switch walkthroughWord {
+            case .next: return .walkthroughNext
+            case .back: return .walkthroughBack
+            case .repeatStep: return .walkthroughRepeat
+            case .stop: return .endPhrase
+            }
         }
         if endPhrases.contains(normalizedTranscript) {
             return .endPhrase

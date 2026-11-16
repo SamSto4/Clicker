@@ -39,6 +39,12 @@ final class ClickyDrawingSurfaceView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
     }
+
+    /// Round 21: a spotlight's shade goes under every other mark on this surface, so the card, the
+    /// callouts and the ink of the same reply stay bright on top of it.
+    func insertMarkLayerBelowOthers(_ markLayer: CALayer) {
+        layer?.insertSublayer(markLayer, at: 0)
+    }
 }
 
 /// Where one of this turn's screenshots sits: the display it shows and how its pixels map onto it.
@@ -123,6 +129,22 @@ final class ClickyDrawingOverlayController {
     private var calloutTagFramesFromTopLeftByMarkNumber: [Int: CGRect] = [:]
     private var calloutTargetsFromTopLeftByMarkNumber: [Int: CGPoint] = [:]
 
+    /// Round 21 review: a spotlight that has been drawn, in display points from its display's
+    /// top-left corner, kept so its shade can be redrawn with new cut-outs.
+    private struct SpotlightOnScreen {
+        let center: ClickyDrawingPoint
+        let radius: Double
+        /// The display it is on, in global AppKit coordinates.
+        let displayFrame: CGRect
+    }
+    private var spotlightsOnScreenByMarkNumber: [Int: SpotlightOnScreen] = [:]
+
+    /// Round 21 review: the frames (global AppKit coordinates) of Clicky's own windows that sit below
+    /// the overlay and must not be darkened by a spotlight's shade: the chat panel while it is open
+    /// and the status pill while it shows. Set by `CompanionManager`; with nothing set no window is
+    /// cut out. When one of them appears, goes or moves, the manager calls `refreshSpotlightCutOuts`.
+    var clickyWindowFramesKeptOutOfSpotlightShade: () -> [CGRect] = { [] }
+
     /// Set by the drawing self test while it runs, so a user who happens to scroll or switch apps
     /// during those few seconds does not wipe the sample marks before their picture is taken.
     /// Escape still clears everything.
@@ -204,6 +226,31 @@ final class ClickyDrawingOverlayController {
             drawingSurfaceView.removeFromSuperview()
         }
         drawingSurfaceViews.removeAll()
+    }
+
+    // MARK: - Spotlight cut-outs (round 21 review)
+
+    /// Called when Clicky's chat panel or status pill appears, goes or moves. Every spotlight on the
+    /// screen cuts their frames out of its shade again; with no spotlight drawn this does nothing.
+    func refreshSpotlightCutOuts() {
+        for (markNumber, spotlightOnScreen) in spotlightsOnScreenByMarkNumber {
+            guard let spotlightLayer = markLayersByMarkNumber[markNumber] else { continue }
+            ClickyDrawingMarkLayerBuilder.updateSpotlightShadeCutOuts(
+                of: spotlightLayer,
+                center: spotlightOnScreen.center,
+                radius: spotlightOnScreen.radius,
+                displaySizeInPoints: spotlightOnScreen.displayFrame.size,
+                cutOutFramesFromTopLeft: spotlightCutOutFramesFromTopLeft(forDisplayFrame: spotlightOnScreen.displayFrame)
+            )
+        }
+    }
+
+    /// The parts of Clicky's own windows on this display, from its top-left corner.
+    private func spotlightCutOutFramesFromTopLeft(forDisplayFrame displayFrame: CGRect) -> [CGRect] {
+        ClickySpotlightShade.cutOutFramesFromTopLeft(
+            forWindowFramesInGlobalPoints: clickyWindowFramesKeptOutOfSpotlightShade(),
+            displayFrame: displayFrame
+        )
     }
 
     // MARK: - What is on screen
@@ -771,6 +818,18 @@ final class ClickyDrawingOverlayController {
             // Shown above, as a view.
             return
 
+        case .spotlight(let center, let radius):
+            // Round 21 review: Clicky's own chat panel and status pill sit below the overlay, so their
+            // frames on this display are cut out of the shade (and again whenever they change).
+            markLayer = ClickyDrawingMarkLayerBuilder.makeSpotlightLayer(
+                center: center,
+                radius: radius,
+                displaySizeInPoints: displaySizeInPoints,
+                backingScaleFactor: backingScaleFactor,
+                cutOutFramesFromTopLeft: spotlightCutOutFramesFromTopLeft(forDisplayFrame: drawingSurfaceView.displayFrame)
+            )
+            spotlightsOnScreenByMarkNumber[mark.markNumber] = SpotlightOnScreen(center: center, radius: radius, displayFrame: drawingSurfaceView.displayFrame)
+
         case .arrow, .circle, .box, .underline, .highlight, .label, .stickyNote:
             markLayer = ClickyDrawingMarkLayerBuilder.makeMarkLayer(
                 forMarkNumber: mark.markNumber,
@@ -782,7 +841,12 @@ final class ClickyDrawingOverlayController {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        surfaceLayer.addSublayer(markLayer)
+        if shapeInDisplayPoints.isSpotlight {
+            // Round 21: the shade goes under every other mark, so what this reply draws stays bright.
+            drawingSurfaceView.insertMarkLayerBelowOthers(markLayer)
+        } else {
+            surfaceLayer.addSublayer(markLayer)
+        }
         CATransaction.commit()
         markLayersByMarkNumber[mark.markNumber] = markLayer
         let surfaceWindow = drawingSurfaceView.window
@@ -791,6 +855,9 @@ final class ClickyDrawingOverlayController {
         if case .callout = shapeInDisplayPoints {
             // The tag fades in while the pen draws the leader line.
             ClickyExplanationCardLayerBuilder.animateCalloutAppearance(of: markLayer, penDurationSeconds: penDurationSeconds)
+        } else if shapeInDisplayPoints.isSpotlight {
+            // The shade fades in; it has no ink for a pen to draw.
+            ClickyDrawingMarkLayerBuilder.animateSpotlightAppearance(of: markLayer)
         } else {
             // Ink is revealed with the pen; a label, a sticky note and the card fade and grow in.
             ClickyDrawingMarkLayerBuilder.animateAppearance(of: markLayer, penDurationSeconds: penDurationSeconds)
@@ -941,6 +1008,7 @@ final class ClickyDrawingOverlayController {
 
     private func removeMarkFromScreen(markNumber: Int, fadeOutSeconds: Double) {
         displayFramesByMarkNumber[markNumber] = nil
+        spotlightsOnScreenByMarkNumber[markNumber] = nil
         explanationCardFramesFromTopLeftByMarkNumber[markNumber] = nil
         plannedFullExplanationCardFramesFromTopLeftByMarkNumber[markNumber] = nil
         scenePanelPlacementsByMarkNumber[markNumber] = nil

@@ -406,6 +406,66 @@ Both type-check against ClickyCore. Neither was run against the Worker while rou
 
 This round has no model eval and adds no scenario, because nothing the model sees changed: the static base prompt and the per-turn block are byte-stable (the existing prompt checks of the smoke program still pass), the cursor style and the voice settings never reach the prompt or a metrics line (a smoke guard reads the prompt assembler and the base prompt for their names), and the request to Claude is untouched. The proof is offline and visual: the smoke program's round 20 parts (the cursor's numbers and outlines, the colour parser, the `/tts` body against today's bytes, the `/voices` decoding, the picker's rows, the sample cache, the settings snapshot), `voice_check` (the app's own speech client, prefetch, voice list client and sample player against an in-process fake Worker on an `.invalid` host), `round20_render` (the cursor shapes, the LOOK preview, the pill's accent, the settings tab in the app's own panel controller), and the orchestrator's two self tests (`CLICKY_DRAW_SELF_TEST_CURSOR_STYLE` for the styled cursor and the pill's colour; the panel self test for the LOOK and VOICE rows). The only live calls are the tester's handful of `/voices` and `/tts` requests through the Worker after the orchestrator's deploy (about $0.01 at ElevenLabs flash prices, no Anthropic cost).
 
+## Explaining on screen (round 21)
+
+Round 21 moved the drawing, card and 3D scene formats out of the cached base prompt into three keyword skills (`skill_draw.md`, `skill_card.md`, `skill_scene.md`, always included when they match), and added a spotlight, two card rows, step-by-step walkthroughs and an Accessibility snap for `[POINT:]`. The base prompt now ends with a short pointer section; a turn whose words match no format keyword (with no mark or scene on the screen and no walkthrough in progress) carries no format text at all. `prepare`'s output has `selectedSkillNames` and the new `skillBodyCharacterCount`, so a scenario can be checked for which skills it got.
+
+The skills' keywords (whole words, any case; "3-d" and "3 d" read the same):
+
+- draw: draw, circle, mark, underline, highlight, box, annotate, label, point out, walk me through, walk through, walkthrough, talk me through, step by step, guide me through, show me how, spotlight, focus on, dim everything, erase, undo the mark, clear the marks, next step, go back a step, and since the round 21 review arrow, arrows, sticky, sticky note, callout, callouts, outline, cross out, strike through, markup, take me through, one step at a time. Also selected while marks are on the screen and while a walkthrough is in progress.
+
+Since the round 21 review the ordinary (app) skills keep round 20's cap of 2,500 characters, counted over them only; the format skills come on top and never change which app skills a turn selects.
+- card: explain, teach me, break down, break it down, compare, how does this work, how does it work, what's the difference, difference between, overview, summarize this, diagram, diagrams. Also selected while marks are on the screen.
+- scene: 3d, 3-d, three d, model of, inside of, the parts of, how it's built, cross section, exploded. Also selected while a 3D scene is on the screen.
+
+New tags (the driver reports what the app's parsers make of them):
+
+| tag | rule |
+|---|---|
+| `[DRAW:spotlight:x,y:radius]` | darkens everything but a circle; radius 20 to 2,000 screenshot pixels; one per reply (a second is dropped and uses up none of the 8); counts towards the 8 draw tags; fades on scroll. `finish` reports it as `{ "shapeKind": "spotlight", "x", "y", "center": { "x", "y" }, "radius" }` |
+| `[ROW:code:text]` | one line of code in monospace, cut to 90 characters, colons and pipes kept. `rowKind` "code", `partTexts` [the line] |
+| `[ROW:table:a\|b;c\|d]` | rows split at `;`, cells at `\|`; 2 to 4 columns, 1 to 4 rows (the first is the header), every row the same length or the row is dropped; cells cut to 16 characters; an empty cell is kept. Since the round 21 review a longer table keeps its first four rows, and a body that does not read as a table is read once more with the separators swapped (rows at `\|`, cells at `;`) and reported the right way round. `rowKind` "table", `partTexts` one per table row, `tableRows` the cells |
+| `[STEP:k of n]` | the first tag of a walkthrough reply; 1 <= k <= n <= 12; never spoken; kept first in history |
+| `[PLAN:k:text]` | in the step-one reply, one per step, text cut to 60 characters, k 1 to 12; never spoken; kept last in history |
+
+`run_simulations.mjs` counts and strips `STEP`, `PLAN`, `SCENE` and `PART` tags together with `DRAW`, `CARD` and `ROW` (`DRAW_FAMILY_TAG_PATTERN`), so a walkthrough or scene tag on an ordinary scenario counts as unrequested drawing and never breaks the trailing `[POINT:]` check. A reply holding only round 20's tags is counted and stripped exactly as before, so round 20's visual scores do not move. A spotlight is scored in `markGeometryQuality` by the brief's rule: the target's centre inside the circle and the whole element within 12 px of its edge is 1; a circle that cuts the element off, or one more than 4 x the element's long side + 150 px, is 0.6; a circle that does not light the element is 0.
+
+### Driver fields
+
+`prepare` accepts an optional `walkthrough` object, the walkthrough in progress:
+
+```json
+"walkthrough": { "stepCount": 3, "currentStep": 1, "planTexts": ["stage the file", "write the message", "press commit"], "userWord": "next" }
+```
+
+`userWord` is "next", "back", "repeat" or null (null: the user asked something else, and the section says to answer it without moving on). The prompt is then built exactly as the app builds it mid-walkthrough: the walkthrough section after "marks on screen" and before the profile, and the draw skill (which a walkthrough always selects). The output adds `walkthroughSectionText`, `walkthroughStepTurnTranscript` (what the app sends as the user's message for that word: send it as the scenario's transcript) and `walkthroughRequestedStep`.
+
+`finish` adds, for every reply: `walkthroughStep` and `walkthroughStepCount` (from the first valid `[STEP:k of n]`, null without one), `planTexts` (in step order) and `walkthroughHistoryAssistantText` (the history text with the step tag first and the plan lines after the draw tags). With an optional `elementBoxes` array (fixture pixels, `[{ "x", "y", "width", "height", "role"?, "screen"? }]`, role default `AXButton`, screen default 1) it runs the app's own `ClickyPointSnap.decide` with the boxes standing in for Accessibility: the element under the point is the smallest box holding it (Accessibility answers with the deepest element). Give `screenshotSizeInPixels` and `displaySizeInPoints` (`{ "width", "height" }`) so the snap's limits (200 x 80 points, 6 points of tolerance, 60 points of move) apply in display points; without them pixels count as points. It reports `pointSnapOutcome` (one of `snapped`, `noElement`, `elementTooLarge`, `pointOutsideElement`, `ownWindow`, `roleNotSnappable`, `noPermission`, `timedOut`, `notAttempted`), `pointTargetAfterSnap` (`{ "x", "y" }` back in the fixture's pixels) and `pointSnapDistancePoints`. Without `elementBoxes` the three are null.
+
+`intent` adds `walkthroughWord`: what the transcript means to a walkthrough in progress.
+
+### The walkthrough controls, exactly
+
+While a walkthrough is in progress these transcripts steer it, whether spoken with the ask keys, typed in the chat panel or heard in the follow-up window. The whole transcript must be one of them, after the ends are trimmed, inner punctuation removed and case ignored ("Okay, next." is "okay next"); anything longer ("next, and what does staged mean") is an ordinary question and the walkthrough stays where it is.
+
+| word | transcripts | what happens |
+|---|---|---|
+| next | next, ok next, okay next, next step, next step please, next please, done, go on, continue, next one, go to the next step | a step turn for the next step, sent to the model as "next step please"; after the last step no model call: "that was the last step." and the walkthrough ends |
+| back | back, go back, previous, previous step, go back a step, go back a step please, previous one | a step turn for the step before (step 1 stays step 1), sent as "go back a step please" |
+| repeat | repeat, again, say that again, repeat that, repeat that step, repeat that step please | a step turn for the same step, sent as "repeat that step please" |
+| stop | stop | ends the walkthrough; in the follow-up window silently (like every end phrase, which also ends it), typed or with the keys with "okay, i stopped the walkthrough." |
+
+With no walkthrough in progress every one of these is an ordinary transcript, exactly as in round 20. "next one", "go to the next step" and "previous one" were added in the round 21 review. A step turn moves the walkthrough only when its reply carries the step that was asked for. Since the round 21 review the follow-up window waits 45 seconds for speech only right after a reply that gave a step (6 for every other window), and the cap of five follow-up turns in a row holds during a walkthrough too: step words never count towards it, and a step turn that got its step starts the count again. A reply to any other turn that only repeats the step the user is on takes no step. Ten minutes without a step, Escape with nothing running (or closing the window), a new chat or continuing another chat end it; the Escape that ends it also cancels a waiting change or closes the chat panel.
+
+### Scenario classes for the tester
+
+The brief's classes and how they map onto what exists:
+
+- spotlight: a visual `kind: "mark"` scenario with `expect.shape: "spotlight"` is scored by the existing mark rubric with the spotlight geometry above.
+- code and table rows: a visual `kind: "card"` scenario with `expect.rowKindAnyOf: ["code"]` or `["table"]`.
+- ordinary questions: a visual `kind: "control"` scenario, or any four-dimension scenario (a format tag there halves the score as unrequested drawing); `prepare`'s `selectedSkillNames` shows that no format skill was carried.
+- walkthrough starts, "next" turns and small-target pointing with `elementBoxes`: the driver reports every field these need (above), but `run_simulations.mjs` has no rubric for them yet (this round added no `explaining` dimension); score them from the `finish` records.
+
 ## Files
 
 ```

@@ -17,11 +17,19 @@ nonisolated struct ClickySkill: Equatable {
     let sourceFileName: String
     /// From the "always_include" front matter key. A skill like this teaches a reply format the
     /// user just asked for, so once it matches the turn it must not lose its place to app skills
-    /// that score higher: it is included first, and the other skills share the room that is left.
+    /// that score higher: it is included whatever its size, and (since the round 21 review) it uses
+    /// none of the ordinary skills' room, so it never pushes an app skill out either.
     var isAlwaysIncludedWhenSelected: Bool = false
     /// From the "when_marks_on_screen" front matter key. The skill also matches the turn while
     /// Clicky's drawing is on the screen, whatever the user says, so the drawing can be edited.
     var isSelectedWhenDrawingMarksAreOnScreen: Bool = false
+    /// From the "when_scene_on_screen" front matter key (round 21). The skill also matches the turn
+    /// while a 3D scene is on the screen, so a part can be added to it.
+    var isSelectedWhenSceneIsOnScreen: Bool = false
+    /// From the "when_walkthrough_active" front matter key (round 21). The skill also matches the
+    /// turn while a step-by-step walkthrough is in progress, so a "back" or "repeat" turn (whose
+    /// words name no format) still has the step format in its prompt.
+    var isSelectedWhileWalkthroughIsActive: Bool = false
 }
 
 /// Everything selection needs to know about the current turn. Plain strings only, so the logic
@@ -32,6 +40,10 @@ nonisolated struct ClickySkillSelectionContext {
     let frontmostApplicationName: String?
     /// True while marks Clicky drew are still on the screen.
     var drawingMarksAreOnScreen: Bool = false
+    /// True while a 3D scene Clicky built is on the screen (round 21).
+    var sceneIsOnScreen: Bool = false
+    /// True while a step-by-step walkthrough is in progress (round 21).
+    var walkthroughIsActive: Bool = false
 }
 
 /// Loads skill files from a folder and picks the few that apply to a turn.
@@ -39,12 +51,24 @@ nonisolated enum ClickySkillLibrary {
     /// An app match is a strong signal, so it outweighs a keyword hit.
     static let applicationMatchScore = 100
     static let keywordMatchScore = 40
-    /// Caps how much skill text one turn adds. A skill that would exceed the cap is skipped whole,
-    /// never cut in half.
-    static let maximumSkillBodyCharacterCountPerTurn = 2500
-    /// The "name" of the skill file that teaches the [DRAW:...] reply format. The app checks for
-    /// it to know that this turn's reply may have tags between its sentences.
+    /// Caps how much text the ordinary skills (the app and topic skills) add to one turn. A skill
+    /// that would exceed the cap is skipped whole, never cut in half.
+    ///
+    /// Round 20's number, counted over the ordinary skills only. The always-included format skills
+    /// (`skill_draw.md`, `skill_card.md` and `skill_scene.md`, round 21) come on top and use none of
+    /// it, so a turn that selects no format skill selects exactly what round 20 selected, and a
+    /// format skill can never push an app skill out. Round 21 first had one shared cap of 7,000,
+    /// counted after the format skills' bodies: that let a plain question select more app skills
+    /// than round 20 did, and with all three format skills on the screen it still pushed an app
+    /// skill out (the round 21 review).
+    static let maximumOrdinarySkillBodyCharacterCountPerTurn = 2500
+    /// The "name" of the skill file that teaches the [DRAW:...] reply format (round 21: the format
+    /// lives in `skill_draw.md` again, together with the spotlight and the walkthrough steps).
     static let drawSkillName = "draw"
+    /// The "name" of the skill file that teaches the explanation card (round 21).
+    static let cardSkillName = "card"
+    /// The "name" of the skill file that teaches the simple 3D scene (round 21).
+    static let sceneSkillName = "scene"
 
     private struct ScoredSkill {
         let skill: ClickySkill
@@ -91,7 +115,9 @@ nonisolated enum ClickySkillLibrary {
             bodyText: bodyText,
             sourceFileName: fileName,
             isAlwaysIncludedWhenSelected: frontMatterValueIsTrue(frontMatterValuesByKey["always_include"]),
-            isSelectedWhenDrawingMarksAreOnScreen: frontMatterValueIsTrue(frontMatterValuesByKey["when_marks_on_screen"])
+            isSelectedWhenDrawingMarksAreOnScreen: frontMatterValueIsTrue(frontMatterValuesByKey["when_marks_on_screen"]),
+            isSelectedWhenSceneIsOnScreen: frontMatterValueIsTrue(frontMatterValuesByKey["when_scene_on_screen"]),
+            isSelectedWhileWalkthroughIsActive: frontMatterValueIsTrue(frontMatterValuesByKey["when_walkthrough_active"])
         )
     }
 
@@ -122,9 +148,10 @@ nonisolated enum ClickySkillLibrary {
     /// matches it (100 points) or the transcript contains one of its keywords (40 points).
     /// Ties go to higher priority, then to name order, so the result is deterministic.
     ///
-    /// A skill marked "always_include" that is eligible is taken first, whatever its rank and size,
-    /// and does not count towards `maxSkillCount`. The other skills then share what is left of the
-    /// character cap. With no such skill eligible, the selection is exactly what it always was.
+    /// A skill marked "always_include" that is eligible is taken whatever its rank and size, and
+    /// counts towards neither `maxSkillCount` nor the character cap: the other skills are chosen
+    /// exactly as they would be without it. With no such skill eligible, the selection is exactly
+    /// what it always was.
     static func selectSkills(from availableSkills: [ClickySkill], for selectionContext: ClickySkillSelectionContext, maxSkillCount: Int = 2) -> [ClickySkill] {
         // Keyword matching compares whole words, so both sides are reduced to space-separated words.
         // Padding with spaces stops "ide" from matching inside "video".
@@ -144,7 +171,13 @@ nonisolated enum ClickySkillLibrary {
                 score += keywordMatchScore
             }
             // Marks on screen count like a keyword: the user may say only "remove the second one".
-            if !transcriptContainsKeyword && skill.isSelectedWhenDrawingMarksAreOnScreen && selectionContext.drawingMarksAreOnScreen {
+            // Round 21: so do a 3D scene on the screen ("add the wheels") and a walkthrough in
+            // progress ("back"), for the skills that ask for them.
+            let matchesWhatIsOnScreenOrInProgress =
+                (skill.isSelectedWhenDrawingMarksAreOnScreen && selectionContext.drawingMarksAreOnScreen)
+                || (skill.isSelectedWhenSceneIsOnScreen && selectionContext.sceneIsOnScreen)
+                || (skill.isSelectedWhileWalkthroughIsActive && selectionContext.walkthroughIsActive)
+            if !transcriptContainsKeyword && matchesWhatIsOnScreenOrInProgress {
                 score += keywordMatchScore
             }
             return score > 0 ? ScoredSkill(skill: skill, score: score) : nil
@@ -160,30 +193,25 @@ nonisolated enum ClickySkillLibrary {
             return firstScoredSkill.skill.skillName < secondScoredSkill.skill.skillName
         }
 
-        // Skills that must be included take their room first.
-        let alwaysIncludedSkillNames = Set(
-            rankedSkills.filter(\.skill.isAlwaysIncludedWhenSelected).map(\.skill.skillName)
-        )
-        var accumulatedBodyCharacterCount = rankedSkills
-            .filter(\.skill.isAlwaysIncludedWhenSelected)
-            .reduce(0) { characterCountSoFar, rankedSkill in characterCountSoFar + rankedSkill.skill.bodyText.count }
-
+        // Skills that must be included are taken whatever their size. Only the ordinary skills count
+        // towards the cap, so they are chosen exactly as they would be without the others.
         var selectedSkills: [ClickySkill] = []
         var selectedOrdinarySkillCount = 0
+        var accumulatedOrdinaryBodyCharacterCount = 0
         for rankedSkill in rankedSkills {
-            if alwaysIncludedSkillNames.contains(rankedSkill.skill.skillName) {
+            if rankedSkill.skill.isAlwaysIncludedWhenSelected {
                 selectedSkills.append(rankedSkill.skill)
                 continue
             }
             guard selectedOrdinarySkillCount < maxSkillCount else {
                 continue
             }
-            if accumulatedBodyCharacterCount + rankedSkill.skill.bodyText.count > maximumSkillBodyCharacterCountPerTurn {
+            if accumulatedOrdinaryBodyCharacterCount + rankedSkill.skill.bodyText.count > maximumOrdinarySkillBodyCharacterCountPerTurn {
                 continue
             }
             selectedSkills.append(rankedSkill.skill)
             selectedOrdinarySkillCount += 1
-            accumulatedBodyCharacterCount += rankedSkill.skill.bodyText.count
+            accumulatedOrdinaryBodyCharacterCount += rankedSkill.skill.bodyText.count
         }
         return selectedSkills
     }
