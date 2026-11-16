@@ -85,6 +85,17 @@
 // Accessibility snap: `pointSnapOutcome`, `pointTargetAfterSnap` and `pointSnapDistancePoints`. `intent` also
 // reports `walkthroughWord`. See "Explaining on screen (round 21)" in eval/README.md.
 //
+// Round 22 (3D 2.0): `seedDrawTagTexts` are parsed with the part count of the scene on the board too (the
+// tester's D1), so a later seed reply of `[PART:...]` or `[VIEW:...]` tags goes to the scene an earlier one
+// opened, and `prepare` reports `sceneIsOnScreen`, `scenePartCountOnScreen` and `sceneIsExplodedOnScreen` (the
+// marks reach the assembler as in the app, so the skill selection sees the scene: D2). `finish` parses the
+// reply with that part count as the app does and reports `sceneParts` (every accepted part with every field:
+// shape, label, centre, size, pipeRadius, colour, axis, rotation, isRotated, material, effectiveMaterial,
+// canonicalTagBody), `droppedPartReasons` (one fixed identifier per dropped `[PART:...]`), `viewCommands`
+// (the accepted `[VIEW:...]` tags in canonical form), the scene's part count and exploded state before and
+// after the reply, and `sceneMetrics` (the three scene numbers of the turn's metrics line). A scene mark's
+// record also carries `isExploded` and `parts`, and an `addScenePart` command its `part`.
+//
 // SAFETY: every note and profile operation goes to a directory under notesRootDirectory. That directory must be
 // a folder whose name starts with "ezra-eval-notes-" and must not be the real Ezra notes folder.
 // The harness creates notesRootDirectory with mkdtemp under the OS temp folder.
@@ -254,8 +265,12 @@ func drawingShapeRecord(_ shape: EzraDrawingShape) -> [String: Any] {
     case .explanationCard(let card):
         return ["shapeKind": "card", "title": card.title, "rows": card.rows.map { explanationCardRowRecord($0) }]
     case .scene(let scene):
-        // Round 11: a simple 3D scene. Only its size is reported; the visual rubric does not score scenes yet.
-        return ["shapeKind": "scene", "title": scene.title, "partCount": scene.parts.count]
+        // Round 11: a simple 3D scene, with its size. Round 22: also whether it is exploded and every part
+        // with every field (see `scenePartRecord`).
+        return [
+            "shapeKind": "scene", "title": scene.title, "partCount": scene.parts.count,
+            "isExploded": scene.isExploded, "parts": scene.parts.map { scenePartRecord($0) },
+        ]
     case .spotlight(let center, let radius):
         // Round 21: the brief's x, y and radius, and the same centre as a circle's record ("center"), so the
         // harness can score a spotlight like a circle.
@@ -280,10 +295,78 @@ func drawCommandRecord(_ parsedDrawCommand: EzraParsedDrawCommand) -> [String: A
     case .addCardRow(let row):
         commandRecord["commandKind"] = "addCardRow"
         commandRecord["row"] = explanationCardRowRecord(row)
-    case .addScenePart:
+    case .addScenePart(let part):
         commandRecord["commandKind"] = "addScenePart"
+        // Round 22: the part with every field, as the app's parser read it.
+        commandRecord["part"] = scenePartRecord(part)
+    case .changeSceneView(let viewCommand):
+        // Round 22: the view change in the grammar's own words ("exploded", "turn:left", "zoom:in", ...).
+        commandRecord["commandKind"] = "changeSceneView"
+        commandRecord["viewCommand"] = viewCommand.canonicalTagBody
     }
     return commandRecord
+}
+
+/// Round 22: one part of a 3D scene as plain numbers and words, exactly as the app's parser read it. `size`
+/// holds the numbers the tag wrote for the shape (a ring's one radius; its derived pipe is `pipeRadius`).
+func scenePartRecord(_ part: EzraScenePart) -> [String: Any] {
+    var sizeNumbers: [Double]
+    var pipeRadius: Any = NSNull()
+    switch part.dimensions {
+    case .box(let width, let height, let depth):
+        sizeNumbers = [width, height, depth]
+    case .radiusAndLength(let radius, let length):
+        sizeNumbers = [radius, length]
+    case .sphere(let radius), .hemisphere(let radius):
+        sizeNumbers = [radius]
+    case .torus(let ringRadius, let derivedOrWrittenPipeRadius):
+        sizeNumbers = part.shapeKind == .ring ? [ringRadius] : [ringRadius, derivedOrWrittenPipeRadius]
+        pipeRadius = derivedOrWrittenPipeRadius
+    case .plane(let width, let height):
+        sizeNumbers = [width, height]
+    }
+    return [
+        "shape": part.shapeKind.rawValue,
+        "label": part.labelText ?? NSNull(),
+        "centre": ["x": part.centre.x, "y": part.centre.y, "z": part.centre.z],
+        "size": sizeNumbers,
+        "pipeRadius": pipeRadius,
+        "colour": part.colour.rawValue,
+        "axis": part.axis.rawValue,
+        "rotation": ["x": part.rotation.degreesX, "y": part.rotation.degreesY, "z": part.rotation.degreesZ],
+        "isRotated": !part.rotation.isDefault,
+        "material": part.material.rawValue,
+        "effectiveMaterial": part.effectiveMaterial.rawValue,
+        "canonicalTagBody": part.canonicalTagBody,
+    ]
+}
+
+/// Round 22: how many parts the 3D scene on the board has, or nil when there is no scene (the app passes the
+/// same count to the parser, so a `[PART:...]` or `[VIEW:...]` alone goes to the scene on screen).
+func partCountOfScene(on drawingBoard: EzraDrawingBoard) -> Int? {
+    guard let sceneMark = drawingBoard.sceneMark, case .scene(let scene) = sceneMark.shape else {
+        return nil
+    }
+    return scene.parts.count
+}
+
+/// Round 22: whether the 3D scene on the board is exploded (nil without a scene).
+func sceneIsExploded(on drawingBoard: EzraDrawingBoard) -> Bool? {
+    guard let sceneMark = drawingBoard.sceneMark, case .scene(let scene) = sceneMark.shape else {
+        return nil
+    }
+    return scene.isExploded
+}
+
+/// Round 22 (the tester's D1 and D2): what `prepare` reports about a seeded scene. The marks go to the
+/// assembler as the app hands them, so the skill selection sees the scene on the screen exactly as it does in
+/// the app (`sceneIsOnScreen`), and the part count and exploded state are the board's.
+func sceneOnScreenOutputFields(on seededDrawingBoard: EzraDrawingBoard) -> [String: Any] {
+    [
+        "sceneIsOnScreen": seededDrawingBoard.sceneMark != nil,
+        "scenePartCountOnScreen": partCountOfScene(on: seededDrawingBoard) ?? NSNull(),
+        "sceneIsExplodedOnScreen": sceneIsExploded(on: seededDrawingBoard) ?? NSNull(),
+    ]
 }
 
 func drawingMarkRecord(_ mark: EzraDrawingMark) -> [String: Any] {
@@ -303,13 +386,16 @@ func rowCountOfExplanationCard(on drawingBoard: EzraDrawingBoard) -> Int? {
 
 /// The board as it would be after the earlier replies in `seedDrawTagTexts`, each parsed and applied the way
 /// the app does it for a reply (EzraDrawTagParser.parse with the row count of the card on the board, then
-/// EzraDrawingBoard.apply for every accepted command).
+/// EzraDrawingBoard.apply for every accepted command). Round 22 (the tester's D1): with the part count of the
+/// scene on the board too, as the app passes it, so a seed reply of `[PART:...]` or `[VIEW:...]` tags alone
+/// goes to the scene an earlier seed reply opened (before, such a seed was refused as malformed).
 func drawingBoard(fromSeedDrawTagTexts seedDrawTagTexts: [String]) -> EzraDrawingBoard {
     var drawingBoard = EzraDrawingBoard()
     for seedDrawTagText in seedDrawTagTexts {
         let parsedSeedReply = EzraDrawTagParser.parse(
             seedDrawTagText,
-            rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: drawingBoard)
+            rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: drawingBoard),
+            partCountOfSceneAlreadyOnScreen: partCountOfScene(on: drawingBoard)
         )
         if parsedSeedReply.ignoredDrawTagCount > 0 {
             failWithMessage("a seed draw tag was rejected by the app's parser: \(seedDrawTagText)")
@@ -412,6 +498,11 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
         // which then gets exactly the prompt it got before drawing existed).
         let seededDrawingBoard = drawingBoard(fromSeedDrawTagTexts: (scenarioInput["seedDrawTagTexts"] as? [String]) ?? [])
         let drawingMarksOnScreen = drawingMarksForPrompt(on: seededDrawingBoard, screenCount: screenCount)
+        // Round 22: the scene fields only for a scenario that seeds draw tags, so a record without them is
+        // byte for byte what it was in round 21.
+        let sceneOnScreenOutputFieldsIfSeeded: [String: Any] = ((scenarioInput["seedDrawTagTexts"] as? [String]) ?? []).isEmpty
+            ? [:]
+            : sceneOnScreenOutputFields(on: seededDrawingBoard)
 
         // Round 14: the window title of the screen now, and the screen the last exchange of the history
         // was on (the app records it with each exchange; here the harness states it for the scenario).
@@ -551,7 +642,7 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             // Round 6: the seeded marks, and the lines the app's "marks on screen" section lists for them.
             "drawingMarksOnScreen": drawingMarksOnScreen.map { drawingMarkRecord($0) },
             "drawingMarksOnScreenLineTexts": drawingMarksOnScreen.map { EzraDrawingMarksOnScreenText.lineText(for: $0) },
-        ].merging(fileEditingOutputFields) { current, _ in current }.merging(walkthroughOutputFields) { current, _ in current }.merging(agentContextOutputFields) { current, _ in current })
+        ].merging(fileEditingOutputFields) { current, _ in current }.merging(walkthroughOutputFields) { current, _ in current }.merging(agentContextOutputFields) { current, _ in current }.merging(sceneOnScreenOutputFieldsIfSeeded) { current, _ in current })
     }
     writeJSON(outputRecords, toPath: outputPath)
 }
@@ -660,12 +751,18 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             previousAssistantHistoryText: previousAssistantHistoryText
         )
         // Round 6: the draw, card and row tags of the reply, read the way CompanionManager reads them: with
-        // the row count of the card that is on the screen, then applied to the board in order.
+        // the row count of the card that is on the screen, then applied to the board in order. Round 22 (the
+        // tester's D1): with the part count of the scene on the screen too, as the app passes it, so a
+        // `[PART:...]` or `[VIEW:...]` reply against a seeded scene is read as the app reads it.
         var drawingBoardForReply = drawingBoard(fromSeedDrawTagTexts: (replyInput["seedDrawTagTexts"] as? [String]) ?? [])
         let drawingMarksBeforeReply = drawingBoardForReply.marks
+        let rowCountOfCardOnScreenBeforeReply = rowCountOfExplanationCard(on: drawingBoardForReply)
+        let partCountOfSceneOnScreenBeforeReply = partCountOfScene(on: drawingBoardForReply)
+        let sceneWasExplodedBeforeReply = sceneIsExploded(on: drawingBoardForReply)
         let parsedDrawReply = EzraDrawTagParser.parse(
             rawReplyText,
-            rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: drawingBoardForReply)
+            rowCountOfCardAlreadyOnScreen: rowCountOfCardOnScreenBeforeReply,
+            partCountOfSceneAlreadyOnScreen: partCountOfSceneOnScreenBeforeReply
         )
         var drawCommandsThatChangedNothingCount = 0
         for parsedDrawCommand in parsedDrawReply.commands {
@@ -677,8 +774,41 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             rawReplyText: rawReplyText,
             finishedSpokenText: finishedTurn.spokenText,
             finishedHistoryAssistantText: finishedTurn.historyAssistantText,
-            rowCountOfCardAlreadyOnScreen: rowCountOfExplanationCard(on: drawingBoard(fromSeedDrawTagTexts: (replyInput["seedDrawTagTexts"] as? [String]) ?? []))
+            rowCountOfCardAlreadyOnScreen: rowCountOfCardOnScreenBeforeReply,
+            partCountOfSceneAlreadyOnScreen: partCountOfSceneOnScreenBeforeReply
         )
+        // Round 22: the scene tags of this reply as the app read them: every part it accepted (with every
+        // field), why each dropped part was dropped, the view changes it accepted, and the scene's part count
+        // and exploded state before and after. Counts and fixed identifiers only in the metrics; the eval
+        // gets the fields themselves.
+        let scenePartsOfReply = parsedDrawReply.commands.compactMap { parsedDrawCommand -> EzraScenePart? in
+            if case .addScenePart(let part) = parsedDrawCommand.command { return part }
+            return nil
+        }
+        let viewCommandsOfReply = parsedDrawReply.commands.compactMap { parsedDrawCommand -> String? in
+            if case .changeSceneView(let viewCommand) = parsedDrawCommand.command { return viewCommand.canonicalTagBody }
+            return nil
+        }
+        let sceneReplyCounts = EzraSceneReplyCounts.counts(of: parsedDrawReply, partCountOfSceneAlreadyOnScreen: partCountOfSceneOnScreenBeforeReply)
+        var sceneMetricsRecord: Any = NSNull()
+        if let sceneReplyCounts {
+            // The scene numbers the app writes on the turn's metrics line (null for a reply with no scene tag).
+            sceneMetricsRecord = [
+                "scenePartCount": sceneReplyCounts.scenePartCount ?? NSNull(),
+                "sceneDroppedPartCount": sceneReplyCounts.droppedPartCount,
+                "sceneViewCommandCount": sceneReplyCounts.viewCommandCount,
+            ] as [String: Any]
+        }
+        let sceneOutputFields: [String: Any] = [
+            "sceneParts": scenePartsOfReply.map { scenePartRecord($0) },
+            "droppedPartReasons": parsedDrawReply.droppedScenePartReasons.map(\.rawValue),
+            "viewCommands": viewCommandsOfReply,
+            "scenePartCountBeforeReply": partCountOfSceneOnScreenBeforeReply ?? NSNull(),
+            "scenePartCountAfterReply": partCountOfScene(on: drawingBoardForReply) ?? NSNull(),
+            "sceneIsExplodedBeforeReply": sceneWasExplodedBeforeReply ?? NSNull(),
+            "sceneIsExplodedAfterReply": sceneIsExploded(on: drawingBoardForReply) ?? NSNull(),
+            "sceneMetrics": sceneMetricsRecord,
+        ]
 
         var pointTargetRecord: Any = NSNull()
         if let pointTarget = finishedTurn.parsedReply.pointTarget {
@@ -737,7 +867,7 @@ func runFinish(inputPath: String, outputPath: String, notesRootPath: String) {
             "walkthroughStepCount": walkthroughReplyTags.stepCount ?? NSNull(),
             "planTexts": walkthroughReplyTags.planTexts,
             "walkthroughHistoryAssistantText": EzraWalkthroughTags.historyText(appending: walkthroughReplyTags, to: drawHistoryAssistantText),
-        ].merging(pointSnapOutputFields) { current, _ in current })
+        ].merging(pointSnapOutputFields) { current, _ in current }.merging(sceneOutputFields) { current, _ in current })
     }
     writeJSON(outputRecords, toPath: outputPath)
 }
@@ -1248,6 +1378,36 @@ func runSelfTest(outputPath: String, promptsDirectoryPath: String) {
         promptsDirectoryURL: URL(fileURLWithPath: promptsDirectoryPath, isDirectory: true), noteStore: profileGateNoteStore, profileStore: nil
     )
     check("draw: an ordinary turn's prompt has no marks on screen section", !ordinaryTurnPrompt.systemPromptText.contains("marks on screen ("))
+
+    // Round 22 (3D 2.0): the tester's D1 and D2. A scene seeded over several replies (its parts and a view
+    // change in later seed replies) lands on the board as the app would have it, the prompt lists it with its
+    // part count and exploded state, and the skill selection sees it on the screen.
+    let sceneSeedTexts = [
+        "here's a bike. [SCENE:bicycle] the wheels. [PART:ring:front wheel:2,0,0:1:black:z] [PART:ring:back wheel:-2,0,0:1:black:z] [POINT:none]",
+        "and the frame. [PART:box:frame:0,0.5,0:3,0.1,0.1:gray:rot=0,0,20:mat=metal] [POINT:none]",
+        "pulled apart. [VIEW:exploded] [POINT:none]",
+    ]
+    let seededSceneBoard = drawingBoard(fromSeedDrawTagTexts: sceneSeedTexts)
+    check("round 22 seed (D1): parts and a view change in later seed replies go to the seeded scene", partCountOfScene(on: seededSceneBoard) == 3 && sceneIsExploded(on: seededSceneBoard) == true, "\(String(describing: partCountOfScene(on: seededSceneBoard))) / \(String(describing: sceneIsExploded(on: seededSceneBoard)))")
+    let seededSceneMarks = drawingMarksForPrompt(on: seededSceneBoard, screenCount: 1)
+    let seededSceneLine = seededSceneMarks.first.map { EzraDrawingMarksOnScreenText.lineText(for: $0) } ?? ""
+    check("round 22 seed: the marks line says 3 parts, exploded, writes the parts canonically and names the view tags", seededSceneLine.hasPrefix("m1: 3d scene titled \"bicycle\", 3 parts, exploded: [PART:ring:front wheel:2,0,0:1:black:z]") && seededSceneLine.contains("[PART:box:frame:0,0.5,0:3,0.1,0.1:gray:rot=0,0,20:mat=metal]") && seededSceneLine.contains("[VIEW:exploded], [VIEW:assembled], [VIEW:turn:left], [VIEW:zoom:in] change the view"), seededSceneLine)
+    let seededScenePrompt = EzraPromptAssembler.prepareSystemPrompt(
+        for: EzraTurnContext(userTranscript: "put it back together", frontmostApplicationBundleIdentifier: "com.apple.finder", frontmostApplicationName: "Finder", screenCount: 1, currentDate: Date(), drawingMarksOnScreen: seededSceneMarks),
+        promptsDirectoryURL: URL(fileURLWithPath: promptsDirectoryPath, isDirectory: true), noteStore: profileGateNoteStore, profileStore: nil
+    )
+    check("round 22 prepare (D2): with the seeded scene on screen the scene skill is selected and the dynamic block lists the scene", seededScenePrompt.selectedSkillNames.contains("scene") && seededScenePrompt.dynamicSystemPromptText.contains(seededSceneLine) && sceneOnScreenOutputFields(on: seededSceneBoard)["sceneIsOnScreen"] as? Bool == true, "\(seededScenePrompt.selectedSkillNames)")
+    let viewReplyOnSeededScene = EzraDrawTagParser.parse("back together. [VIEW:assembled] and closer. [VIEW:zoom:in] [POINT:none]", partCountOfSceneAlreadyOnScreen: partCountOfScene(on: seededSceneBoard))
+    check("round 22 finish: view tags against the seeded scene are accepted in canonical form", viewReplyOnSeededScene.commands.map { EzraDrawTagParser.canonicalTagText(for: $0.command) } == ["[VIEW:assembled]", "[VIEW:zoom:in]"] && viewReplyOnSeededScene.ignoredDrawTagCount == 0)
+    check("round 22 finish: without a scene the same view tags are dropped", EzraDrawTagParser.parse("back together. [VIEW:assembled] [POINT:none]").commands.isEmpty)
+    let droppedPartsReply = EzraDrawTagParser.parse("[SCENE:s] [PART:torus:t:0,0,0:1,2:red] [PART:box:b:0,0,0:1,1,1:red:mat=wood] [PART:box:ok:0,0,0:1,1,1:red]")
+    check("round 22 finish: dropped parts carry their reasons", droppedPartsReply.droppedScenePartReasons.map(\.rawValue) == ["pipeNotSmallerThanRing", "unknownMaterial"] && droppedPartsReply.commands.count == 2, "\(droppedPartsReply.droppedScenePartReasons)")
+    if case .addScenePart(let framePart)? = EzraDrawTagParser.parse(sceneSeedTexts[1], partCountOfSceneAlreadyOnScreen: 2).commands.first?.command {
+        let framePartRecord = scenePartRecord(framePart)
+        check("round 22 finish: a part record holds every field", Set(framePartRecord.keys) == ["shape", "label", "centre", "size", "pipeRadius", "colour", "axis", "rotation", "isRotated", "material", "effectiveMaterial", "canonicalTagBody"] && framePartRecord["material"] as? String == "metal" && framePartRecord["isRotated"] as? Bool == true, "\(framePartRecord.keys.sorted())")
+    } else {
+        check("round 22 finish: a part record holds every field", false, "the frame part did not parse")
+    }
 
     try? FileManager.default.removeItem(at: temporaryRootURL)
 

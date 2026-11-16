@@ -960,13 +960,18 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// The steady beat the drawing schedule gives marks when there is no audio to pace them against.
+    private static let drawingSelfTestSecondsBetweenMarks: Double = 0.35
+
     /// Debug aid: when the app is launched with EZRA_DRAW_SELF_TEST=1 it draws a few sample
     /// marks (pen-drawn strokes, a label, a sticky note, two numbered callouts, an explanation
-    /// card with a boxes row, a flow row and a timeline row, and a small 3D scene of six parts,
-    /// one of each shape, three of them labelled) on every screen a few seconds after
-    /// launch and shows the status pill saying "thinking", with no voice and no model call, so
-    /// the drawing surface, the handwriting text and the pill can be checked without speaking.
-    /// It does nothing in normal use.
+    /// card with a boxes row, a flow row and a timeline row, and a 3D scene of 24 parts, two of
+    /// each of the twelve shapes, fifteen of them labelled; see `EzraDrawingSelfTestSamples`) on
+    /// every screen a few seconds after launch and shows the status pill saying "thinking", with no
+    /// voice and no model call, so the drawing surface, the handwriting text and the pill can be
+    /// checked without speaking. Round 22: it then pulls the scene apart (`[VIEW:exploded]`). With
+    /// EZRA_DRAW_SELF_TEST_IMAGE it saves a picture of each step: the drawing, "-exploded" and
+    /// "-notice". It does nothing in normal use.
     private func runDrawingSelfTestIfRequested() {
         guard ProcessInfo.processInfo.environment["EZRA_DRAW_SELF_TEST"] == "1" else { return }
         // Round 20: EZRA_DRAW_SELF_TEST_CURSOR_STYLE="#FF4D5E,ring,large,strong" gives the cursor (and
@@ -986,7 +991,10 @@ final class CompanionManager: ObservableObject {
             // The sticky note sits left of the right third of the screen, where the card goes.
             // Round 21: the sample also shows a spotlight (eight draw tags in all, the limit) and a
             // code row and a table row on the card (five rows, the limit).
-            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [DRAW:sticky:560,120:self test: pen-drawn marks, a handwriting label and this sticky note] [CARD:how the self test works] [ROW:boxes:launch|wait -> draw] [ROW:flow:marks > card > picture] [ROW:timeline:0s=app starts|4s=marks appear|10s=picture taken] [ROW:code:git push -u origin main] [ROW:table:plan|price;free|0;pro|12] [DRAW:callout:250,180:first callout] [DRAW:callout:520,640:second callout] [DRAW:spotlight:900,400:120] [SCENE:self test model] [PART:cylinder:body:0,0,0:0.8,3:blue:x] [PART:cone:nose:2.2,0,0:0.8,1.4:red:x] [PART:box::-0.4,0,0:1,0.12,3.4:gray] [PART:sphere:window:1,0.55,0:0.4:glass] [PART:tube::-1.9,0,0:0.7,0.6:orange:x] [PART:capsule::-0.4,-0.9,0.9:0.22,1.2:yellow:x] [POINT:none]"
+            // Round 22: the 3D scene is 24 parts (the limit): two of each of the twelve shapes in four
+            // rows, the first fifteen labelled (so both columns of tags show), every material at least
+            // once, a pyramid and a plane turned with rot=, and the old glass colour next to a mat=glass.
+            let sampleReplyText = "self test. [DRAW:circle:400,300:60] [DRAW:arrow:700,500:480,340] [DRAW:highlight:300,500:400,24] [DRAW:label:720,510:drawing self test] [DRAW:sticky:560,120:self test: pen-drawn marks, a handwriting label and this sticky note] [CARD:how the self test works] [ROW:boxes:launch|wait -> draw] [ROW:flow:marks > card > picture] [ROW:timeline:0s=app starts|4s=marks appear|10s=picture taken] [ROW:code:git push -u origin main] [ROW:table:plan|price;free|0;pro|12] [DRAW:callout:250,180:first callout] [DRAW:callout:520,640:second callout] [DRAW:spotlight:900,400:120] [SCENE:self test model] " + EzraDrawingSelfTestSamples.scenePartTagsText + " [POINT:none]"
             let parsedSampleReply = EzraDrawTagParser.parse(sampleReplyText)
             // A user who scrolls or switches apps in these few seconds must not spoil the picture.
             let drawingOverlayController = overlayWindowManager.drawingOverlayController
@@ -1009,6 +1017,9 @@ final class CompanionManager: ObservableObject {
             // taken of), whatever the "Status pill" switch says. It is normally hidden from
             // every capture, so for the proof picture alone it is made capturable.
             let selfTestImagePathFromEnvironment = ProcessInfo.processInfo.environment["EZRA_DRAW_SELF_TEST_IMAGE"]
+            // Round 22: the 3D scene has a window of its own, hidden from captures like the pill; for
+            // the proof pictures alone it is made capturable (until the "-exploded" picture is taken).
+            drawingOverlayController.isShowingScenesInScreenCapturesForSelfTest = selfTestImagePathFromEnvironment != nil
             if let mainDisplayScreen = NSScreen.screens.first {
                 statusPillController.setVisibleInScreenCapturesForSelfTest(selfTestImagePathFromEnvironment != nil)
                 statusPillController.show(
@@ -1031,13 +1042,13 @@ final class CompanionManager: ObservableObject {
 
             // Optional proof picture: only Ezra's own windows, saved where the launcher asked.
             if let selfTestImagePath = selfTestImagePathFromEnvironment {
-                // Twenty-one marks, rows and scene parts (round 21 added the spotlight and two
-                // rows) follow each other 0.35 seconds apart (the last starts after 7 seconds) and
-                // the last is then still appearing, so the picture waits until all of them are
-                // done. The 3D scene is a Metal layer in Ezra's own overlay window, which
-                // ScreenCaptureKit captures like any other layer, so no separate snapshot of it is
-                // needed.
-                try? await Task.sleep(nanoseconds: 9_000_000_000)
+                // The marks, rows and scene parts follow each other 0.35 seconds apart (round 22:
+                // 39 of them, so the last starts after about 13 seconds) and the last is then still
+                // appearing, so the picture waits until all of them are done. The 3D scene is a Metal
+                // layer in a window of Ezra's own, which ScreenCaptureKit captures like any other
+                // layer, so no separate snapshot of it is needed.
+                let secondsUntilEveryMarkIsDrawn = Double(parsedSampleReply.commands.count) * Self.drawingSelfTestSecondsBetweenMarks + 2
+                try? await Task.sleep(nanoseconds: UInt64(secondsUntilEveryMarkIsDrawn * 1_000_000_000))
                 do {
                     if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
                         try ownWindowsPNGData.write(to: URL(fileURLWithPath: selfTestImagePath))
@@ -1052,6 +1063,36 @@ final class CompanionManager: ObservableObject {
                 // No picture was asked for: leave the pill up long enough to be looked at.
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
             }
+
+            // Round 22: the scene pulled apart, as "explode it" does. With a picture asked for, a picture
+            // of it is saved next to the first, with "-exploded" before the extension, three seconds
+            // after the change (the parts take 0.6 seconds to move apart).
+            let samplePartCount = parsedSampleReply.commands.filter { parsedCommand in
+                if case .addScenePart = parsedCommand.command { return true }
+                return false
+            }.count
+            let explodedSampleReply = EzraDrawTagParser.parse("[VIEW:exploded]", partCountOfSceneAlreadyOnScreen: samplePartCount)
+            drawingOverlayController.performDrawCommands(
+                explodedSampleReply.commands,
+                displayPlacementsInScreenshotOrder: samplePlacements,
+                cursorScreenshotIndex: 0,
+                speechAudioDurationSeconds: nil
+            )
+            print("✏️ draw self test: the scene's parts pulled apart (\(explodedSampleReply.commands.count) view change)")
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if let selfTestImagePath = selfTestImagePathFromEnvironment {
+                let pictureExtension = (selfTestImagePath as NSString).pathExtension
+                let explodedPicturePath = (selfTestImagePath as NSString).deletingPathExtension + "-exploded." + (pictureExtension.isEmpty ? "png" : pictureExtension)
+                do {
+                    if let ownWindowsPNGData = try await CompanionScreenCaptureUtility.captureOnlyOwnWindowsOnMainDisplayAsPNG() {
+                        try ownWindowsPNGData.write(to: URL(fileURLWithPath: explodedPicturePath))
+                        print("✏️ draw self test: saved the exploded scene picture (\(ownWindowsPNGData.count) bytes)")
+                    }
+                } catch {
+                    print("✏️ draw self test: exploded scene capture failed: \(error.localizedDescription)")
+                }
+            }
+            drawingOverlayController.isShowingScenesInScreenCapturesForSelfTest = false
 
             // Round 19: the pill with a sample action notice, as it shows the moment an action is
             // done. With a picture asked for, a second picture is saved next to the first, with
@@ -1448,11 +1489,16 @@ final class CompanionManager: ObservableObject {
             }
 
         // Marks Ezra drew point at places on the page, so they fade when the page scrolls.
+        // Round 22: unless the scroll was over a 3D scene, where it zoomed the model. The tap's
+        // location measures from the top-left corner of the main display, downwards; AppKit's from
+        // its bottom-left corner, upwards.
         scrollWheelCancellable = globalPushToTalkShortcutMonitor
             .scrollWheelScrolledPublisher
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in
-                self?.overlayWindowManager.drawingOverlayController.fadeMarksThatPointAtScreenContent()
+            .sink { [weak self] scrollLocationFromTopLeft in
+                let mainDisplayHeight = NSScreen.screens.first?.frame.height ?? 0
+                let scrollLocationOnScreen = CGPoint(x: scrollLocationFromTopLeft.x, y: mainDisplayHeight - scrollLocationFromTopLeft.y)
+                self?.overlayWindowManager.drawingOverlayController.fadeMarksThatPointAtScreenContent(unlessScrollIsOver: scrollLocationOnScreen)
             }
     }
 
@@ -3290,6 +3336,14 @@ final class CompanionManager: ObservableObject {
                         )
                     }
                 }
+                // Round 22: how long the user turned or zoomed the scene this reply drew, up to now
+                // (seconds only; written for a reply that wrote a scene tag).
+                if turnMetrics.scenePartCount != nil {
+                    let secondsTheUserTurnedOrZoomedTheScene = overlayWindowManager.drawingOverlayController.wholeSecondsTheUserTurnedOrZoomedTheNewestScene
+                    if secondsTheUserTurnedOrZoomedTheScene > 0 {
+                        turnMetrics.sceneUserDragSeconds = secondsTheUserTurnedOrZoomedTheScene
+                    }
+                }
                 print(turnMetrics.makeConsoleSummaryLine())
                 EzraTurnMetricsLog.recordInBackground(turnMetrics)
             }
@@ -3708,6 +3762,13 @@ final class CompanionManager: ObservableObject {
                     return false
                 }) {
                     turnMetrics.spotlightDrawn = true
+                }
+                // Round 22: the scene's numbers, only for a reply that wrote a scene tag (counts only,
+                // never a title, a label or a tag).
+                if let sceneReplyCounts = EzraSceneReplyCounts.counts(of: parsedDrawReply, partCountOfSceneAlreadyOnScreen: partCountOfSceneAlreadyOnScreen) {
+                    turnMetrics.scenePartCount = sceneReplyCounts.scenePartCount
+                    turnMetrics.sceneDroppedPartCount = sceneReplyCounts.droppedPartCount
+                    turnMetrics.sceneViewCommandCount = sceneReplyCounts.viewCommandCount
                 }
                 // Round 21: the walkthrough's tags. A step reply moves the walkthrough (only to the step
                 // that was asked for), a [STEP:1 of n] reply begins one. Numbers only in the metrics.

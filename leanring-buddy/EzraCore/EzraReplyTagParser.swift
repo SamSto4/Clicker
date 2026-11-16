@@ -46,8 +46,9 @@ nonisolated enum EzraReplyTagParser {
         // What they draw is read separately by `EzraDrawTagParser`. The same goes for round 21's
         // walkthrough tags, STEP and PLAN, read by `EzraWalkthroughTags`: before round 21 an unknown
         // tag such as [STEP:2 of 5] would have been read aloud.
+        // Round 22 adds the 3D scene's VIEW tag ([VIEW:exploded], [VIEW:turn:left], ...), read by `EzraDrawTagParser`.
         let completeTagRegex = try! NSRegularExpression(
-            pattern: "\\[\\s*(POINT|NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART|STEP|PLAN)\\s*:([^\\[\\]]*)\\]",
+            pattern: "\\[\\s*(POINT|NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART|STEP|PLAN|VIEW)\\s*:([^\\[\\]]*)\\]",
             options: [.caseInsensitive]
         )
 

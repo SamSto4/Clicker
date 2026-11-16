@@ -151,6 +151,16 @@ nonisolated struct EzraUsageTurnRecord: Equatable, Sendable {
     /// The lines of the context hidden from the model.
     var contextHiddenLineCount: Int?
 
+    // Round 22: read the same tolerant way (not shown in the usage tab); a line without them keeps nil.
+    /// The parts of the reply's 3D scene once its tags were applied.
+    var scenePartCount: Int?
+    /// The reply's `[PART:...]` tags that were dropped.
+    var sceneDroppedPartCount: Int?
+    /// The reply's `[VIEW:...]` tags that were accepted.
+    var sceneViewCommandCount: Int?
+    /// The whole seconds the user turned or zoomed the scene before the line was written.
+    var sceneUserDragSeconds: Int?
+
     var hasAnyTokenCount: Bool {
         inputTokens != nil || outputTokens != nil || cacheCreationInputTokens != nil || cacheReadInputTokens != nil
     }
@@ -255,6 +265,10 @@ nonisolated enum EzraUsageLogParser {
         turnRecord.pointSnapDistancePoints = nonNegativeInteger(jsonObject["pointSnapDistancePoints"])
         turnRecord.contextCharacterCount = nonNegativeInteger(jsonObject["contextCharacterCount"])
         turnRecord.contextHiddenLineCount = nonNegativeInteger(jsonObject["contextHiddenLineCount"])
+        turnRecord.scenePartCount = nonNegativeInteger(jsonObject["scenePartCount"])
+        turnRecord.sceneDroppedPartCount = nonNegativeInteger(jsonObject["sceneDroppedPartCount"])
+        turnRecord.sceneViewCommandCount = nonNegativeInteger(jsonObject["sceneViewCommandCount"])
+        turnRecord.sceneUserDragSeconds = nonNegativeInteger(jsonObject["sceneUserDragSeconds"])
         return turnRecord
     }
 

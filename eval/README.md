@@ -519,6 +519,27 @@ EZRA_EVAL_THINKING=between_tools node $EVAL/run_simulations.mjs --dimensions age
 
 Limits: the regexes catch what they are written for (read the raw replies of `ignored_context` and `missed_answer` before trusting them); the Dutch scenario's function words can miss a correct but unusual Dutch reply; the injection class only catches markdown and shouting, not a long reply in lowercase (the sentence cap does that); `[A-Z]{4,}` also flags a legitimate acronym of four capitals, so the injection scenarios use screens whose answers need none; the leaderboard has no agentcontext table yet.
 
+## 3D 2.0 (round 22)
+
+Round 22 grew the 3D scene: six more shapes (`torus`, `ring`, `pyramid`, `plane`, `wedge`, `hemisphere`), optional `:rot=rx,ry,rz` (degrees, -360 to 360) and `:mat=` (matte, metal, plastic, rubber, glass, glow) after the colour, in any order with the axis, at most 24 parts, two columns of tags, and `[VIEW:...]` tags that change the view of the scene on the screen: `exploded` (also `explode`), `assembled`, `turn:left|right|front|back`, `zoom:in|out`, `reset`. A view tag needs a scene in the reply or on the screen, is not counted in the 8 draw tags and is never spoken. `skill_scene.md` (2,007 characters) teaches all of it; its keywords did not change, and it comes whenever a scene is on the screen. The full grammar and every number are in `AGENTS.md`, "3D scene (rounds 11, 12 and 22)".
+
+### Driver fields
+
+- `prepare`: with `seedDrawTagTexts`, the seeds are parsed with the part count of the scene already on the board, as the app parses a reply (decision D1), and the record adds `sceneIsOnScreen`, `scenePartCountOnScreen` and `sceneIsExplodedOnScreen` (null without a scene). A record without seeds is byte for byte what it was.
+- `finish` adds, for every reply: `sceneParts` (each accepted `[PART:]` of the reply: `shape`, `label` (null when empty), `centre` `{ x, y, z }`, `size` (the numbers as written; a ring has one), `pipeRadius` (a ring's derived pipe or a torus's own, else null), `colour`, `axis`, `rotation` `{ x, y, z }` in degrees (zeros without `rot=`), `material`, `effectiveMaterial`, `isRotated`, `canonicalTagBody`), `droppedPartReasons` (one word per dropped `[PART:]`: noSceneToGoIn, sceneIsFull, tooFewPieces, unknownShape, unknownColour, badPosition, positionOutOfRange, wrongSizeNumberCount, sizeOutOfRange, pipeNotSmallerThanRing, unknownKey, repeatedKey, badRotation, unknownMaterial), `viewCommands` (canonical bodies such as `exploded`, `turn:left`, `zoom:in`), `scenePartCountBeforeReply`, `scenePartCountAfterReply`, `sceneIsExplodedBeforeReply`, `sceneIsExplodedAfterReply`, and `sceneMetrics` (`scenePartCount`, `sceneDroppedPartCount`, `sceneViewCommandCount`, exactly what the app writes on the turn line; null for a reply with no scene tag). Accepted commands of kind `changeSceneView` carry `viewCommand`; a scene's shape record carries `isExploded` and `parts`.
+
+### Scoring
+
+`run_simulations.mjs` sends `max_tokens` 8000 for an `explaining` scenario of kind `scene`, `scene_view` or `scene_none` (a scenario's own `maxTokens` wins; every other request keeps its body), and counts and strips `VIEW` with the other draw-family tags. Three hand-check kinds of the `explaining` dimension:
+
+| kind | passes when |
+|---|---|
+| `scene` | exactly one scene; its part count in `expect.partCountRange` (default 4 to 24); at least 90 percent of the written `[PART:]` tags valid (`expect.minimumValidPartShare`; the dropped ones are listed by reason); two to four spoken sentences; clean speech; ends with `[POINT:none]`; and, when given, every shape of `expect.requiredShapes`, every material of `expect.requiredMaterials` (by `effectiveMaterial`), and a turned part for `expect.needsARotatedPart` |
+| `scene_view` | a scene on the screen (seed it with `seedDrawTagTexts`) and a request such as "explode it" or "turn it left": one of `expect.viewCommands` (any view tag when none are given), no new `[SCENE:]`, no dropped tag, one or two spoken sentences, clean, `[POINT:none]`, and `sceneIsExplodedAfterReply` equal to `expect.sceneMustBeExplodedAfter` when given |
+| `scene_none` | a question that is not about a 3D model ("what's the model number on screen"), or a view word with no scene on the screen: no `SCENE`, `PART` or `VIEW` tag at all, a short clean answer and a valid point tag |
+
+What the eval cannot see: the scene window (drag, scroll, pinch, the toggle, the pointer), the look of the shapes and materials, the exploded animation and the frame rate. The orchestrator's drawing self test (`EZRA_DRAW_SELF_TEST=1` with `EZRA_DRAW_SELF_TEST_IMAGE`) shows the 24-part sample in a picture and the same scene pulled apart in a second one with "-exploded" before the extension.
+
 ## Kept holdout tests (rounds 21 and 21b)
 
 The tester's hidden scenarios of rounds 21 and 21b are kept in `eval/scenarios/holdout/`, as round 19's `actions_r19.json` was, so later rounds can re-run them. Builders must not read that folder.
@@ -536,7 +557,7 @@ eval/
   make_leaderboard.mjs       builds <loop>/leaderboard.md from round*.json (called automatically)
   extract_system_prompt.mjs  pulls the Swift system prompt string into a text file
   make_fixtures.swift        generates fixtures/*.jpg + fixtures/manifest.json (run with `swift`)
-  assemble_prompt_driver/    Swift driver that calls the app's prompt assembler and turn finisher (zero API calls); modes prepare / finish / intent / compact / selftest (round 21b: `prepare` also seeds `agentContext` and reports the context block, its counts and hidden line numbers; round 16: `compact` gives the app's decision, request body and output validator for a finished chat, and `prepare` also seeds `memories`; round 4B: seeds and reports the temporary profile too; round 6: `seedDrawTagTexts` seeds marks on screen, `finish` reports the app's draw commands, dropped tags and the board)
+  assemble_prompt_driver/    Swift driver that calls the app's prompt assembler and turn finisher (zero API calls); modes prepare / finish / intent / compact / selftest (round 22: `finish` reports the scene's parts, dropped part reasons and view commands, `prepare` the scene on the screen; round 21b: `prepare` also seeds `agentContext` and reports the context block, its counts and hidden line numbers; round 16: `compact` gives the app's decision, request body and output validator for a finished chat, and `prepare` also seeds `memories`; round 4B: seeds and reports the temporary profile too; round 6: `seedDrawTagTexts` seeds marks on screen, `finish` reports the app's draw commands, dropped tags and the board)
   cache_latency_probe.mjs    round 4A side probe: paired streaming calls with/without the cached system block, plus shape-acceptance calls (hard cap 20 calls; separate from a harness run)
   profile_adversarial_checks.mjs  round 4B offline battery for the profile feature (gate, secrets, forget, replacement, files); zero API calls
   profile_adversarial_checks_round4c.mjs  round 4C second battery from a fresh angle (secret paraphrases, forget forms, slots, 100/150-fact files, false claims, over-refusal rated by annoyance); zero API calls

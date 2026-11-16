@@ -160,6 +160,19 @@ nonisolated struct EzraTurnMetrics: Equatable {
     /// The lines of the context that were hidden from the model because they hold a credential shape.
     var contextHiddenLineCount: Int?
 
+    // Round 22 (3D scenes), four numbers. They are set only for a turn whose reply wrote a scene tag
+    // (a scene, a part or a view change), so the line of every other turn is what it was in round
+    // 21b. There is deliberately no field that could hold a title, a part's label or a tag.
+    /// How many parts the reply's scene has once its tags are applied.
+    var scenePartCount: Int?
+    /// How many of the reply's `[PART:...]` tags were dropped (their reasons go to the eval only).
+    var sceneDroppedPartCount: Int?
+    /// How many `[VIEW:...]` tags of the reply were accepted.
+    var sceneViewCommandCount: Int?
+    /// For a turn whose reply opened a scene: the whole seconds the user turned, tilted or zoomed it
+    /// before this line was written (interaction after that is not counted).
+    var sceneUserDragSeconds: Int?
+
     init(turnStartedAt: Date, modelName: String) {
         self.turnStartedAt = turnStartedAt
         self.modelName = modelName
@@ -273,6 +286,11 @@ nonisolated struct EzraTurnMetrics: Equatable {
         // Round 21b: written only when greater than zero, so a turn with no context keeps round 21's line.
         if let contextCharacterCount, contextCharacterCount > 0 { jsonObject["contextCharacterCount"] = contextCharacterCount }
         if let contextHiddenLineCount, contextHiddenLineCount > 0 { jsonObject["contextHiddenLineCount"] = contextHiddenLineCount }
+        // Round 22: written only when set (a turn whose reply wrote a scene tag), as numbers.
+        if let scenePartCount { jsonObject["scenePartCount"] = scenePartCount }
+        if let sceneDroppedPartCount { jsonObject["sceneDroppedPartCount"] = sceneDroppedPartCount }
+        if let sceneViewCommandCount { jsonObject["sceneViewCommandCount"] = sceneViewCommandCount }
+        if let sceneUserDragSeconds { jsonObject["sceneUserDragSeconds"] = sceneUserDragSeconds }
 
         guard let jsonData = try? JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys]) else {
             return nil
@@ -356,6 +374,13 @@ nonisolated struct EzraTurnMetrics: Equatable {
         }
         if let interruptedWithinMilliseconds {
             summaryLine += " | escape after \(interruptedWithinMilliseconds)ms"
+        }
+        if let sceneDroppedPartCount, let sceneViewCommandCount {
+            // Round 22: counts only, never a title or a part's label.
+            summaryLine += " | scene \(countText(scenePartCount)) parts, \(sceneDroppedPartCount) dropped, \(sceneViewCommandCount) view"
+            if let sceneUserDragSeconds {
+                summaryLine += ", moved \(sceneUserDragSeconds)s"
+            }
         }
         return summaryLine
     }

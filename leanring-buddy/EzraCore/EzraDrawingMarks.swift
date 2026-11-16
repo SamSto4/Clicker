@@ -141,6 +141,9 @@ nonisolated enum EzraDrawCommand: Equatable {
     case addCardRow(EzraExplanationCardRow)
     /// From a `[PART:...]` tag: one more part on the 3D scene that is on the board.
     case addScenePart(EzraScenePart)
+    /// Round 22: from a `[VIEW:...]` tag: show the 3D scene on the board another way (exploded or
+    /// assembled, turned, zoomed, or reset).
+    case changeSceneView(EzraSceneViewCommand)
 
     /// True for the commands that put something new on the screen.
     var addsAMark: Bool {
@@ -162,8 +165,14 @@ nonisolated enum EzraDrawingBoardChange: Equatable {
     /// A part was added to the 3D scene. `sceneMark` is the scene with the part already in it,
     /// and `partIndex` is the new part's place in it.
     case addedPartToScene(sceneMark: EzraDrawingMark, partIndex: Int)
+    /// Round 22: the 3D scene is to be shown another way. `sceneMark` is the scene with its
+    /// exploded state already changed (exploded, assembled and reset change it; a turn or a zoom is
+    /// not board state). `sceneWasExplodedBefore` is what it was, so a change that is never shown
+    /// can be taken back.
+    case sceneViewChanged(sceneMark: EzraDrawingMark, viewCommand: EzraSceneViewCommand, sceneWasExplodedBefore: Bool)
     /// An erase of an unknown id, an undo or clear with nothing drawn, or a row with no card to
-    /// go on (or a card that is already full). The same for a part with no scene or a full scene.
+    /// go on (or a card that is already full). The same for a part with no scene or a full scene,
+    /// and (round 22) a view change with no scene.
     case nothingChanged
 }
 
@@ -264,12 +273,54 @@ nonisolated struct EzraDrawingBoard: Equatable {
             )
             marks[sceneMarkIndex] = sceneMarkWithPart
             return .addedPartToScene(sceneMark: sceneMarkWithPart, partIndex: scene.parts.count)
+
+        case .changeSceneView(let viewCommand):
+            // Round 22: only the exploded state is board state, so the prompt can say whether the
+            // model is pulled apart. A turn or a zoom changes only what the camera shows.
+            guard let sceneMarkIndex = marks.lastIndex(where: { $0.shape.isScene }),
+                  case .scene(let scene) = marks[sceneMarkIndex].shape else {
+                return .nothingChanged
+            }
+            var sceneAfterTheChange = scene
+            switch viewCommand {
+            case .exploded:
+                sceneAfterTheChange.isExploded = true
+            case .assembled, .reset:
+                sceneAfterTheChange.isExploded = false
+            case .turn, .zoom:
+                break
+            }
+            let sceneMarkAfterTheChange = EzraDrawingMark(
+                markNumber: marks[sceneMarkIndex].markNumber,
+                shape: .scene(sceneAfterTheChange),
+                screenNumber: marks[sceneMarkIndex].screenNumber
+            )
+            marks[sceneMarkIndex] = sceneMarkAfterTheChange
+            return .sceneViewChanged(sceneMark: sceneMarkAfterTheChange, viewCommand: viewCommand, sceneWasExplodedBefore: scene.isExploded)
         }
     }
 
     /// The 3D scene on the board, if there is one.
     var sceneMark: EzraDrawingMark? {
         marks.last { $0.shape.isScene }
+    }
+
+    /// Round 22: sets whether a scene is pulled apart, without any command: used when an exploded or
+    /// assembled view that was accepted is never shown (the reply was cut off), and when the user
+    /// clicks the toggle on the paper, so the board and the screen agree again.
+    mutating func setExplodedState(_ isExploded: Bool, ofSceneWithMarkNumber sceneMarkNumber: Int) {
+        guard let sceneMarkIndex = marks.firstIndex(where: { $0.markNumber == sceneMarkNumber }),
+              case .scene(let scene) = marks[sceneMarkIndex].shape,
+              scene.isExploded != isExploded else {
+            return
+        }
+        var sceneWithTheState = scene
+        sceneWithTheState.isExploded = isExploded
+        marks[sceneMarkIndex] = EzraDrawingMark(
+            markNumber: sceneMarkNumber,
+            shape: .scene(sceneWithTheState),
+            screenNumber: marks[sceneMarkIndex].screenNumber
+        )
     }
 
     /// Takes parts back out of a scene: used when the parts of an interrupted reply were accepted
@@ -372,19 +423,25 @@ nonisolated enum EzraDrawingMarksOnScreenText {
         case .scene(let scene):
             // Like the card, the scene has no position to give. Its parts are listed the way
             // their tags are written (labels, places, sizes and colours), so the model can add a
-            // part that fits the ones already there.
+            // part that fits the ones already there. Round 22: how many parts it has, whether they
+            // are pulled apart, and the view tags that change how it is shown.
+            let partCountText = scene.parts.count == 1 ? "1 part" : "\(scene.parts.count) parts"
             let partsDescription = scene.parts.isEmpty
                 ? "no parts yet"
-                : "parts: " + scene.parts.map { "[PART:\($0.canonicalTagBody)]" }.joined(separator: " ")
+                : "\(partCountText), \(scene.isExploded ? "exploded" : "assembled"): " + scene.parts.map { "[PART:\($0.canonicalTagBody)]" }.joined(separator: " ")
             let roomDescription = scene.parts.count < EzraScene.maximumPartCount
                 ? "add a part with [PART:...]"
                 : "it is full"
-            shapeDescription = "3d scene titled \"\(scene.title)\", \(partsDescription) (\(roomDescription); a new [SCENE:title] replaces it)"
+            shapeDescription = "3d scene titled \"\(scene.title)\", \(partsDescription) (\(roomDescription); a new [SCENE:title] replaces it; \(Self.sceneViewTagsHintText) change the view)"
         }
 
         let screenDescription = mark.screenNumber.map { " (screen \($0))" } ?? ""
         return "\(mark.markIdentifier): \(shapeDescription)\(screenDescription)"
     }
+
+    /// Round 22: the view tags named in a scene's line, one of each kind, so the model sees how to
+    /// explode, turn and zoom the model that is on the screen.
+    static let sceneViewTagsHintText = "[VIEW:exploded], [VIEW:assembled], [VIEW:turn:left], [VIEW:zoom:in]"
 
     /// Coordinates are written as whole pixels, the way the tags ask for them.
     static func wholeNumberText(_ value: Double) -> String {

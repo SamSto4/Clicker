@@ -20,20 +20,49 @@ nonisolated enum EzraScenePartShapeKind: String, CaseIterable, Equatable {
     /// A hollow cylinder.
     case tube
     case capsule
+    // Round 22: six more shapes, so a model needs fewer boxes standing in for what they are not.
+    /// A doughnut: a ring radius (from the middle of the hole to the middle of the tube) and a pipe
+    /// radius (the tube's own thickness).
+    case torus
+    /// A thin torus, for a wire, a rim or a handle: only its radius is written, the pipe follows.
+    case ring
+    /// A pyramid on a rectangular base, its tip up.
+    case pyramid
+    /// A flat sheet, for a screen, a fin, a sail or a floor.
+    case plane
+    /// A right triangle extruded into a block, for a ramp, a roof side or a door stop.
+    case wedge
+    /// Half a sphere, its flat side down, for a dome, a lamp shade or a button.
+    case hemisphere
 
-    /// A box and a sphere have no direction to point along, so an axis means nothing for them.
+    /// A box, a sphere and the flat or pointed shapes have no direction to point along, so an axis
+    /// means nothing for them. A torus and a ring do have one: the direction of their hole.
     var pointsAlongAnAxis: Bool {
         switch self {
-        case .box, .sphere:
+        case .box, .sphere, .pyramid, .plane, .wedge, .hemisphere:
             return false
-        case .cylinder, .cone, .tube, .capsule:
+        case .cylinder, .cone, .tube, .capsule, .torus, .ring:
             return true
+        }
+    }
+
+    /// How many numbers the size of this shape has in a tag: `w,h,d` for a box, a pyramid and a
+    /// wedge, `w,h` for a plane, `radius,length` for the round shapes, `ring,pipe` for a torus,
+    /// and one radius for a sphere, a ring and a hemisphere.
+    var sizeNumberCount: Int {
+        switch self {
+        case .box, .pyramid, .wedge:
+            return 3
+        case .cylinder, .cone, .tube, .capsule, .torus, .plane:
+            return 2
+        case .sphere, .ring, .hemisphere:
+            return 1
         }
     }
 }
 
 /// The direction a cylinder, cone, tube or capsule points along. A cone's tip is at the positive
-/// end of its axis.
+/// end of its axis. For a torus and a ring it is the direction of the hole.
 nonisolated enum EzraScenePartAxis: String, CaseIterable, Equatable {
     case x
     case y
@@ -119,15 +148,64 @@ nonisolated struct EzraSceneVector: Equatable {
     let z: Double
 
     static let zero = EzraSceneVector(x: 0, y: 0, z: 0)
+
+    /// Round 22: the distance from the origin to this point.
+    var length: Double {
+        (x * x + y * y + z * z).squareRoot()
+    }
 }
 
 /// How large a part is. Which case a part has follows from its shape.
 nonisolated enum EzraScenePartDimensions: Equatable {
-    /// A box: width along x, height along y, depth along z.
+    /// A box: width along x, height along y, depth along z. Round 22: a pyramid and a wedge are
+    /// sized the same way (the pyramid's tip and the wedge's tall side are up, along y).
     case box(width: Double, height: Double, depth: Double)
     /// A cylinder, cone, tube or capsule: its radius and its length along its axis.
     case radiusAndLength(radius: Double, length: Double)
     case sphere(radius: Double)
+    /// Round 22: a torus or a ring. `ringRadius` runs from the middle of the hole to the middle of
+    /// the tube, `pipeRadius` is the tube's own radius (smaller than `ringRadius`). A ring's pipe is
+    /// worked out from its radius (`EzraScenePart.ringPipeRadius(forRingRadius:)`).
+    case torus(ringRadius: Double, pipeRadius: Double)
+    /// Round 22: a plane, width along x and height along y. It is drawn as a slab
+    /// `EzraScenePart.planeThickness` deep, so both of its faces show.
+    case plane(width: Double, height: Double)
+    /// Round 22: a hemisphere, its flat side down.
+    case hemisphere(radius: Double)
+}
+
+/// Round 22: a part turned freely, in degrees about the scene's x, y and z axes (through the part's
+/// own centre), applied in that order after its axis. The default turns nothing.
+nonisolated struct EzraScenePartRotation: Equatable {
+    let degreesX: Double
+    let degreesY: Double
+    let degreesZ: Double
+
+    static let none = EzraScenePartRotation(degreesX: 0, degreesY: 0, degreesZ: 0)
+
+    /// Each angle is at most one whole turn either way. A larger number is a mistake, not a place.
+    static let largestAngleInDegrees: Double = 360
+
+    var isDefault: Bool {
+        degreesX == 0 && degreesY == 0 && degreesZ == 0
+    }
+
+    /// "rx,ry,rz" the way the tags write numbers (at most two decimals, no trailing zeros).
+    var tagText: String {
+        "\(EzraScene.numberText(degreesX)),\(EzraScene.numberText(degreesY)),\(EzraScene.numberText(degreesZ))"
+    }
+}
+
+/// Round 22: what a part is made of, which changes how it takes the light. The raw value is the
+/// word after `mat=` in a tag. `matte` is the look every part had before round 22.
+nonisolated enum EzraScenePartMaterial: String, CaseIterable, Equatable {
+    case matte
+    case metal
+    case plastic
+    case rubber
+    case glass
+    /// A part that gives off light of its own colour, for a lamp, an LED or a flame.
+    case glow
 }
 
 /// One validated part of a scene. Every value is inside the limits of `EzraScene`.
@@ -138,12 +216,45 @@ nonisolated struct EzraScenePart: Equatable {
     let centre: EzraSceneVector
     let dimensions: EzraScenePartDimensions
     let colour: EzraScenePartColour
-    /// Always `.y` for a box and a sphere, where it means nothing.
+    /// Always `.y` for a shape without an axis (a box, a sphere, and since round 22 a pyramid, a
+    /// plane, a wedge and a hemisphere), where it means nothing.
     let axis: EzraScenePartAxis
+    /// Round 22: how the part is turned after its axis. A part written without `rot=` is not turned,
+    /// so every part of an older reply has the value it always had.
+    var rotation: EzraScenePartRotation = .none
+    /// Round 22: what the part is made of. A part written without `mat=` is matte, the look of every
+    /// part before round 22. A part coloured `glass` stays matte here and is shown as glass through
+    /// `effectiveMaterial`, so its tag and its look are what they were.
+    var material: EzraScenePartMaterial = .matte
 
     /// The inside of a tube is this share of its radius, so its wall is clearly a wall and its
     /// hole clearly a hole at the size a scene is shown.
     static let tubeInnerRadiusShareOfOuterRadius: Double = 0.7
+
+    /// Round 22: a ring is a torus whose pipe is this share of its radius, so it reads as a wire or
+    /// a rim and not as a doughnut.
+    static let ringPipeShareOfRadius: Double = 0.08
+
+    /// Round 22: a plane is drawn as a slab this deep, so both of its faces show and catch the light.
+    static let planeThickness: Double = 0.02
+
+    /// Round 22: the pipe of a ring with this radius: 0.08 of the radius, at least 0.05 (the smallest
+    /// size a part may have, so it can still be seen), and never more than half the radius, so even
+    /// the smallest ring keeps a hole.
+    static func ringPipeRadius(forRingRadius ringRadius: Double) -> Double {
+        min(max(ringRadius * ringPipeShareOfRadius, EzraScene.minimumPartSize), ringRadius / 2)
+    }
+
+    /// Round 22: what the part looks like it is made of: glass for a part coloured `glass` (the way a
+    /// glass part was written before round 22), otherwise its own material.
+    var effectiveMaterial: EzraScenePartMaterial {
+        colour == .glass && material == .matte ? .glass : material
+    }
+
+    /// A glass part is see-through and is drawn after the solid ones, so what is inside it shows.
+    var isTranslucent: Bool {
+        effectiveMaterial == .glass
+    }
 
     /// The length a part really has along its axis. A capsule cannot be shorter than its two
     /// round ends, so a shorter one is as long as they are (it is then a ball).
@@ -151,12 +262,13 @@ nonisolated struct EzraScenePart: Equatable {
         switch dimensions {
         case .radiusAndLength(let radius, let length):
             return shapeKind == .capsule ? max(length, 2 * radius) : length
-        case .box, .sphere:
+        case .box, .sphere, .torus, .plane, .hemisphere:
             return 0
         }
     }
 
-    /// Half of the part's size along x, y and z: how far it reaches from its centre.
+    /// Half of the part's size along x, y and z: how far it reaches from its centre, before it is
+    /// turned by `rotation` (see `boundingHalfExtents` for a turned part).
     var halfExtents: EzraSceneVector {
         switch dimensions {
         case .box(let width, let height, let depth):
@@ -170,12 +282,55 @@ nonisolated struct EzraScenePart: Equatable {
             case .y: return EzraSceneVector(x: radius, y: halfLength, z: radius)
             case .z: return EzraSceneVector(x: radius, y: radius, z: halfLength)
             }
+        case .torus(let ringRadius, let pipeRadius):
+            // The ring lies across its axis, so it is as wide as ring and pipe together on the two
+            // other axes, and as thick as the pipe along the axis.
+            let outerRadius = ringRadius + pipeRadius
+            switch axis {
+            case .x: return EzraSceneVector(x: pipeRadius, y: outerRadius, z: outerRadius)
+            case .y: return EzraSceneVector(x: outerRadius, y: pipeRadius, z: outerRadius)
+            case .z: return EzraSceneVector(x: outerRadius, y: outerRadius, z: pipeRadius)
+            }
+        case .plane(let width, let height):
+            return EzraSceneVector(x: width / 2, y: height / 2, z: Self.planeThickness / 2)
+        case .hemisphere(let radius):
+            // The dome is centred on its own bounds like every other part: its flat side is half a
+            // radius below the centre and its top half a radius above it.
+            return EzraSceneVector(x: radius, y: radius / 2, z: radius)
         }
+    }
+
+    /// Round 22: how far the part reaches from its centre along x, y and z however it is turned: its
+    /// `halfExtents` when it is not turned, otherwise a cube around its bounding ball, so a camera
+    /// fit built from it can never cut a turned part off.
+    var boundingHalfExtents: EzraSceneVector {
+        guard !rotation.isDefault else {
+            return halfExtents
+        }
+        let boundingBallRadius = halfExtents.length
+        return EzraSceneVector(x: boundingBallRadius, y: boundingBallRadius, z: boundingBallRadius)
+    }
+
+    /// Round 22: the same part, somewhere else. Used for the exploded view.
+    func movedTo(centre newCentre: EzraSceneVector) -> EzraScenePart {
+        EzraScenePart(
+            shapeKind: shapeKind,
+            labelText: labelText,
+            centre: newCentre,
+            dimensions: dimensions,
+            colour: colour,
+            axis: axis,
+            rotation: rotation,
+            material: material
+        )
     }
 
     /// Everything after "PART:" the way the grammar writes it, such as
     /// "cylinder:fan:0,0,2:1.2,0.3:blue:x". The axis is left out when it is the default (up) or
     /// means nothing for the shape. Used for the conversation history and the "marks on screen" list.
+    /// Round 22: a turned part ends in ":rot=rx,ry,rz" and a part that is not matte in
+    /// ":mat=material", in that order; a part written with neither has exactly the body it had
+    /// before. A part coloured glass never writes ":mat=glass", which it already is.
     var canonicalTagBody: String {
         let numberText = EzraScene.numberText
         let sizeText: String
@@ -184,12 +339,20 @@ nonisolated struct EzraScenePart: Equatable {
             sizeText = "\(numberText(width)),\(numberText(height)),\(numberText(depth))"
         case .radiusAndLength(let radius, let length):
             sizeText = "\(numberText(radius)),\(numberText(length))"
-        case .sphere(let radius):
+        case .sphere(let radius), .hemisphere(let radius):
             sizeText = numberText(radius)
+        case .torus(let ringRadius, let pipeRadius):
+            // A ring writes only its radius: its pipe follows from it.
+            sizeText = shapeKind == .ring ? numberText(ringRadius) : "\(numberText(ringRadius)),\(numberText(pipeRadius))"
+        case .plane(let width, let height):
+            sizeText = "\(numberText(width)),\(numberText(height))"
         }
         let positionText = "\(numberText(centre.x)),\(numberText(centre.y)),\(numberText(centre.z))"
         let axisSuffix = (shapeKind.pointsAlongAnAxis && axis != .y) ? ":\(axis.rawValue)" : ""
-        return "\(shapeKind.rawValue):\(labelText ?? ""):\(positionText):\(sizeText):\(colour.rawValue)\(axisSuffix)"
+        let rotationSuffix = rotation.isDefault ? "" : ":rot=\(rotation.tagText)"
+        let materialIsWritten = material != .matte && !(colour == .glass && material == .glass)
+        let materialSuffix = materialIsWritten ? ":mat=\(material.rawValue)" : ""
+        return "\(shapeKind.rawValue):\(labelText ?? ""):\(positionText):\(sizeText):\(colour.rawValue)\(axisSuffix)\(rotationSuffix)\(materialSuffix)"
     }
 }
 
@@ -201,9 +364,10 @@ nonisolated struct EzraScene: Equatable {
     /// A part's name sits on a small tag beside the model. Longer text is cut.
     static let maximumPartLabelCharacterCount = 24
 
-    /// Twelve basic shapes are enough for a schematic model, keep the scene light to draw, and
-    /// are as many tags as fit beside the model.
-    static let maximumPartCount = 12
+    /// Round 22: twenty-four basic shapes (twelve before) are enough for a model with real parts,
+    /// such as a bicycle, and still light to draw. Every one of them may be labelled: the tags stand
+    /// in two columns of twelve.
+    static let maximumPartCount = 24
 
     /// A part's centre is at most this far from the middle of the scene on each axis. The app
     /// scales the whole model to its panel, so the numbers only matter relative to each other.
@@ -216,17 +380,25 @@ nonisolated struct EzraScene: Equatable {
 
     let title: String
     let parts: [EzraScenePart]
+    /// Round 22: true while the parts are pulled apart (`[VIEW:exploded]` or the toggle on the
+    /// paper), false while they sit where their tags put them. A new scene is assembled.
+    var isExploded: Bool = false
 
     func addingPart(_ part: EzraScenePart) -> EzraScene {
-        EzraScene(title: title, parts: parts + [part])
+        EzraScene(title: title, parts: parts + [part], isExploded: isExploded)
     }
 
     func keepingFirstParts(_ partCountToKeep: Int) -> EzraScene {
-        EzraScene(title: title, parts: Array(parts.prefix(max(0, partCountToKeep))))
+        EzraScene(title: title, parts: Array(parts.prefix(max(0, partCountToKeep))), isExploded: isExploded)
     }
 
     var hasLabelledParts: Bool {
         parts.contains { $0.labelText != nil }
+    }
+
+    /// Round 22: how many parts have a label (and so a numbered tag).
+    var labelledPartCount: Int {
+        parts.filter { $0.labelText != nil }.count
     }
 
     /// The number on a part's tag: labelled parts count 1, 2, 3 in the order they were added,
@@ -308,23 +480,27 @@ nonisolated enum EzraSceneCamera {
     /// The radius a scene with no parts yet is framed for.
     static let boundingSphereRadiusOfEmptyScene: Double = 1
 
+    /// Round 22: a turned part counts with its `boundingHalfExtents` (a cube around its bounding
+    /// ball), so the fit never cuts it off; a part that is not turned counts exactly as before.
     static func bounds(of parts: [EzraScenePart]) -> EzraSceneBounds? {
         guard let firstPart = parts.first else {
             return nil
         }
-        var minimumX = firstPart.centre.x - firstPart.halfExtents.x
-        var minimumY = firstPart.centre.y - firstPart.halfExtents.y
-        var minimumZ = firstPart.centre.z - firstPart.halfExtents.z
-        var maximumX = firstPart.centre.x + firstPart.halfExtents.x
-        var maximumY = firstPart.centre.y + firstPart.halfExtents.y
-        var maximumZ = firstPart.centre.z + firstPart.halfExtents.z
+        let firstReach = firstPart.boundingHalfExtents
+        var minimumX = firstPart.centre.x - firstReach.x
+        var minimumY = firstPart.centre.y - firstReach.y
+        var minimumZ = firstPart.centre.z - firstReach.z
+        var maximumX = firstPart.centre.x + firstReach.x
+        var maximumY = firstPart.centre.y + firstReach.y
+        var maximumZ = firstPart.centre.z + firstReach.z
         for part in parts.dropFirst() {
-            minimumX = min(minimumX, part.centre.x - part.halfExtents.x)
-            minimumY = min(minimumY, part.centre.y - part.halfExtents.y)
-            minimumZ = min(minimumZ, part.centre.z - part.halfExtents.z)
-            maximumX = max(maximumX, part.centre.x + part.halfExtents.x)
-            maximumY = max(maximumY, part.centre.y + part.halfExtents.y)
-            maximumZ = max(maximumZ, part.centre.z + part.halfExtents.z)
+            let reach = part.boundingHalfExtents
+            minimumX = min(minimumX, part.centre.x - reach.x)
+            minimumY = min(minimumY, part.centre.y - reach.y)
+            minimumZ = min(minimumZ, part.centre.z - reach.z)
+            maximumX = max(maximumX, part.centre.x + reach.x)
+            maximumY = max(maximumY, part.centre.y + reach.y)
+            maximumZ = max(maximumZ, part.centre.z + reach.z)
         }
         return EzraSceneBounds(
             minimum: EzraSceneVector(x: minimumX, y: minimumY, z: minimumZ),
@@ -376,9 +552,11 @@ nonisolated enum EzraSceneCamera {
     /// Where a point of the model appears in the square picture, in points from the picture's
     /// top-left corner, when the model has turned by `turnAngleInRadians`.
     ///
-    /// This is the same perspective the renderer uses (the smoke program checks the two against
-    /// each other), done here in plain numbers so the leader lines of the tags can follow the
-    /// model without asking the renderer.
+    /// This is the same perspective the renderer uses, done here in plain numbers. Round 22: it
+    /// assumes one steady turn about the vertical axis and the first view's tilt and distance, which
+    /// no longer hold once the user drags, zooms or explodes the model, so the app's leader lines now
+    /// ask the renderer (`projectPoint`). This stays for the smoke program, which checks the
+    /// renderer's projection against it for the first view.
     static func pointInModelView(
         forModelPoint modelPoint: EzraSceneVector,
         cameraFit: EzraSceneCameraFit,
@@ -411,6 +589,161 @@ nonisolated enum EzraSceneCamera {
     }
 }
 
+// MARK: - Changing the view (round 22)
+
+/// Which way `[VIEW:turn:...]` turns the model: a quarter turn to the left or right, or round to
+/// its front (the side that faced the camera when it was built) or its back.
+nonisolated enum EzraSceneTurnDirection: String, CaseIterable, Equatable {
+    case left
+    case right
+    case front
+    case back
+}
+
+/// Which way `[VIEW:zoom:...]` zooms. The raw value is the word in the tag.
+nonisolated enum EzraSceneZoomDirection: String, CaseIterable, Equatable {
+    case zoomIn = "in"
+    case zoomOut = "out"
+}
+
+/// One `[VIEW:...]` tag: how the scene on the screen is to be shown. It never adds or removes a
+/// part, and is only accepted while there is a scene to show.
+nonisolated enum EzraSceneViewCommand: Equatable {
+    /// The parts move apart so the inside shows.
+    case exploded
+    /// The parts move back to where their tags put them.
+    case assembled
+    case turn(EzraSceneTurnDirection)
+    case zoom(EzraSceneZoomDirection)
+    /// Back to the first view: the fit's distance, the usual tilt, the front, assembled, turning.
+    case reset
+
+    /// Everything after "VIEW:" the way the grammar writes it, such as "turn:left". The
+    /// `[VIEW:explode]` alias is written as "exploded".
+    var canonicalTagBody: String {
+        switch self {
+        case .exploded: return "exploded"
+        case .assembled: return "assembled"
+        case .turn(let turnDirection): return "turn:\(turnDirection.rawValue)"
+        case .zoom(let zoomDirection): return "zoom:\(zoomDirection.rawValue)"
+        case .reset: return "reset"
+        }
+    }
+}
+
+// MARK: - Turning a part (round 22)
+
+/// A rotation as a unit quaternion, in plain numbers so the composition of a part's axis and its
+/// `rot=` can be worked out and tested here (EzraCore uses Foundation and CoreGraphics only, no
+/// `simd`). The app hands the four numbers to SceneKit as the part node's orientation.
+nonisolated struct EzraSceneQuaternion: Equatable {
+    let x: Double
+    let y: Double
+    let z: Double
+    let w: Double
+
+    static let identity = EzraSceneQuaternion(x: 0, y: 0, z: 0, w: 1)
+
+    /// A turn by `angleInDegrees` about a unit axis, by the right-hand rule.
+    init(rotationAboutUnitAxisX axisX: Double, axisY: Double, axisZ: Double, angleInDegrees: Double) {
+        let halfAngleInRadians = angleInDegrees * Double.pi / 180 / 2
+        let sineOfHalfAngle = sin(halfAngleInRadians)
+        self.init(x: axisX * sineOfHalfAngle, y: axisY * sineOfHalfAngle, z: axisZ * sineOfHalfAngle, w: cos(halfAngleInRadians))
+    }
+
+    init(x: Double, y: Double, z: Double, w: Double) {
+        self.x = x
+        self.y = y
+        self.z = z
+        self.w = w
+    }
+
+    /// `self` after `other`: the product self x other, which first turns by `other` and then by
+    /// `self` (both about the scene's fixed axes).
+    func after(_ other: EzraSceneQuaternion) -> EzraSceneQuaternion {
+        EzraSceneQuaternion(
+            x: w * other.x + x * other.w + y * other.z - z * other.y,
+            y: w * other.y - x * other.z + y * other.w + z * other.x,
+            z: w * other.z + x * other.y - y * other.x + z * other.w,
+            w: w * other.w - x * other.x - y * other.y - z * other.z
+        )
+    }
+
+    /// Where this rotation carries a point (or a direction).
+    func rotated(_ vector: EzraSceneVector) -> EzraSceneVector {
+        // v' = q v q*, written out.
+        let twiceCrossX = 2 * (y * vector.z - z * vector.y)
+        let twiceCrossY = 2 * (z * vector.x - x * vector.z)
+        let twiceCrossZ = 2 * (x * vector.y - y * vector.x)
+        return EzraSceneVector(
+            x: vector.x + w * twiceCrossX + (y * twiceCrossZ - z * twiceCrossY),
+            y: vector.y + w * twiceCrossY + (z * twiceCrossX - x * twiceCrossZ),
+            z: vector.z + w * twiceCrossZ + (x * twiceCrossY - y * twiceCrossX)
+        )
+    }
+}
+
+nonisolated enum EzraSceneRotation {
+    /// The turn that lays a shape built standing up (along y) over onto its axis: about z by -90
+    /// degrees for x (y goes to x), about x by +90 degrees for z (y goes to z), none for y. These
+    /// are the angles the renderer has always used for a part's axis.
+    static func quaternion(forAxis axis: EzraScenePartAxis) -> EzraSceneQuaternion {
+        switch axis {
+        case .x: return EzraSceneQuaternion(rotationAboutUnitAxisX: 0, axisY: 0, axisZ: 1, angleInDegrees: -90)
+        case .y: return .identity
+        case .z: return EzraSceneQuaternion(rotationAboutUnitAxisX: 1, axisY: 0, axisZ: 0, angleInDegrees: 90)
+        }
+    }
+
+    /// The whole orientation of a part: first its axis, then `rot=` about the scene's x, then its y,
+    /// then its z axis (all through the part's own centre). So a cylinder on x with `rot=0,0,30`
+    /// is tilted 30 degrees about z, and a cylinder on x with `rot=0,30,0` is turned 30 degrees about
+    /// the vertical, which is what a model writing scene coordinates means by it.
+    static func quaternion(axis: EzraScenePartAxis, rotation: EzraScenePartRotation) -> EzraSceneQuaternion {
+        let aboutX = EzraSceneQuaternion(rotationAboutUnitAxisX: 1, axisY: 0, axisZ: 0, angleInDegrees: rotation.degreesX)
+        let aboutY = EzraSceneQuaternion(rotationAboutUnitAxisX: 0, axisY: 1, axisZ: 0, angleInDegrees: rotation.degreesY)
+        let aboutZ = EzraSceneQuaternion(rotationAboutUnitAxisX: 0, axisY: 0, axisZ: 1, angleInDegrees: rotation.degreesZ)
+        return aboutZ.after(aboutY).after(aboutX).after(quaternion(forAxis: axis))
+    }
+}
+
+// MARK: - The exploded view (round 22)
+
+/// Pulls a model's parts apart so its inside shows: every part moves away from the middle of the
+/// model's bounds, along the line from that middle through its own centre.
+nonisolated enum EzraSceneExplosion {
+    /// A part moves this share of its distance from the middle further out, so it ends at 1.6
+    /// times its offset: far enough to separate nested parts of a typical model, near enough that
+    /// the model still reads as one thing.
+    static let explosionShare: Double = 0.6
+
+    /// Where a part's centre goes in the exploded view. A part at the middle does not move.
+    static func explodedCentre(forPartCentre partCentre: EzraSceneVector, boundsCentre: EzraSceneVector) -> EzraSceneVector {
+        EzraSceneVector(
+            x: partCentre.x + (partCentre.x - boundsCentre.x) * explosionShare,
+            y: partCentre.y + (partCentre.y - boundsCentre.y) * explosionShare,
+            z: partCentre.z + (partCentre.z - boundsCentre.z) * explosionShare
+        )
+    }
+
+    /// Every part of a model at its exploded place, in the same order. The middle is that of the
+    /// model's own bounds, so the camera fit for the exploded parts keeps the model in its picture.
+    static func explodedParts(_ parts: [EzraScenePart]) -> [EzraScenePart] {
+        guard let boundsCentre = EzraSceneCamera.bounds(of: parts)?.centre else {
+            return parts
+        }
+        return parts.map { part in
+            part.movedTo(centre: explodedCentre(forPartCentre: part.centre, boundsCentre: boundsCentre))
+        }
+    }
+
+    /// The parts as the panel shows them: pulled apart while exploded, where their tags put them
+    /// otherwise. The camera is fitted to these, so the model stays in its picture either way.
+    static func shownParts(_ parts: [EzraScenePart], isExploded: Bool) -> [EzraScenePart] {
+        isExploded ? explodedParts(parts) : parts
+    }
+}
+
 // MARK: - The panel: paper, title, the model's picture and the tags
 
 /// Where everything on a scene's panel goes, in points from the panel's top-left corner.
@@ -424,6 +757,14 @@ nonisolated struct EzraScenePanelLayout: Equatable {
     /// True when the tags are on the left of the model (the panel then sits on the right of the
     /// screen, so the tags are on the side facing the middle of the screen).
     let labelColumnIsOnLeftOfModel: Bool
+    /// Round 22: the second column of tags (13 to 24), beyond the first on the same side. nil until
+    /// a scene has its thirteenth labelled part.
+    var secondLabelColumnFrame: CGRect? = nil
+
+    /// Round 22: how many columns of tags the paper has: 0, 1 or 2.
+    var labelColumnCount: Int {
+        (labelColumnFrame == nil ? 0 : 1) + (secondLabelColumnFrame == nil ? 0 : 1)
+    }
 }
 
 nonisolated enum EzraScenePanelLayoutCalculator {
@@ -436,52 +777,85 @@ nonisolated enum EzraScenePanelLayoutCalculator {
     /// Wide enough for a typical part name in the handwriting typeface; a longer one ends in an ellipsis.
     static let labelColumnWidthInPoints: Double = 150
     static let labelTagHeightInPoints: Double = 20
-    /// From the top of one tag to the top of the next. Twelve tags (the most a scene can have)
-    /// are 276 points, which fits beside the 280 point model.
+    /// From the top of one tag to the top of the next. Twelve tags (a full column) are 276 points,
+    /// which fits beside the 280 point model.
     static let labelTagPitchInPoints: Double = 23
     /// The numbered disc at the model's end of a tag. The leader line starts at its edge.
     static let labelDiscDiameterInPoints: Double = 16
     static let gapBetweenLabelDiscAndTextInPoints: Double = 5
+    /// Round 22: a column holds twelve tags; tags 13 to 24 stand in the second column.
+    static let maximumLabelTagCountPerColumn = 12
+    /// Round 22: at most two columns, for the 24 parts a scene may have.
+    static let maximumLabelColumnCount = 2
+
+    /// Round 22: how many columns of tags a scene with this many labelled parts needs: none, one
+    /// (1 to 12) or two (13 and more).
+    static func columnCount(forLabelledPartCount labelledPartCount: Int) -> Int {
+        guard labelledPartCount > 0 else {
+            return 0
+        }
+        let neededColumnCount = (labelledPartCount + maximumLabelTagCountPerColumn - 1) / maximumLabelTagCountPerColumn
+        return min(maximumLabelColumnCount, neededColumnCount)
+    }
 
     static func layout(hasLabelColumn: Bool, labelColumnIsOnLeftOfModel: Bool) -> EzraScenePanelLayout {
-        let labelColumnAndGapWidth = hasLabelColumn ? labelColumnWidthInPoints + gapBetweenModelAndLabelColumnInPoints : 0
-        let panelWidth = 2 * paperPaddingInPoints + modelViewSideInPoints + labelColumnAndGapWidth
+        layout(labelColumnCount: hasLabelColumn ? 1 : 0, labelColumnIsOnLeftOfModel: labelColumnIsOnLeftOfModel)
+    }
+
+    /// Round 22: the paper with no, one or two columns of tags: 300, 454 or 608 points wide, always
+    /// 326 high. Both columns are on the side facing the middle of the screen, the first next to
+    /// the model and the second beyond it. With no or one column the layout is exactly the one
+    /// before round 22.
+    static func layout(labelColumnCount requestedLabelColumnCount: Int, labelColumnIsOnLeftOfModel: Bool) -> EzraScenePanelLayout {
+        let labelColumnCount = min(maximumLabelColumnCount, max(0, requestedLabelColumnCount))
+        let oneLabelColumnAndGapWidth = labelColumnWidthInPoints + gapBetweenModelAndLabelColumnInPoints
+        let labelColumnsAndGapsWidth = Double(labelColumnCount) * oneLabelColumnAndGapWidth
+        let panelWidth = 2 * paperPaddingInPoints + modelViewSideInPoints + labelColumnsAndGapsWidth
         let panelHeight = 2 * paperPaddingInPoints + titleRowHeightInPoints + modelViewSideInPoints
         let contentTopY = paperPaddingInPoints + titleRowHeightInPoints
 
-        let modelViewOriginX = paperPaddingInPoints + ((hasLabelColumn && labelColumnIsOnLeftOfModel) ? labelColumnAndGapWidth : 0)
+        let modelViewOriginX = paperPaddingInPoints + (labelColumnIsOnLeftOfModel ? labelColumnsAndGapsWidth : 0)
         let modelViewFrame = CGRect(x: modelViewOriginX, y: contentTopY, width: modelViewSideInPoints, height: modelViewSideInPoints)
 
-        var labelColumnFrame: CGRect?
-        if hasLabelColumn {
+        // The column with this place in line from the model: 1 next to it, 2 beyond the first.
+        func labelColumnFrame(atPlaceFromTheModel placeFromTheModel: Int) -> CGRect {
             let labelColumnOriginX = labelColumnIsOnLeftOfModel
-                ? paperPaddingInPoints
-                : modelViewOriginX + modelViewSideInPoints + gapBetweenModelAndLabelColumnInPoints
-            labelColumnFrame = CGRect(x: labelColumnOriginX, y: contentTopY, width: labelColumnWidthInPoints, height: modelViewSideInPoints)
+                ? modelViewOriginX - Double(placeFromTheModel) * oneLabelColumnAndGapWidth
+                : modelViewOriginX + modelViewSideInPoints + gapBetweenModelAndLabelColumnInPoints + Double(placeFromTheModel - 1) * oneLabelColumnAndGapWidth
+            return CGRect(x: labelColumnOriginX, y: contentTopY, width: labelColumnWidthInPoints, height: modelViewSideInPoints)
         }
 
+        // Round 22: the title ends before the explode toggle at the right end of its row.
+        let titleWidth = panelWidth - 2 * paperPaddingInPoints - explodeToggleSideInPoints - gapBetweenTitleAndExplodeToggleInPoints
         return EzraScenePanelLayout(
             panelSize: CGSize(width: panelWidth, height: panelHeight),
-            titleFrame: CGRect(x: paperPaddingInPoints, y: paperPaddingInPoints, width: panelWidth - 2 * paperPaddingInPoints, height: titleRowHeightInPoints),
+            titleFrame: CGRect(x: paperPaddingInPoints, y: paperPaddingInPoints, width: titleWidth, height: titleRowHeightInPoints),
             modelViewFrame: modelViewFrame,
-            labelColumnFrame: labelColumnFrame,
-            labelColumnIsOnLeftOfModel: labelColumnIsOnLeftOfModel
+            labelColumnFrame: labelColumnCount >= 1 ? labelColumnFrame(atPlaceFromTheModel: 1) : nil,
+            labelColumnIsOnLeftOfModel: labelColumnIsOnLeftOfModel,
+            secondLabelColumnFrame: labelColumnCount >= 2 ? labelColumnFrame(atPlaceFromTheModel: 2) : nil
         )
     }
 
     /// The place of the tag with this number (1 for the first labelled part). The tags stand in
-    /// one column from the top, in the order their parts were added, and never move once placed:
-    /// only the far end of a tag's leader line follows the turning model. nil when the panel has
-    /// no column or the number is not one a scene can have.
+    /// columns from the top, in the order their parts were added, and never move once placed: only
+    /// the far end of a tag's leader line follows the turning model. Round 22: tags 1 to 12 are in
+    /// the first column, 13 to 24 in the second. nil when the panel has no column for the number,
+    /// or the number is not one a scene can have.
     static func labelTagFrame(forLabelNumber labelNumber: Int, in panelLayout: EzraScenePanelLayout) -> CGRect? {
-        guard let labelColumnFrame = panelLayout.labelColumnFrame,
-              labelNumber >= 1, labelNumber <= EzraScene.maximumPartCount else {
+        guard labelNumber >= 1, labelNumber <= EzraScene.maximumPartCount else {
+            return nil
+        }
+        let columnIndex = (labelNumber - 1) / maximumLabelTagCountPerColumn
+        let placeInColumn = (labelNumber - 1) % maximumLabelTagCountPerColumn
+        let columnFrameOrNil = columnIndex == 0 ? panelLayout.labelColumnFrame : panelLayout.secondLabelColumnFrame
+        guard let columnFrame = columnFrameOrNil else {
             return nil
         }
         return CGRect(
-            x: Double(labelColumnFrame.minX),
-            y: Double(labelColumnFrame.minY) + Double(labelNumber - 1) * labelTagPitchInPoints,
-            width: Double(labelColumnFrame.width),
+            x: Double(columnFrame.minX),
+            y: Double(columnFrame.minY) + Double(placeInColumn) * labelTagPitchInPoints,
+            width: Double(columnFrame.width),
             height: labelTagHeightInPoints
         )
     }
@@ -518,7 +892,8 @@ nonisolated enum EzraScenePanelLayoutCalculator {
     }
 
     /// Where a tag's leader line ends: the place of its part in the model's picture, as a point
-    /// of the panel.
+    /// of the panel, for the first view (see `EzraSceneCamera.pointInModelView`; the app asks the
+    /// renderer since round 22, and this stays for the smoke program).
     static func leaderEndPoint(
         forPartCentre partCentre: EzraSceneVector,
         cameraFit: EzraSceneCameraFit,
@@ -536,6 +911,214 @@ nonisolated enum EzraScenePanelLayoutCalculator {
             y: panelLayout.modelViewFrame.minY + pointInModelView.y
         )
     }
+}
+
+// MARK: - The explode toggle and what the mouse is over (round 22)
+
+/// Round 22: what a point of a scene's panel is, for the scene window's mouse handling.
+nonisolated enum EzraScenePanelHitRegion: Equatable {
+    /// The shadow room around the paper, or beyond it: not the scene's (a click there does nothing).
+    case outsideThePaper
+    /// The small toggle in the paper's top-right corner that explodes or assembles the model.
+    case explodeToggle
+    /// Anywhere else on the paper: a drag there turns the model, a scroll or a pinch zooms it.
+    case paper
+}
+
+nonisolated extension EzraScenePanelLayoutCalculator {
+    /// Round 22: the explode toggle is a small rounded square at the right end of the title row.
+    static let explodeToggleSideInPoints: Double = 22
+    /// The title stops this far before the toggle, so a long title never runs under it.
+    static let gapBetweenTitleAndExplodeToggleInPoints: Double = 6
+    /// A click this close outside the toggle still counts as on it: it is small and in a corner.
+    static let explodeToggleHitSlopInPoints: Double = 3
+
+    /// Where the toggle is, in points from the panel's top-left corner.
+    static func explodeToggleFrame(in panelLayout: EzraScenePanelLayout) -> CGRect {
+        CGRect(
+            x: Double(panelLayout.panelSize.width) - paperPaddingInPoints - explodeToggleSideInPoints,
+            y: paperPaddingInPoints + (titleRowHeightInPoints - explodeToggleSideInPoints) / 2,
+            width: explodeToggleSideInPoints,
+            height: explodeToggleSideInPoints
+        )
+    }
+
+    /// What a point of the panel (from its top-left corner) is: off the paper, the toggle (with a
+    /// little slop, kept on the paper), or the paper.
+    static func hitRegion(atPointInPanel pointInPanel: CGPoint, in panelLayout: EzraScenePanelLayout) -> EzraScenePanelHitRegion {
+        let paperFrame = CGRect(origin: .zero, size: panelLayout.panelSize)
+        guard paperFrame.contains(pointInPanel) else {
+            return .outsideThePaper
+        }
+        let toggleHitFrame = explodeToggleFrame(in: panelLayout)
+            .insetBy(dx: -explodeToggleHitSlopInPoints, dy: -explodeToggleHitSlopInPoints)
+            .intersection(paperFrame)
+        return toggleHitFrame.contains(pointInPanel) ? .explodeToggle : .paper
+    }
+}
+
+// MARK: - Turning, tilting and zooming the view (round 22)
+
+/// Round 22: the numbers of the scene window's drag, scroll and pinch, and of the voice's view tags, as
+/// plain functions so they can be checked without a window. The model's turn is in radians; the
+/// camera's tilt is its downward tilt in degrees (20, the first view, looks a little from above).
+nonisolated enum EzraSceneViewControl {
+    /// A horizontal drag turns the model this much per point; a vertical one tilts the camera this much.
+    static let dragTurnInDegreesPerPoint: Double = 0.6
+    static let dragTiltInDegreesPerPoint: Double = 0.4
+    /// The camera may tilt from looking up a little from below (-20) to looking steeply down (60):
+    /// the camera's own pitch from +20 to -60 degrees.
+    static let smallestDownwardTiltInDegrees: Double = -20
+    static let largestDownwardTiltInDegrees: Double = 60
+    /// The camera may come in to 0.6 of the fit's distance and go out to twice it.
+    static let smallestCameraDistanceFactor: Double = 0.6
+    static let largestCameraDistanceFactor: Double = 2
+    /// A scroll of one point changes the distance by this share; a line of a mouse wheel that reports
+    /// no points counts as ten.
+    static let scrollZoomSharePerPoint: Double = 0.02
+    static let scrollPointsPerWheelLine: Double = 10
+    /// "zoom in" brings the camera to three quarters of its distance, "zoom out" takes it a third further.
+    static let voiceZoomInFactor: Double = 0.75
+    static let voiceZoomOutFactor: Double = 1.33
+    /// How long the view takes to change for a voice tag (a turn, a zoom, a reset), and for a scroll step.
+    static let voiceViewChangeSeconds: Double = 0.5
+    static let scrollZoomSeconds: Double = 0.08
+    /// The slow turn starts again this long after the user last turned, tilted or zoomed the model,
+    /// or after a voice turn or zoom.
+    static let secondsBeforeTheTurnResumes: Double = 10
+
+    static func turnAngleChangeInRadians(forHorizontalDragPoints horizontalDragPoints: Double) -> Double {
+        horizontalDragPoints * dragTurnInDegreesPerPoint * Double.pi / 180
+    }
+
+    /// AppKit's y grows upwards, so a drag down (a negative change) looks more from above.
+    static func downwardTiltInDegrees(afterVerticalDragPoints verticalDragPoints: Double, from downwardTiltInDegrees: Double) -> Double {
+        clampedDownwardTilt(downwardTiltInDegrees - verticalDragPoints * dragTiltInDegreesPerPoint)
+    }
+
+    static func clampedDownwardTilt(_ downwardTiltInDegrees: Double) -> Double {
+        min(largestDownwardTiltInDegrees, max(smallestDownwardTiltInDegrees, downwardTiltInDegrees))
+    }
+
+    static func clampedCameraDistanceFactor(_ cameraDistanceFactor: Double) -> Double {
+        min(largestCameraDistanceFactor, max(smallestCameraDistanceFactor, cameraDistanceFactor))
+    }
+
+    /// A scroll with a positive y comes closer.
+    static func cameraDistanceFactor(afterScrollPoints scrollPoints: Double, from cameraDistanceFactor: Double) -> Double {
+        clampedCameraDistanceFactor(cameraDistanceFactor * (1 - scrollPoints * scrollZoomSharePerPoint))
+    }
+
+    /// Spreading two fingers (a positive magnification) comes closer.
+    static func cameraDistanceFactor(afterMagnification magnification: Double, from cameraDistanceFactor: Double) -> Double {
+        clampedCameraDistanceFactor(cameraDistanceFactor * (1 - magnification))
+    }
+
+    static func cameraDistanceFactor(afterZooming zoomDirection: EzraSceneZoomDirection, from cameraDistanceFactor: Double) -> Double {
+        switch zoomDirection {
+        case .zoomIn: return clampedCameraDistanceFactor(cameraDistanceFactor * voiceZoomInFactor)
+        case .zoomOut: return clampedCameraDistanceFactor(cameraDistanceFactor * voiceZoomOutFactor)
+        }
+    }
+
+    /// Where a voice turn takes the model from the angle it is at: a quarter turn left (bringing its
+    /// left side round to the front) or right, or the nearest way round to its front (a whole number of
+    /// turns) or its back (half a turn more).
+    static func turnAngleInRadians(afterTurning turnDirection: EzraSceneTurnDirection, from currentTurnAngleInRadians: Double) -> Double {
+        let wholeTurnInRadians = 2 * Double.pi
+        switch turnDirection {
+        case .left:
+            return currentTurnAngleInRadians + Double.pi / 2
+        case .right:
+            return currentTurnAngleInRadians - Double.pi / 2
+        case .front:
+            return (currentTurnAngleInRadians / wholeTurnInRadians).rounded() * wholeTurnInRadians
+        case .back:
+            return ((currentTurnAngleInRadians - Double.pi) / wholeTurnInRadians).rounded() * wholeTurnInRadians + Double.pi
+        }
+    }
+}
+
+nonisolated extension EzraSceneCamera {
+    /// Round 22: where the camera stands for a downward tilt and a distance factor. A tilt of 20 and a
+    /// factor of 1 give exactly `cameraPositionRelativeToModelCentre(for:)`. It always looks at the
+    /// middle of the model.
+    static func cameraPositionRelativeToModelCentre(
+        for cameraFit: EzraSceneCameraFit,
+        downwardTiltInDegrees: Double,
+        cameraDistanceFactor: Double
+    ) -> EzraSceneVector {
+        let tiltInRadians = downwardTiltInDegrees * Double.pi / 180
+        let cameraDistance = cameraFit.cameraDistance * cameraDistanceFactor
+        return EzraSceneVector(
+            x: 0,
+            y: cameraDistance * sin(tiltInRadians),
+            z: cameraDistance * cos(tiltInRadians)
+        )
+    }
+}
+
+/// Round 22: how long the user turned, tilted or zoomed a scene, for the metrics line. Interactions
+/// closer together than half a second are one stretch, and the stretches are added up; a single click
+/// counts nothing.
+nonisolated struct EzraSceneInteractionClock: Equatable {
+    static let longestPauseWithinOneStretchInSeconds: Double = 0.5
+
+    private(set) var totalSeconds: Double = 0
+    private var lastInteractionUptimeSeconds: Double?
+
+    mutating func recordInteraction(atUptimeSeconds interactionUptimeSeconds: Double) {
+        if let lastInteractionUptimeSeconds {
+            let secondsSinceTheLastOne = interactionUptimeSeconds - lastInteractionUptimeSeconds
+            if secondsSinceTheLastOne > 0 && secondsSinceTheLastOne <= Self.longestPauseWithinOneStretchInSeconds {
+                totalSeconds += secondsSinceTheLastOne
+            }
+        }
+        lastInteractionUptimeSeconds = interactionUptimeSeconds
+    }
+
+    /// The whole seconds, for the metrics line.
+    var wholeSeconds: Int {
+        Int(totalSeconds.rounded())
+    }
+}
+
+// MARK: - The drawing self test's sample scene (round 22)
+
+/// The 3D scene the drawing self test (`EZRA_DRAW_SELF_TEST=1`) builds, kept here as plain text so
+/// the smoke program can check that every tag of it reads. It is test data only: nothing in normal use
+/// reads it.
+nonisolated enum EzraDrawingSelfTestSamples {
+    /// Twenty-four parts (the limit), two of each of the twelve shapes in four rows of six: the first
+    /// fifteen labelled, so both columns of tags show; every material at least once (the old glass
+    /// colour and `mat=glass` side by side); a pyramid and a plane turned with `rot=`; a torus and a
+    /// ring with their holes facing the camera.
+    static let scenePartTagsText = [
+        "[PART:box:box:-3.75,1.8,0:0.8,0.8,0.8:red:mat=metal]",
+        "[PART:cylinder:cylinder:-2.25,1.8,0:0.4,0.9:orange:mat=plastic]",
+        "[PART:sphere:sphere:-0.75,1.8,0:0.45:yellow:mat=rubber]",
+        "[PART:cone:cone:0.75,1.8,0:0.45,0.9:green:mat=glass]",
+        "[PART:tube:tube:2.25,1.8,0:0.45,0.8:teal:mat=glow]",
+        "[PART:capsule:capsule:3.75,1.8,0:0.25,0.9:blue]",
+        "[PART:torus:torus:-3.75,0.6,0:0.4,0.12:purple:z:mat=metal]",
+        "[PART:ring:ring:-2.25,0.6,0:0.45:pink:z]",
+        "[PART:pyramid:pyramid:-0.75,0.6,0:0.8,0.8,0.8:brown:rot=0,45,0:mat=plastic]",
+        "[PART:plane:plane:0.75,0.6,0:0.8,0.6:gray:rot=-30,0,0:mat=glow]",
+        "[PART:wedge:wedge:2.25,0.6,0:0.8,0.6,0.6:white:mat=rubber]",
+        "[PART:hemisphere:hemisphere:3.75,0.6,0:0.45:glass]",
+        "[PART:box:steel block:-3.75,-0.6,0:0.7,0.5,0.7:gray:mat=metal]",
+        "[PART:cylinder:axle:-2.25,-0.6,0:0.12,1.1:black:x:mat=metal]",
+        "[PART:sphere:knob:-0.75,-0.6,0:0.35:red:mat=plastic]",
+        "[PART:cone::0.75,-0.6,0:0.4,0.8:orange:x]",
+        "[PART:tube::2.25,-0.6,0:0.4,0.7:blue:z:mat=metal]",
+        "[PART:capsule::3.75,-0.6,0:0.2,0.8:green:x:mat=rubber]",
+        "[PART:torus::-3.75,-1.8,0:0.4,0.1:yellow:x:mat=glow]",
+        "[PART:ring::-2.25,-1.8,0:0.4:gray:mat=metal]",
+        "[PART:pyramid::-0.75,-1.8,0:0.7,0.7,0.7:teal]",
+        "[PART:plane::0.75,-1.8,0:0.7,0.7:white]",
+        "[PART:wedge::2.25,-1.8,0:0.7,0.5,0.5:purple:mat=plastic]",
+        "[PART:hemisphere::3.75,-1.8,0:0.4:pink:mat=matte]",
+    ].joined(separator: " ")
 }
 
 // MARK: - Where the panel goes on the screen

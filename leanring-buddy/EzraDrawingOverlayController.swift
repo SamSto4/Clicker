@@ -6,8 +6,9 @@
 //  labels, sticky notes, numbered callouts, the explanation card and the simple 3D scene) and decides how long they stay. The marks are Core Animation layers in a
 //  click-through view on top of each screen's existing overlay window, so no extra windows exist
 //  and Ezra's screenshots, which already leave out all of Ezra's windows, never contain them.
-//  The 3D scene is the one mark that is a view of its own (`EzraScenePanelView`, SceneKit): it is
-//  added to the same overlay window, next to the drawing surface.
+//  The 3D scene is the one mark that is a view of its own (`EzraScenePanelView`, SceneKit). Since
+//  round 22 it sits in a window of its own (`EzraScenePanelWindow`, at the overlay's level and never
+//  the key window), so the paper can take the mouse: the model is turned, tilted and zoomed by hand.
 //
 
 import AppKit
@@ -124,6 +125,27 @@ final class EzraDrawingOverlayController {
     /// The views of the scenes that have actually been shown.
     private var scenePanelViewsByMarkNumber: [Int: EzraScenePanelView] = [:]
 
+    /// Round 22: the window each shown scene sits in, so its paper can take the mouse.
+    private var scenePanelWindowsByMarkNumber: [Int: EzraScenePanelWindow] = [:]
+
+    /// Round 22: a scene the user turned, zoomed or clicked stays at least until this moment (uptime
+    /// clock), however its reply's countdown runs: each touch makes it the full scene lifetime again.
+    private var sceneKeptUntilUptimeSecondsByMarkNumber: [Int: TimeInterval] = [:]
+
+    /// Round 22: how long the user has turned or zoomed the newest scene, for the metrics line of the
+    /// turn that drew it. A new scene starts a new count.
+    private var interactionClockOfTheNewestScene = EzraSceneInteractionClock()
+
+    /// Round 22: the drawing self test turns this on for its proof pictures, so the scene windows
+    /// (hidden from every capture otherwise) show in them; it applies to windows made later too.
+    var isShowingScenesInScreenCapturesForSelfTest = false {
+        didSet {
+            for scenePanelWindow in scenePanelWindowsByMarkNumber.values {
+                scenePanelWindow.setVisibleInScreenCapturesForSelfTest(isShowingScenesInScreenCapturesForSelfTest)
+            }
+        }
+    }
+
     /// Where the tag of each callout on the screen was put, and the place it points at, both in
     /// points from the display's top-left corner. A new callout is kept clear of them.
     private var calloutTagFramesFromTopLeftByMarkNumber: [Int: CGRect] = [:]
@@ -156,6 +178,9 @@ final class EzraDrawingOverlayController {
         case drawCardRow(cardMarkNumber: Int, rowIndex: Int)
         /// A part of the 3D scene. `partIndex` is the part's place in the scene.
         case drawScenePart(sceneMarkNumber: Int, partIndex: Int)
+        /// Round 22: a `[VIEW:...]` change of the 3D scene. `explodedStateBefore` is whether the scene
+        /// was exploded before it, so a change that is never shown can be taken back off the board.
+        case changeSceneView(sceneMarkNumber: Int, explodedStateBefore: Bool)
         case removeMarks(markNumbers: [Int], fadeOutSeconds: Double)
     }
 
@@ -327,8 +352,11 @@ final class EzraDrawingOverlayController {
         lifetimeFadeWorkItem?.cancel()
         let fadeWorkItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            // Round 22: a scene the user has just turned or zoomed stays its full lifetime from that
+            // touch, even when its reply's countdown is over.
+            let extraSecondsSceneStaysWithTheUsersTouch = max(extraSecondsSceneStays, self.secondsTheTouchedSceneStillStays())
             let explanationCardMarkThatStays = extraSecondsExplanationCardStays > 0 ? self.drawingBoard.explanationCardMark : nil
-            let sceneMarkThatStays = extraSecondsSceneStays > 0 ? self.drawingBoard.sceneMark : nil
+            let sceneMarkThatStays = extraSecondsSceneStaysWithTheUsersTouch > 0 ? self.drawingBoard.sceneMark : nil
             let markNumbersThatStay = [explanationCardMarkThatStays?.markNumber, sceneMarkThatStays?.markNumber].compactMap { $0 }
             guard !markNumbersThatStay.isEmpty else {
                 self.clearAllMarks(fadeOutSeconds: Self.lifetimeFadeOutSeconds)
@@ -343,14 +371,54 @@ final class EzraDrawingOverlayController {
                 // The card goes next. A scene, if there is one, is left again and goes after it.
                 self.scheduleLifetimeFade(
                     afterSeconds: extraSecondsExplanationCardStays,
-                    extraSecondsSceneStays: sceneMarkThatStays != nil ? max(0, extraSecondsSceneStays - extraSecondsExplanationCardStays) : 0
+                    extraSecondsSceneStays: sceneMarkThatStays != nil ? max(0, extraSecondsSceneStaysWithTheUsersTouch - extraSecondsExplanationCardStays) : 0
                 )
             } else {
-                self.scheduleLifetimeFade(afterSeconds: extraSecondsSceneStays)
+                self.scheduleLifetimeFade(afterSeconds: extraSecondsSceneStaysWithTheUsersTouch)
             }
         }
         lifetimeFadeWorkItem = fadeWorkItem
         DispatchQueue.main.asyncAfter(deadline: .now() + secondsUntilFade, execute: fadeWorkItem)
+    }
+
+    /// Round 22: how much longer the scene on the board stays because the user touched it (zero when
+    /// it was never touched, or its time is over).
+    private func secondsTheTouchedSceneStillStays() -> TimeInterval {
+        guard let sceneMark = drawingBoard.sceneMark,
+              let sceneKeptUntilUptimeSeconds = sceneKeptUntilUptimeSecondsByMarkNumber[sceneMark.markNumber] else {
+            return 0
+        }
+        return max(0, sceneKeptUntilUptimeSeconds - EzraTurnMetrics.currentUptimeSeconds)
+    }
+
+    // MARK: - The user's hand on a scene (round 22)
+
+    /// A drag, scroll, pinch or toggle click on a scene: its countdown starts again from the full scene
+    /// lifetime, and the time counts for the metrics line.
+    private func sceneWasTouchedByTheUser(markNumber sceneMarkNumber: Int) {
+        guard scenePanelViewsByMarkNumber[sceneMarkNumber] != nil else { return }
+        let nowUptimeSeconds = EzraTurnMetrics.currentUptimeSeconds
+        sceneKeptUntilUptimeSecondsByMarkNumber[sceneMarkNumber] = nowUptimeSeconds + drawingLifetimes.secondsSceneStaysAfterReplyEnds
+        interactionClockOfTheNewestScene.recordInteraction(atUptimeSeconds: nowUptimeSeconds)
+    }
+
+    /// The whole seconds the user has turned or zoomed the newest scene so far, for the metrics line.
+    var wholeSecondsTheUserTurnedOrZoomedTheNewestScene: Int {
+        interactionClockOfTheNewestScene.wholeSeconds
+    }
+
+    /// The toggle on the paper: pulls the model apart, or puts it back together, as `[VIEW:exploded]`
+    /// and `[VIEW:assembled]` do. The board learns it too, so the next prompt says which it is.
+    private func explodeToggleWasClicked(sceneMarkNumber: Int) {
+        guard let scenePanelView = scenePanelViewsByMarkNumber[sceneMarkNumber] else { return }
+        let explodedAfterTheClick = !scenePanelView.isShowingExplodedParts
+        drawingBoard.setExplodedState(explodedAfterTheClick, ofSceneWithMarkNumber: sceneMarkNumber)
+        if var plannedScene = plannedScenesByMarkNumber[sceneMarkNumber] {
+            plannedScene.isExploded = explodedAfterTheClick
+            plannedScenesByMarkNumber[sceneMarkNumber] = plannedScene
+        }
+        showSceneParts(ofSceneWithMarkNumber: sceneMarkNumber, exploded: explodedAfterTheClick, animationSeconds: EzraScenePanelView.explodeSeconds)
+        print("✏️ draw: scene m\(sceneMarkNumber) toggled by the user (exploded: \(explodedAfterTheClick))")
     }
 
     // MARK: - Drawing a reply
@@ -464,7 +532,7 @@ final class EzraDrawingOverlayController {
                                     forShapeInScreenshotPixels: otherShapeInScreenshotPixels
                                 ))
                             }
-                        case .eraseMark, .undoNewestMark, .clearAllMarks, .addScenePart:
+                        case .eraseMark, .undoNewestMark, .clearAllMarks, .addScenePart, .changeSceneView:
                             break
                         }
                     }
@@ -515,7 +583,7 @@ final class EzraDrawingOverlayController {
                                ) {
                                 occupiedFramesOnTheScenesDisplay.append(occupiedFrame)
                             }
-                        case .eraseMark, .undoNewestMark, .clearAllMarks, .addCardRow:
+                        case .eraseMark, .undoNewestMark, .clearAllMarks, .addCardRow, .changeSceneView:
                             break
                         }
                     }
@@ -530,9 +598,10 @@ final class EzraDrawingOverlayController {
                     let displaySizeInPoints = displayPlacement.displayFrame.size
                     let menuBarHeightInPoints = menuBarHeightInPoints(forDisplayFrame: displayPlacement.displayFrame)
                     // The side the tags are on does not change the panel's size, so the size is
-                    // known before the corner is.
+                    // known before the corner is. Round 22: one column of tags for up to twelve
+                    // labelled parts, two for more.
                     let panelSize = EzraScenePanelLayoutCalculator.layout(
-                        hasLabelColumn: sceneWithPartsOfThisReply.hasLabelledParts,
+                        labelColumnCount: EzraScenePanelLayoutCalculator.columnCount(forLabelledPartCount: sceneWithPartsOfThisReply.labelledPartCount),
                         labelColumnIsOnLeftOfModel: true
                     ).panelSize
                     scenePanelPlacementsByMarkNumber[addedMark.markNumber] = EzraScenePanelPlacement.placement(
@@ -613,6 +682,25 @@ final class EzraDrawingOverlayController {
                     nowUptimeSeconds + scheduledTime.startSecondsAfterSpeechBegins + EzraScenePanelView.partAppearSeconds
                 )
 
+            case .sceneViewChanged(let sceneMark, let viewCommand, let sceneWasExplodedBefore):
+                // Round 22: the view changes as its sentence begins, like a part appears. The planned
+                // scene learns the exploded state at once, so parts of this reply that come after the
+                // change appear where it puts them.
+                if case .scene(let sceneAfterTheChange) = sceneMark.shape, var plannedScene = plannedScenesByMarkNumber[sceneMark.markNumber] {
+                    plannedScene.isExploded = sceneAfterTheChange.isExploded
+                    plannedScenesByMarkNumber[sceneMark.markNumber] = plannedScene
+                }
+                schedule(
+                    .changeSceneView(sceneMarkNumber: sceneMark.markNumber, explodedStateBefore: sceneWasExplodedBefore),
+                    afterSeconds: scheduledTime.startSecondsAfterSpeechBegins
+                ) { [weak self] in
+                    self?.changeSceneViewOnScreen(sceneMarkNumber: sceneMark.markNumber, viewCommand: viewCommand)
+                }
+                latestScheduledDrawingEndUptimeSeconds = max(
+                    latestScheduledDrawingEndUptimeSeconds,
+                    nowUptimeSeconds + scheduledTime.startSecondsAfterSpeechBegins + EzraScenePanelView.explodeSeconds
+                )
+
             case .nothingChanged:
                 // An erase of an id that is not on the board, an undo with nothing to undo, a
                 // row with no card to go on, or a part with no scene to go in.
@@ -633,10 +721,17 @@ final class EzraDrawingOverlayController {
     func cancelCommandsNotYetDrawn() {
         let commandsToCancel = pendingScheduledCommands
         pendingScheduledCommands.removeAll()
+        // Round 22: for each scene, the exploded state before the first view change that was never
+        // shown: that is what is on the screen, so the board goes back to it.
+        var explodedStateOnScreenBySceneMarkNumber: [Int: Bool] = [:]
 
         for commandToCancel in commandsToCancel {
             commandToCancel.dispatchWorkItem.cancel()
             switch commandToCancel.work {
+            case .changeSceneView(let sceneMarkNumber, let explodedStateBefore):
+                if explodedStateOnScreenBySceneMarkNumber[sceneMarkNumber] == nil {
+                    explodedStateOnScreenBySceneMarkNumber[sceneMarkNumber] = explodedStateBefore
+                }
             case .drawMark(let markNumber):
                 drawingBoard.removeMarks { $0.markNumber == markNumber }
                 removeMarkFromScreen(markNumber: markNumber, fadeOutSeconds: 0)
@@ -655,6 +750,13 @@ final class EzraDrawingOverlayController {
                 for markNumber in markNumbers {
                     removeMarkFromScreen(markNumber: markNumber, fadeOutSeconds: fadeOutSeconds)
                 }
+            }
+        }
+        for (sceneMarkNumber, explodedStateOnScreen) in explodedStateOnScreenBySceneMarkNumber {
+            drawingBoard.setExplodedState(explodedStateOnScreen, ofSceneWithMarkNumber: sceneMarkNumber)
+            if var plannedScene = plannedScenesByMarkNumber[sceneMarkNumber] {
+                plannedScene.isExploded = explodedStateOnScreen
+                plannedScenesByMarkNumber[sceneMarkNumber] = plannedScene
             }
         }
         latestScheduledDrawingEndUptimeSeconds = 0
@@ -682,8 +784,14 @@ final class EzraDrawingOverlayController {
     /// The page under the marks moved, so everything that points at a place on it is now wrong
     /// and fades. Sticky notes and the explanation card are written for the user and stay. Marks of the current reply that
     /// have not been drawn yet are dropped too: they would land on content that has moved.
-    func fadeMarksThatPointAtScreenContent() {
+    /// Round 22: `scrollLocationOnScreen` is where the pointer was (global AppKit coordinates). A
+    /// scroll over a scene's window zoomed the model and moved no page, so nothing fades.
+    func fadeMarksThatPointAtScreenContent(unlessScrollIsOver scrollLocationOnScreen: CGPoint? = nil) {
         guard !isIgnoringScrollAndApplicationSwitchClearing else { return }
+        if let scrollLocationOnScreen,
+           scenePanelWindowsByMarkNumber.values.contains(where: { $0.frame.contains(scrollLocationOnScreen) }) {
+            return
+        }
         guard case .removedMarks(let removedMarks) = drawingBoard.removeMarks(where: { $0.shape.pointsAtScreenContent }) else {
             return
         }
@@ -902,14 +1010,24 @@ final class EzraDrawingOverlayController {
 
     // MARK: - The 3D scene
 
-    /// Where a panel frame given from the display's top-left corner is in the container view,
-    /// which, like every AppKit view here, measures from its bottom-left corner.
-    private func frameInContainerView(forFrameFromTopLeft frameFromTopLeft: CGRect, displaySizeInPoints: CGSize) -> CGRect {
+    /// Round 22: where a scene's window goes on the screen: the panel frame (given from its display's
+    /// top-left corner) in global AppKit coordinates, which measure from the bottom-left corner of the
+    /// main display, grown by the room the paper's shadow needs on every side.
+    private func sceneWindowFrameOnScreen(forPanelFrameFromTopLeft panelFrameFromTopLeft: CGRect, displayFrame: CGRect) -> CGRect {
         CGRect(
-            x: frameFromTopLeft.minX,
-            y: displaySizeInPoints.height - frameFromTopLeft.maxY,
-            width: frameFromTopLeft.width,
-            height: frameFromTopLeft.height
+            x: displayFrame.minX + panelFrameFromTopLeft.minX,
+            y: displayFrame.maxY - panelFrameFromTopLeft.maxY,
+            width: panelFrameFromTopLeft.width,
+            height: panelFrameFromTopLeft.height
+        ).insetBy(dx: -EzraScenePanelView.shadowRoomInPoints, dy: -EzraScenePanelView.shadowRoomInPoints)
+    }
+
+    /// Round 22: the paper's frame inside its own window: the window is the paper plus the shadow's
+    /// room on every side.
+    private func panelFrameInsideTheSceneWindow(forPanelSize panelSize: CGSize) -> CGRect {
+        CGRect(
+            origin: CGPoint(x: EzraScenePanelView.shadowRoomInPoints, y: EzraScenePanelView.shadowRoomInPoints),
+            size: panelSize
         )
     }
 
@@ -922,39 +1040,52 @@ final class EzraDrawingOverlayController {
         drawingSurfaceView: EzraDrawingSurfaceView,
         backingScaleFactor: CGFloat
     ) {
-        // The panel is a sibling of the drawing surface in the overlay window's plain container
-        // view. It must not go inside the SwiftUI hosting view, which does not show such views.
-        guard let scenePanelPlacement = scenePanelPlacementsByMarkNumber[sceneMarkNumber],
-              let overlayContainerView = drawingSurfaceView.superview else {
-            print("✏️ draw: scene m\(sceneMarkNumber) not shown (no place or no container view)")
+        // Round 22: the panel goes in a window of its own (never inside a SwiftUI hosting view),
+        // ordered just above the overlay window of this display.
+        guard let scenePanelPlacement = scenePanelPlacementsByMarkNumber[sceneMarkNumber] else {
+            print("✏️ draw: scene m\(sceneMarkNumber) not shown (no place)")
             return
         }
         let plannedScene = plannedScenesByMarkNumber[sceneMarkNumber] ?? scene
         let panelLayout = EzraScenePanelLayoutCalculator.layout(
-            hasLabelColumn: plannedScene.hasLabelledParts,
+            labelColumnCount: EzraScenePanelLayoutCalculator.columnCount(forLabelledPartCount: plannedScene.labelledPartCount),
             labelColumnIsOnLeftOfModel: scenePanelPlacement.corner.isOnRightSideOfScreen
         )
         let scenePanelView = EzraScenePanelView(
             sceneTitle: scene.title,
             cameraFit: EzraSceneCamera.cameraFit(for: plannedScene.parts),
             panelLayout: panelLayout,
-            panelFrameInContainer: frameInContainerView(
-                forFrameFromTopLeft: scenePanelPlacement.panelFrame,
-                displaySizeInPoints: drawingSurfaceView.displayFrame.size
-            ),
+            panelFrameInContainer: panelFrameInsideTheSceneWindow(forPanelSize: scenePanelPlacement.panelFrame.size),
             backingScaleFactor: backingScaleFactor
         )
         // A scene opened with parts already in it (none does today) shows them at once.
         for (partIndex, part) in scene.parts.enumerated() {
             scenePanelView.addPart(
                 part,
+                partIndex: partIndex,
                 labelNumber: scene.labelNumber(forPartAtIndex: partIndex),
                 cameraFit: EzraSceneCamera.cameraFit(for: plannedScene.parts),
                 isAnimated: false
             )
         }
-        overlayContainerView.addSubview(scenePanelView, positioned: .above, relativeTo: drawingSurfaceView)
+        let scenePanelWindow = EzraScenePanelWindow(
+            scenePanelView: scenePanelView,
+            frameOnScreen: sceneWindowFrameOnScreen(
+                forPanelFrameFromTopLeft: scenePanelPlacement.panelFrame,
+                displayFrame: drawingSurfaceView.displayFrame
+            )
+        )
+        scenePanelView.userTouchedTheSceneHandler = { [weak self] in
+            self?.sceneWasTouchedByTheUser(markNumber: sceneMarkNumber)
+        }
+        scenePanelView.explodeToggleClickedHandler = { [weak self] in
+            self?.explodeToggleWasClicked(sceneMarkNumber: sceneMarkNumber)
+        }
+        scenePanelWindow.setVisibleInScreenCapturesForSelfTest(isShowingScenesInScreenCapturesForSelfTest)
+        scenePanelWindow.show(aboveOverlayWindow: drawingSurfaceView.window)
         scenePanelViewsByMarkNumber[sceneMarkNumber] = scenePanelView
+        scenePanelWindowsByMarkNumber[sceneMarkNumber] = scenePanelWindow
+        interactionClockOfTheNewestScene = EzraSceneInteractionClock()
         scenePanelView.fadeInAndStartTurning()
         print("✏️ draw: scene m\(sceneMarkNumber) shown panelFrame=\(scenePanelPlacement.panelFrame.integral) corner=\(scenePanelPlacement.corner) plannedParts=\(plannedScene.parts.count)")
     }
@@ -974,11 +1105,13 @@ final class EzraDrawingOverlayController {
         let plannedScene = plannedScenesByMarkNumber[sceneMark.markNumber] ?? sceneWithPart
 
         // The first labelled part of a scene that had no tags yet: the paper grows a column for
-        // them on the side facing the middle of the screen. The panel keeps its corner, so the
-        // model does not move.
-        if plannedScene.hasLabelledParts, scenePanelView.panelLayout.labelColumnFrame == nil {
+        // them on the side facing the middle of the screen. Round 22: the thirteenth labelled part
+        // grows a second column beyond the first. The panel keeps its corner, so the model does not
+        // move.
+        let neededLabelColumnCount = EzraScenePanelLayoutCalculator.columnCount(forLabelledPartCount: plannedScene.labelledPartCount)
+        if neededLabelColumnCount > scenePanelView.panelLayout.labelColumnCount {
             let panelLayoutWithLabelColumn = EzraScenePanelLayoutCalculator.layout(
-                hasLabelColumn: true,
+                labelColumnCount: neededLabelColumnCount,
                 labelColumnIsOnLeftOfModel: scenePanelPlacement.corner.isOnRightSideOfScreen
             )
             let grownPanelFrame = EzraScenePanelPlacement.panelFrame(
@@ -991,19 +1124,90 @@ final class EzraDrawingOverlayController {
                 panelFrame: grownPanelFrame,
                 corner: scenePanelPlacement.corner
             )
+            // Round 22: the window grows with the paper (it keeps its corner, so the model stays where
+            // it is on the screen), and the paper lays itself out inside it.
+            scenePanelWindowsByMarkNumber[sceneMark.markNumber]?.moveAndResize(
+                toFrameOnScreen: sceneWindowFrameOnScreen(forPanelFrameFromTopLeft: grownPanelFrame, displayFrame: sceneDisplayFrame)
+            )
             scenePanelView.applyPanelLayout(
                 panelLayoutWithLabelColumn,
-                panelFrameInContainer: frameInContainerView(forFrameFromTopLeft: grownPanelFrame, displaySizeInPoints: sceneDisplayFrame.size)
+                panelFrameInContainer: panelFrameInsideTheSceneWindow(forPanelSize: grownPanelFrame.size)
             )
         }
 
+        // Round 22: while the model is pulled apart, the new part appears at its exploded place, and
+        // the parts already shown glide to theirs (the model's middle moves a little as it grows).
+        let shownPlannedParts = EzraSceneExplosion.shownParts(plannedScene.parts, isExploded: scenePanelView.isShowingExplodedParts)
+        let shownCameraFit = EzraSceneCamera.cameraFit(for: shownPlannedParts)
+        if scenePanelView.isShowingExplodedParts {
+            scenePanelView.showParts(
+                atCentres: shownCentresByIndex(of: shownPlannedParts, onlyIndexesBelow: partIndex),
+                cameraFit: shownCameraFit,
+                isExploded: true,
+                animationSeconds: EzraScenePanelView.partAppearSeconds
+            )
+        }
         scenePanelView.addPart(
             sceneWithPart.parts[partIndex],
+            partIndex: partIndex,
             labelNumber: sceneWithPart.labelNumber(forPartAtIndex: partIndex),
-            cameraFit: EzraSceneCamera.cameraFit(for: plannedScene.parts),
-            isAnimated: true
+            cameraFit: shownCameraFit,
+            isAnimated: true,
+            shownCentre: scenePanelView.isShowingExplodedParts && partIndex < shownPlannedParts.count ? shownPlannedParts[partIndex].centre : nil
         )
         print("✏️ draw: part \(partIndex + 1) of scene m\(sceneMark.markNumber) shown (\(sceneWithPart.parts[partIndex].shapeKind.rawValue))")
+    }
+
+    /// Round 22: the centres of the parts as shown, by their place in the scene, for the parts with a
+    /// place below `partIndexLimit` (the ones already on the screen).
+    private func shownCentresByIndex(of shownParts: [EzraScenePart], onlyIndexesBelow partIndexLimit: Int) -> [Int: EzraSceneVector] {
+        var shownCentresByIndex: [Int: EzraSceneVector] = [:]
+        for (partIndex, shownPart) in shownParts.enumerated() where partIndex < partIndexLimit {
+            shownCentresByIndex[partIndex] = shownPart.centre
+        }
+        return shownCentresByIndex
+    }
+
+    /// Round 22: carries out a `[VIEW:...]` change on the scene that is on the screen. Nothing happens
+    /// when the scene has gone while the change waited for its moment.
+    private func changeSceneViewOnScreen(sceneMarkNumber: Int, viewCommand: EzraSceneViewCommand) {
+        guard let scenePanelView = scenePanelViewsByMarkNumber[sceneMarkNumber] else {
+            print("✏️ draw: a view change of scene m\(sceneMarkNumber) not shown (the scene is not on screen)")
+            return
+        }
+        switch viewCommand {
+        case .exploded:
+            showSceneParts(ofSceneWithMarkNumber: sceneMarkNumber, exploded: true, animationSeconds: EzraScenePanelView.explodeSeconds)
+        case .assembled:
+            showSceneParts(ofSceneWithMarkNumber: sceneMarkNumber, exploded: false, animationSeconds: EzraScenePanelView.explodeSeconds)
+        case .turn(let turnDirection):
+            scenePanelView.turnTheModel(turnDirection)
+        case .zoom(let zoomDirection):
+            scenePanelView.zoomTheModel(zoomDirection)
+        case .reset:
+            // Reset is the first view: together again, the usual tilt and distance, facing the front.
+            if scenePanelView.isShowingExplodedParts {
+                showSceneParts(ofSceneWithMarkNumber: sceneMarkNumber, exploded: false, animationSeconds: EzraScenePanelView.explodeSeconds)
+            }
+            scenePanelView.resetTheView()
+        }
+        print("✏️ draw: scene m\(sceneMarkNumber) view changed (\(viewCommand.canonicalTagBody))")
+    }
+
+    /// Round 22: shows every part of a scene that is on the screen pulled apart or put back together,
+    /// framed for how it is shown, over `animationSeconds`.
+    private func showSceneParts(ofSceneWithMarkNumber sceneMarkNumber: Int, exploded: Bool, animationSeconds: Double) {
+        guard let scenePanelView = scenePanelViewsByMarkNumber[sceneMarkNumber],
+              let plannedScene = plannedScenesByMarkNumber[sceneMarkNumber] else {
+            return
+        }
+        let shownPlannedParts = EzraSceneExplosion.shownParts(plannedScene.parts, isExploded: exploded)
+        scenePanelView.showParts(
+            atCentres: shownCentresByIndex(of: shownPlannedParts, onlyIndexesBelow: shownPlannedParts.count),
+            cameraFit: EzraSceneCamera.cameraFit(for: shownPlannedParts),
+            isExploded: exploded,
+            animationSeconds: animationSeconds
+        )
     }
 
     private func removeMarkFromScreen(markNumber: Int, fadeOutSeconds: Double) {
@@ -1013,10 +1217,14 @@ final class EzraDrawingOverlayController {
         plannedFullExplanationCardFramesFromTopLeftByMarkNumber[markNumber] = nil
         scenePanelPlacementsByMarkNumber[markNumber] = nil
         plannedScenesByMarkNumber[markNumber] = nil
-        // The scene's view stops its renderer and leaves the window, so it costs nothing once gone.
-        if let scenePanelView = scenePanelViewsByMarkNumber.removeValue(forKey: markNumber) {
-            scenePanelView.fadeOutAndRemove(fadeOutSeconds: fadeOutSeconds)
+        // The scene's view stops its renderer and its window closes, so it costs nothing once gone.
+        let scenePanelView = scenePanelViewsByMarkNumber.removeValue(forKey: markNumber)
+        if let scenePanelWindow = scenePanelWindowsByMarkNumber.removeValue(forKey: markNumber) {
+            scenePanelWindow.fadeOutAndClose(fadeOutSeconds: fadeOutSeconds)
+        } else {
+            scenePanelView?.fadeOutAndRemove(fadeOutSeconds: fadeOutSeconds)
         }
+        sceneKeptUntilUptimeSecondsByMarkNumber[markNumber] = nil
         calloutTagFramesFromTopLeftByMarkNumber[markNumber] = nil
         calloutTargetsFromTopLeftByMarkNumber[markNumber] = nil
         guard let markLayer = markLayersByMarkNumber.removeValue(forKey: markNumber) else {

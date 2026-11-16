@@ -13,11 +13,99 @@ nonisolated struct EzraParsedDrawCommand: Equatable {
 nonisolated struct EzraParsedDrawReply: Equatable {
     /// In the order they were written. At most `EzraDrawTagParser.maximumDrawTagCountPerReply`
     /// from `[DRAW:...]` tags, plus at most one card and the rows that fit on it, plus at most one
-    /// 3D scene and the parts that fit in it.
+    /// 3D scene and the parts that fit in it, plus (round 22) the view changes of the scene.
     let commands: [EzraParsedDrawCommand]
-    /// Draw, card, row, scene and part tags that were dropped: malformed, out of range, past a
-    /// limit, a row with no card to go on, or a part with no scene to go in. They are still removed from the spoken text by `EzraReplyTagParser`.
+    /// Draw, card, row, scene, part and (round 22) view tags that were dropped: malformed, out of
+    /// range, past a limit, a row with no card to go on, or a part or view with no scene. They are
+    /// still removed from the spoken text by `EzraReplyTagParser`.
     let ignoredDrawTagCount: Int
+    /// Round 22: why each dropped `[PART:...]` tag was dropped, in the order they were written (also
+    /// counted in `ignoredDrawTagCount`). Fixed identifiers only: the metrics line counts them and
+    /// the eval reports them by reason.
+    var droppedScenePartReasons: [EzraScenePartDropReason] = []
+}
+
+/// Round 22: why a `[PART:...]` tag was dropped. The raw value is a fixed identifier for the eval's
+/// records; it never holds any of the tag's own text.
+nonisolated enum EzraScenePartDropReason: String, CaseIterable, Equatable {
+    /// No scene was opened earlier in the reply and none is on the screen (or `[DRAW:clear]` took it).
+    case noSceneToGoIn
+    /// The scene already has its 24 parts.
+    case sceneIsFull
+    /// Fewer pieces than shape, label, position, size and colour.
+    case tooFewPieces
+    case unknownShape
+    case unknownColour
+    /// The position is not three numbers.
+    case badPosition
+    /// A coordinate of the position is outside -5 to 5.
+    case positionOutOfRange
+    /// The size does not have the count of numbers its shape takes, or one is not a number.
+    case wrongSizeNumberCount
+    /// A size number is outside 0.05 to 6.
+    case sizeOutOfRange
+    /// A torus whose pipe radius is not smaller than its ring radius.
+    case pipeNotSmallerThanRing
+    /// A field with "=" whose key is neither "rot" nor "mat".
+    case unknownKey
+    /// "rot=" or "mat=" written twice.
+    case repeatedKey
+    /// "rot=" that is not three numbers, each from -360 to 360.
+    case badRotation
+    /// "mat=" with a word that is not one of the six materials.
+    case unknownMaterial
+}
+
+/// Round 22: what reading one `[PART:...]` body gave: a part, or why there is none.
+nonisolated enum EzraScenePartReading: Equatable {
+    case part(EzraScenePart)
+    case dropped(EzraScenePartDropReason)
+}
+
+/// Round 22: the scene numbers of one reply for its metrics line: counts only, never a title, a
+/// label or a tag's text.
+nonisolated struct EzraSceneReplyCounts: Equatable {
+    /// How many parts the reply's scene has once its tags are applied (the scene it opened, or the
+    /// one on the screen it added to). nil when no scene is left after the reply.
+    let scenePartCount: Int?
+    /// `[PART:...]` tags the parser dropped.
+    let droppedPartCount: Int
+    /// `[VIEW:...]` tags that were accepted.
+    let viewCommandCount: Int
+
+    /// The counts of a reply, or nil when it wrote no scene tag the parser kept or dropped as a
+    /// part (an ordinary reply, whose metrics line then has no scene field at all).
+    /// `partCountOfSceneAlreadyOnScreen` is what the parser was given.
+    static func counts(of parsedDrawReply: EzraParsedDrawReply, partCountOfSceneAlreadyOnScreen: Int?) -> EzraSceneReplyCounts? {
+        var partCountOfTheScene = partCountOfSceneAlreadyOnScreen
+        var viewCommandCount = 0
+        var replyTouchedAScene = !parsedDrawReply.droppedScenePartReasons.isEmpty
+        for parsedDrawCommand in parsedDrawReply.commands {
+            switch parsedDrawCommand.command {
+            case .addMark(.scene, _):
+                partCountOfTheScene = 0
+                replyTouchedAScene = true
+            case .addScenePart:
+                partCountOfTheScene = (partCountOfTheScene ?? 0) + 1
+                replyTouchedAScene = true
+            case .changeSceneView:
+                viewCommandCount += 1
+                replyTouchedAScene = true
+            case .clearAllMarks:
+                partCountOfTheScene = nil
+            case .addMark, .eraseMark, .undoNewestMark, .addCardRow:
+                break
+            }
+        }
+        guard replyTouchedAScene else {
+            return nil
+        }
+        return EzraSceneReplyCounts(
+            scenePartCount: partCountOfTheScene,
+            droppedPartCount: parsedDrawReply.droppedScenePartReasons.count,
+            viewCommandCount: viewCommandCount
+        )
+    }
 }
 
 /// Reads the `[DRAW:...]` tags Claude writes between the sentences of a draw reply.
@@ -48,7 +136,13 @@ nonisolated struct EzraParsedDrawReply: Equatable {
 /// - `[PART:shape:label:x,y,z:size:colour]` with an optional last `:axis` adds a part to the scene
 ///   opened in this reply, or to the scene already on screen. shape is box, cylinder, sphere,
 ///   cone, tube or capsule; the label may be empty; size is `w,h,d` for a box, `radius` for a
-///   sphere and `radius,length` for the others; axis is x, y or z (default y, up)
+///   sphere and `radius,length` for the others; axis is x, y or z (default y, up). Round 22: also
+///   torus `ring,pipe`, ring `radius`, pyramid `w,h,d`, plane `w,h`, wedge `w,h,d` and hemisphere
+///   `radius`; after the colour (and the axis) an optional `:rot=rx,ry,rz` (degrees, each -360 to
+///   360) and `:mat=matte|metal|plastic|rubber|glass|glow`, in either order; at most 24 parts
+/// - (round 22) `[VIEW:exploded]` (alias `[VIEW:explode]`), `[VIEW:assembled]`,
+///   `[VIEW:turn:left|right|front|back]`, `[VIEW:zoom:in|out]` and `[VIEW:reset]` change how the
+///   scene opened in this reply, or the one on screen, is shown; any number per reply
 ///
 /// This parser only finds and validates draw tags. Removing them from the spoken text stays the
 /// job of `EzraReplyTagParser`, which knows the tag name so they are never read aloud.
@@ -81,13 +175,15 @@ nonisolated enum EzraDrawTagParser {
 
     /// The pattern of one complete draw, card or row tag. Group 1 is the tag name and group 2 is
     /// everything after its colon. Brackets are excluded from the body so one tag can never
-    /// swallow the next.
-    private static let completeDrawTagPattern = "\\[\\s*(DRAW|CARD|ROW|SCENE|PART)\\s*:([^\\[\\]]*)\\]"
+    /// swallow the next. Round 22 adds the scene's VIEW tag.
+    private static let completeDrawTagPattern = "\\[\\s*(DRAW|CARD|ROW|SCENE|PART|VIEW)\\s*:([^\\[\\]]*)\\]"
 
     private struct DrawTagOccurrence {
         let rangeInReplyText: Range<String.Index>
         /// nil when the tag was malformed, out of range, or past the per-reply limit.
         let command: EzraDrawCommand?
+        /// Round 22: for a `[PART:...]` tag that was dropped, why.
+        var scenePartDropReason: EzraScenePartDropReason? = nil
     }
 
     /// `rowCountOfCardAlreadyOnScreen` is how many rows the explanation card on the screen has, or
@@ -116,9 +212,13 @@ nonisolated enum EzraDrawTagParser {
 
         var parsedCommands: [EzraParsedDrawCommand] = []
         var ignoredDrawTagCount = 0
+        var droppedScenePartReasons: [EzraScenePartDropReason] = []
         for drawTagOccurrence in drawTagOccurrences {
             guard let command = drawTagOccurrence.command else {
                 ignoredDrawTagCount += 1
+                if let scenePartDropReason = drawTagOccurrence.scenePartDropReason {
+                    droppedScenePartReasons.append(scenePartDropReason)
+                }
                 continue
             }
 
@@ -133,7 +233,11 @@ nonisolated enum EzraDrawTagParser {
             parsedCommands.append(EzraParsedDrawCommand(command: command, spokenFractionBeforeTag: spokenFractionBeforeTag))
         }
 
-        return EzraParsedDrawReply(commands: parsedCommands, ignoredDrawTagCount: ignoredDrawTagCount)
+        return EzraParsedDrawReply(
+            commands: parsedCommands,
+            ignoredDrawTagCount: ignoredDrawTagCount,
+            droppedScenePartReasons: droppedScenePartReasons
+        )
     }
 
     /// Reads the body of one draw tag (everything after "DRAW:"), such as "circle:120,11:34" or
@@ -270,6 +374,8 @@ nonisolated enum EzraDrawTagParser {
             return "[ROW:\(row.canonicalTagBody)]"
         case .addScenePart(let part):
             return "[PART:\(part.canonicalTagBody)]"
+        case .changeSceneView(let viewCommand):
+            return "[VIEW:\(viewCommand.canonicalTagBody)]"
         case .addMark(.scene(let scene), _):
             // A scene is opened by its title alone; its parts are tags of their own.
             return "[SCENE:\(scene.title)]"
@@ -409,6 +515,7 @@ nonisolated enum EzraDrawTagParser {
             let tagBody = String(rawReplyText[tagBodyRange])
 
             var command: EzraDrawCommand?
+            var scenePartDropReason: EzraScenePartDropReason?
             switch tagName {
             case "CARD":
                 // One card per reply: a second one would replace the first while its rows are
@@ -437,11 +544,29 @@ nonisolated enum EzraDrawTagParser {
                 }
 
             case "PART":
-                if let partCountSoFar = partCountOfScenePartsGoIn,
-                   partCountSoFar < EzraScene.maximumPartCount,
-                   let scenePart = scenePart(fromTagBody: tagBody) {
-                    command = .addScenePart(scenePart)
-                    partCountOfScenePartsGoIn = partCountSoFar + 1
+                // The same acceptance as before round 22 (a scene to go in, room in it, a part that
+                // reads), now with the reason when one of them is missing.
+                if let partCountSoFar = partCountOfScenePartsGoIn {
+                    if partCountSoFar < EzraScene.maximumPartCount {
+                        switch scenePartReading(fromTagBody: tagBody) {
+                        case .part(let scenePart):
+                            command = .addScenePart(scenePart)
+                            partCountOfScenePartsGoIn = partCountSoFar + 1
+                        case .dropped(let dropReason):
+                            scenePartDropReason = dropReason
+                        }
+                    } else {
+                        scenePartDropReason = .sceneIsFull
+                    }
+                } else {
+                    scenePartDropReason = .noSceneToGoIn
+                }
+
+            case "VIEW":
+                // Round 22: a view change needs a scene to show, like a part needs one to go in: the
+                // one opened earlier in this reply or the one on the screen.
+                if partCountOfScenePartsGoIn != nil, let viewCommand = viewCommand(fromTagBody: tagBody) {
+                    command = .changeSceneView(viewCommand)
                 }
 
             default:
@@ -471,7 +596,11 @@ nonisolated enum EzraDrawTagParser {
                     partCountOfScenePartsGoIn = nil
                 }
             }
-            drawTagOccurrences.append(DrawTagOccurrence(rangeInReplyText: rangeInReplyText, command: command))
+            drawTagOccurrences.append(DrawTagOccurrence(
+                rangeInReplyText: rangeInReplyText,
+                command: command,
+                scenePartDropReason: scenePartDropReason
+            ))
         }
         return drawTagOccurrences
     }
@@ -635,8 +764,25 @@ nonisolated enum EzraDrawTagParser {
     /// Reads the body of a `[PART:...]` tag, such as "cylinder:fan:0,0,2:1.2,0.3:blue:x".
     /// Returns nil for an unknown shape or colour, a position or size outside the limits, or the
     /// wrong count of numbers for the shape. Nothing is clamped: a part the model did not mean is
-    /// worse than a missing one. Only the label is cut when it is too long.
+    /// worse than a missing one. Only the label is cut when it is too long. Round 22: see
+    /// `scenePartReading(fromTagBody:)`, which also says why a part was dropped.
     static func scenePart(fromTagBody tagBody: String) -> EzraScenePart? {
+        if case .part(let scenePart) = scenePartReading(fromTagBody: tagBody) {
+            return scenePart
+        }
+        return nil
+    }
+
+    /// Reads the body of a `[PART:...]` tag into a part, or the reason there is none.
+    ///
+    /// The tag is read from its end, because the label (the second piece) may be empty or may
+    /// itself hold a colon. Round 22: the pieces after the colour are optional and are taken off
+    /// the end first, in any order: a piece holding "=" is a keyed field (`rot=rx,ry,rz` or
+    /// `mat=material`, each at most once; another key drops the part), and a piece that is "x", "y"
+    /// or "z" is the axis (once). A trailing piece is only taken while more than shape, label,
+    /// position, size and colour are left, so a colour can never be read as an axis. A part written
+    /// without the round 22 fields reads exactly as it always did.
+    static func scenePartReading(fromTagBody tagBody: String) -> EzraScenePartReading {
         let untrimmedColonSeparatedComponents = tagBody
             .split(separator: ":", omittingEmptySubsequences: false)
             .map { String($0) }
@@ -645,20 +791,58 @@ nonisolated enum EzraDrawTagParser {
 
         // shape, label, position, size and colour at the least.
         let minimumComponentCount = 5
-        guard colonSeparatedComponents.count >= minimumComponentCount,
-              let shapeKind = EzraScenePartShapeKind(rawValue: colonSeparatedComponents[0].lowercased()) else {
-            return nil
+        guard colonSeparatedComponents.count >= minimumComponentCount else {
+            return .dropped(.tooFewPieces)
+        }
+        guard let shapeKind = EzraScenePartShapeKind(rawValue: colonSeparatedComponents[0].lowercased()) else {
+            return .dropped(.unknownShape)
         }
 
-        // The tag is read from its end, because the label (the second piece) may be empty or may
-        // itself hold a colon. A last piece that is "x", "y" or "z" is the axis, but only when a
-        // colour is still left before it.
         var axis = EzraScenePartAxis.y
-        if colonSeparatedComponents.count > minimumComponentCount,
-           let lastComponent = colonSeparatedComponents.last,
-           let axisFromLastComponent = EzraScenePartAxis(rawValue: lastComponent.lowercased()) {
-            axis = axisFromLastComponent
-            colonSeparatedComponents.removeLast()
+        var axisWasWritten = false
+        var rotation = EzraScenePartRotation.none
+        var rotationWasWritten = false
+        var material = EzraScenePartMaterial.matte
+        var materialWasWritten = false
+        while colonSeparatedComponents.count > minimumComponentCount, let lastComponent = colonSeparatedComponents.last {
+            if let equalsSignIndex = lastComponent.firstIndex(of: "=") {
+                let keyText = lastComponent[..<equalsSignIndex].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let valueText = lastComponent[lastComponent.index(after: equalsSignIndex)...].trimmingCharacters(in: .whitespacesAndNewlines)
+                switch keyText {
+                case "rot":
+                    guard !rotationWasWritten else {
+                        return .dropped(.repeatedKey)
+                    }
+                    guard let rotationNumbers = sceneNumbers(
+                        fromComponent: valueText,
+                        expectedCount: 3,
+                        smallestAllowedValue: -EzraScenePartRotation.largestAngleInDegrees,
+                        largestAllowedValue: EzraScenePartRotation.largestAngleInDegrees
+                    ) else {
+                        return .dropped(.badRotation)
+                    }
+                    rotation = EzraScenePartRotation(degreesX: rotationNumbers[0], degreesY: rotationNumbers[1], degreesZ: rotationNumbers[2])
+                    rotationWasWritten = true
+                case "mat":
+                    guard !materialWasWritten else {
+                        return .dropped(.repeatedKey)
+                    }
+                    guard let materialFromValue = EzraScenePartMaterial(rawValue: valueText.lowercased()) else {
+                        return .dropped(.unknownMaterial)
+                    }
+                    material = materialFromValue
+                    materialWasWritten = true
+                default:
+                    return .dropped(.unknownKey)
+                }
+                colonSeparatedComponents.removeLast()
+            } else if !axisWasWritten, let axisFromLastComponent = EzraScenePartAxis(rawValue: lastComponent.lowercased()) {
+                axis = axisFromLastComponent
+                axisWasWritten = true
+                colonSeparatedComponents.removeLast()
+            } else {
+                break
+            }
         }
 
         let colourComponent = colonSeparatedComponents[colonSeparatedComponents.count - 1]
@@ -669,50 +853,86 @@ nonisolated enum EzraDrawTagParser {
         let rejoinedLabelText = untrimmedColonSeparatedComponents[1..<(1 + labelComponentCount)].joined(separator: ":")
         let labelText = singleLineText(rejoinedLabelText, cutToCharacterCount: EzraScene.maximumPartLabelCharacterCount)
 
-        guard let colour = EzraScenePartColour.colour(named: colourComponent),
-              let positionNumbers = sceneNumbers(
-                  fromComponent: positionComponent,
-                  expectedCount: 3,
-                  smallestAllowedValue: -EzraScene.maximumCentreCoordinate,
-                  largestAllowedValue: EzraScene.maximumCentreCoordinate
-              ) else {
-            return nil
+        guard let colour = EzraScenePartColour.colour(named: colourComponent) else {
+            return .dropped(.unknownColour)
         }
-
-        let expectedSizeNumberCount: Int
-        switch shapeKind {
-        case .box: expectedSizeNumberCount = 3
-        case .sphere: expectedSizeNumberCount = 1
-        case .cylinder, .cone, .tube, .capsule: expectedSizeNumberCount = 2
+        guard let positionNumbers = sceneNumbers(fromComponent: positionComponent, expectedCount: 3) else {
+            return .dropped(.badPosition)
         }
-        guard let sizeNumbers = sceneNumbers(
-            fromComponent: sizeComponent,
-            expectedCount: expectedSizeNumberCount,
-            smallestAllowedValue: EzraScene.minimumPartSize,
-            largestAllowedValue: EzraScene.maximumPartSize
-        ) else {
-            return nil
+        guard numbers(positionNumbers, areAllFrom: -EzraScene.maximumCentreCoordinate, to: EzraScene.maximumCentreCoordinate) else {
+            return .dropped(.positionOutOfRange)
+        }
+        guard let sizeNumbers = sceneNumbers(fromComponent: sizeComponent, expectedCount: shapeKind.sizeNumberCount) else {
+            return .dropped(.wrongSizeNumberCount)
+        }
+        guard numbers(sizeNumbers, areAllFrom: EzraScene.minimumPartSize, to: EzraScene.maximumPartSize) else {
+            return .dropped(.sizeOutOfRange)
         }
 
         let dimensions: EzraScenePartDimensions
         switch shapeKind {
-        case .box:
+        case .box, .pyramid, .wedge:
             dimensions = .box(width: sizeNumbers[0], height: sizeNumbers[1], depth: sizeNumbers[2])
         case .sphere:
             dimensions = .sphere(radius: sizeNumbers[0])
         case .cylinder, .cone, .tube, .capsule:
             dimensions = .radiusAndLength(radius: sizeNumbers[0], length: sizeNumbers[1])
+        case .torus:
+            // A pipe as thick as the ring (or thicker) would fill the hole: not a torus.
+            guard sizeNumbers[1] < sizeNumbers[0] else {
+                return .dropped(.pipeNotSmallerThanRing)
+            }
+            dimensions = .torus(ringRadius: sizeNumbers[0], pipeRadius: sizeNumbers[1])
+        case .ring:
+            dimensions = .torus(ringRadius: sizeNumbers[0], pipeRadius: EzraScenePart.ringPipeRadius(forRingRadius: sizeNumbers[0]))
+        case .plane:
+            dimensions = .plane(width: sizeNumbers[0], height: sizeNumbers[1])
+        case .hemisphere:
+            dimensions = .hemisphere(radius: sizeNumbers[0])
         }
 
-        return EzraScenePart(
+        return .part(EzraScenePart(
             shapeKind: shapeKind,
             labelText: labelText.isEmpty ? nil : labelText,
             centre: EzraSceneVector(x: positionNumbers[0], y: positionNumbers[1], z: positionNumbers[2]),
             dimensions: dimensions,
             colour: colour,
-            // An axis written for a box or a sphere means nothing and is not kept.
-            axis: shapeKind.pointsAlongAnAxis ? axis : .y
-        )
+            // An axis written for a shape without one means nothing and is not kept.
+            axis: shapeKind.pointsAlongAnAxis ? axis : .y,
+            rotation: rotation,
+            // A part coloured glass is already glass: "glass:mat=glass" is the same part as
+            // "glass", so it reads (and is written back) the way a glass part always was.
+            material: colour == .glass && material == .glass ? .matte : material
+        ))
+    }
+
+    /// Round 22: reads the body of a `[VIEW:...]` tag ("exploded", "explode", "assembled",
+    /// "turn:left", "zoom:in", "reset", ...). Case and spaces around the pieces do not matter.
+    /// Returns nil for anything else.
+    static func viewCommand(fromTagBody tagBody: String) -> EzraSceneViewCommand? {
+        let colonSeparatedComponents = tagBody
+            .split(separator: ":", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        switch colonSeparatedComponents.count {
+        case 1:
+            switch colonSeparatedComponents[0] {
+            case "exploded", "explode": return .exploded
+            case "assembled": return .assembled
+            case "reset": return .reset
+            default: return nil
+            }
+        case 2:
+            switch colonSeparatedComponents[0] {
+            case "turn":
+                return EzraSceneTurnDirection(rawValue: colonSeparatedComponents[1]).map { .turn($0) }
+            case "zoom":
+                return EzraSceneZoomDirection(rawValue: colonSeparatedComponents[1]).map { .zoom($0) }
+            default:
+                return nil
+            }
+        default:
+            return nil
+        }
     }
 
     /// Reads "0,0,2" or "1.2,0.3" as exactly `expectedCount` real numbers inside the given range.
@@ -722,6 +942,16 @@ nonisolated enum EzraDrawTagParser {
         smallestAllowedValue: Double,
         largestAllowedValue: Double
     ) -> [Double]? {
+        guard let numbers = sceneNumbers(fromComponent: component, expectedCount: expectedCount),
+              self.numbers(numbers, areAllFrom: smallestAllowedValue, to: largestAllowedValue) else {
+            return nil
+        }
+        return numbers
+    }
+
+    /// Round 22: reads "0,0,2" as exactly `expectedCount` real numbers, whatever their size, so a
+    /// part with numbers that are only out of range can be told apart from one with a bad count.
+    private static func sceneNumbers(fromComponent component: String, expectedCount: Int) -> [Double]? {
         let numberStrings = component
             .split(separator: ",", omittingEmptySubsequences: false)
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -730,13 +960,16 @@ nonisolated enum EzraDrawTagParser {
         }
         var numbers: [Double] = []
         for numberString in numberStrings {
-            guard let number = Double(numberString), number.isFinite,
-                  number >= smallestAllowedValue, number <= largestAllowedValue else {
+            guard let number = Double(numberString), number.isFinite else {
                 return nil
             }
             numbers.append(number)
         }
         return numbers
+    }
+
+    private static func numbers(_ numbers: [Double], areAllFrom smallestAllowedValue: Double, to largestAllowedValue: Double) -> Bool {
+        numbers.allSatisfy { $0 >= smallestAllowedValue && $0 <= largestAllowedValue }
     }
 
     // MARK: - Reading the pieces of a tag

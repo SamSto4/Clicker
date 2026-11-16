@@ -33,8 +33,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Sends when the user scrolls anywhere in the system, at most once every
     /// `scrollWheelMinimumSecondsBetweenReports`. Marks Ezra drew on the screen point at page
     /// content, so they fade when that content moves. Scroll events come from the same listen-only
-    /// tap as the keys (no second tap), and are never swallowed.
-    let scrollWheelScrolledPublisher = PassthroughSubject<Void, Never>()
+    /// tap as the keys (no second tap), and are never swallowed. Round 22: it carries where the
+    /// pointer was (the event's location: global Quartz coordinates, from the top-left corner of the
+    /// main display), so a scroll over a 3D scene, which zooms the model, fades nothing.
+    let scrollWheelScrolledPublisher = PassthroughSubject<CGPoint, Never>()
 
     /// A single scroll gesture produces dozens of events a second. One report is enough to fade
     /// the marks, so the rest of a burst is skipped.
@@ -183,7 +185,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             let currentUptimeSeconds = EzraTurnMetrics.currentUptimeSeconds
             if currentUptimeSeconds - lastScrollWheelReportUptimeSeconds >= Self.scrollWheelMinimumSecondsBetweenReports {
                 lastScrollWheelReportUptimeSeconds = currentUptimeSeconds
-                scrollWheelScrolledPublisher.send()
+                scrollWheelScrolledPublisher.send(event.location)
             }
             return Unmanaged.passUnretained(event)
         }

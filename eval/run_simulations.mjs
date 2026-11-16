@@ -24,6 +24,19 @@ const secretsPlistPath = "/Users/samsto/Clicker/leanring-buddy/ClickyWorkerSecre
 
 const MODEL_NAME = "claude-sonnet-5-5";
 const APP_MAX_TOKENS = 1024;
+// Round 22: a 3D scene of up to 24 parts can run past 1,024 output tokens, and the app sends 8,000 whenever
+// actions are on (the default), so a scene scenario is sent with the app's limit. Every other scenario keeps
+// exactly the request body it had.
+const SCENE_MAX_TOKENS = 8000;
+const SCENE_SCENARIO_KINDS = ["scene", "scene_view", "scene_none"];
+
+// The max_tokens a scenario is sent with when it differs from APP_MAX_TOKENS (null keeps the body as it was):
+// a scenario's own `maxTokens`, or SCENE_MAX_TOKENS for an explaining scenario of a scene kind.
+export function maxTokensOverrideForScenario(scenario) {
+  if (Number.isInteger(scenario?.maxTokens) && scenario.maxTokens > 0) return scenario.maxTokens;
+  if (scenario?.dimension === "explaining" && SCENE_SCENARIO_KINDS.includes(scenario?.kind)) return SCENE_MAX_TOKENS;
+  return null;
+}
 const JUDGE_MAX_TOKENS = 300;
 const HARD_CALL_CEILING = 80; // never exceeded, even if --max-calls asks for more
 const REQUEST_TIMEOUT_MILLISECONDS = 120_000;
@@ -968,9 +981,10 @@ export function scorePersonalization(scenario, finishedTurn, assembled) {
 
 // Same tag shape as EzraDrawTagParser.completeDrawTagPattern (counting and stripping only). Round 21
 // widened it to every tag the app removes from speech besides POINT, NOTE and PROFILE: SCENE and PART
-// (round 11) and the walkthrough's STEP and PLAN (round 21). A reply holding only DRAW, CARD or ROW tags
-// is counted and stripped exactly as before, so the visual scores of round 20 do not move.
-const DRAW_FAMILY_TAG_PATTERN = /\[\s*(DRAW|CARD|ROW|SCENE|PART|STEP|PLAN)\s*:([^\[\]]*)\]/gi;
+// (round 11) and the walkthrough's STEP and PLAN (round 21); round 22 adds the scene's VIEW. A reply holding
+// only DRAW, CARD or ROW tags is counted and stripped exactly as before, so the visual scores of round 20 do
+// not move.
+const DRAW_FAMILY_TAG_PATTERN = /\[\s*(DRAW|CARD|ROW|SCENE|PART|STEP|PLAN|VIEW)\s*:([^\[\]]*)\]/gi;
 
 export function stripDrawFamilyTags(replyText) {
   if (!new RegExp(DRAW_FAMILY_TAG_PATTERN.source, "i").test(replyText)) return replyText;
@@ -1412,8 +1426,9 @@ export function scoreVisual(scenario, finishedTurn, rawReplyText, manifest) {
 // ---------------------------------------------------------------------------------------------
 
 const EXPLAINING_RAW_TAG_PATTERN = /\[\s*([A-Za-z]+)\s*:([^\[\]]*)\]/g;
-const EXPLAINING_FORMAT_FAMILY = ["DRAW", "CARD", "ROW", "SCENE", "PART", "STEP", "PLAN"];
-const EXPLAINING_SPOKEN_FRAGMENT_PATTERN = /[\[\]]|\b(?:step|plan|draw|card|row|scene|part)\s*:|\b\d+\s+of\s+\d+\b/i;
+// Round 22 adds the scene's VIEW tag to the format family and to the fragments that must never be spoken.
+const EXPLAINING_FORMAT_FAMILY = ["DRAW", "CARD", "ROW", "SCENE", "PART", "STEP", "PLAN", "VIEW"];
+const EXPLAINING_SPOKEN_FRAGMENT_PATTERN = /[\[\]]|\b(?:step|plan|draw|card|row|scene|part|view)\s*:|\b\d+\s+of\s+\d+\b/i;
 
 export function explainingRawTags(rawReplyText) {
   return [...rawReplyText.matchAll(EXPLAINING_RAW_TAG_PATTERN)].map((match) => ({ name: match[1].toUpperCase(), body: match[2], index: match.index }));
@@ -1459,7 +1474,8 @@ function explainingPlanStructure(rawTags, stepCount) {
   return { planCount: parsed.length, inOrder, shortEnough, texts: parsed.map((plan) => plan.text) };
 }
 
-const EXPLAINING_HAND_CHECK_KINDS = ["scene"];
+// Round 22: the two new scene kinds are hand checks too, so the explaining score of round 21 does not move.
+const EXPLAINING_HAND_CHECK_KINDS = ["scene", "scene_view", "scene_none"];
 
 export function checkExplainingPrecondition(scenario, assembled) {
   const problems = [];
@@ -1545,19 +1561,75 @@ export function scoreExplaining(scenario, finishedTurn, rawReplyText, manifest, 
   }
 
   if (kind === "scene") {
+    // Round 22: up to 24 parts, at least 90% of the written [PART:] tags valid (the dropped ones are reported
+    // by reason), and the optional shape, material and rotation expectations of a scenario.
     const sceneMarks = (finishedTurn.drawingMarksAfterReply ?? []).filter((mark) => mark.shape.shapeKind === "scene");
     const partCount = sceneMarks[0]?.shape.partCount ?? 0;
     const sentenceCount = spokenInfo.sentenceCount;
+    const sceneParts = finishedTurn.sceneParts ?? [];
+    const droppedPartReasons = finishedTurn.droppedPartReasons ?? [];
+    const writtenPartCount = sceneParts.length + droppedPartReasons.length;
+    const validPartShare = writtenPartCount > 0 ? sceneParts.length / writtenPartCount : 0;
     const checks = {
       exactly_one_scene: sceneMarks.length === 1,
-      part_count_in_range: partCount >= (expectation.partCountRange?.[0] ?? 4) && partCount <= (expectation.partCountRange?.[1] ?? 12),
-      none_dropped: ignoredTagCount === 0,
+      part_count_in_range: partCount >= (expectation.partCountRange?.[0] ?? 4) && partCount <= (expectation.partCountRange?.[1] ?? 24),
+      at_least_90_percent_of_parts_valid: validPartShare >= (expectation.minimumValidPartShare ?? 0.9),
       spoken_two_to_four_sentences: sentenceCount >= (expectation.minSpokenSentences ?? 2) && sentenceCount <= (expectation.maxSpokenSentences ?? 4),
       spoken_clean: spokenInfo.clean,
       ends_with_point_none: endsWithPointNone,
     };
+    if (expectation.requiredShapes) checks.uses_the_required_shapes = expectation.requiredShapes.every((shapeName) => sceneParts.some((part) => part.shape === shapeName));
+    if (expectation.requiredMaterials) checks.uses_the_required_materials = expectation.requiredMaterials.every((materialName) => sceneParts.some((part) => part.effectiveMaterial === materialName));
+    if (expectation.needsARotatedPart) checks.turns_a_part = sceneParts.some((part) => part.isRotated);
     const pass = Object.values(checks).every(Boolean);
-    return { score: null, outcome: "hand_check", detail: { kind, hand_check: true, pass, checks, part_count: partCount, ignored_draw_tag_count: ignoredTagCount, spoken_sentence_count: sentenceCount, ...skillRecord } };
+    return {
+      score: null, outcome: "hand_check",
+      detail: {
+        kind, hand_check: true, pass, checks, part_count: partCount, ignored_draw_tag_count: ignoredTagCount, spoken_sentence_count: sentenceCount,
+        written_part_count: writtenPartCount, valid_part_share: Math.round(100 * validPartShare) / 100, dropped_part_reasons: droppedPartReasons,
+        part_shapes: sceneParts.map((part) => part.shape), part_materials: sceneParts.map((part) => part.effectiveMaterial), rotated_part_count: sceneParts.filter((part) => part.isRotated).length,
+        view_commands: finishedTurn.viewCommands ?? [], ...skillRecord,
+      },
+    };
+  }
+
+  if (kind === "scene_view") {
+    // Round 22: "explode it", "turn it left", "zoom in", "reset the view" with a scene on the screen: the reply
+    // changes the view with one of the expected [VIEW:] tags and opens no new scene.
+    const viewCommands = finishedTurn.viewCommands ?? [];
+    const expectedViewCommands = expectation.viewCommands ?? [];
+    const sentenceCount = spokenInfo.sentenceCount;
+    const checks = {
+      gives_an_expected_view_command: expectedViewCommands.length === 0 ? viewCommands.length > 0 : viewCommands.some((viewCommand) => expectedViewCommands.includes(viewCommand)),
+      opens_no_new_scene: tagCount("SCENE") === 0,
+      no_tag_dropped: ignoredTagCount === 0,
+      spoken_short: sentenceCount >= 1 && sentenceCount <= (expectation.maxSpokenSentences ?? 2),
+      spoken_clean: spokenInfo.clean,
+      ends_with_point_none: endsWithPointNone,
+    };
+    if (expectation.sceneMustBeExplodedAfter !== undefined) checks.exploded_state_as_expected = finishedTurn.sceneIsExplodedAfterReply === expectation.sceneMustBeExplodedAfter;
+    const pass = Object.values(checks).every(Boolean);
+    return {
+      score: null, outcome: "hand_check",
+      detail: { kind, hand_check: true, pass, checks, view_commands: viewCommands, scene_is_exploded_after: finishedTurn.sceneIsExplodedAfterReply ?? null, spoken_sentence_count: sentenceCount, ignored_draw_tag_count: ignoredTagCount, ...skillRecord },
+    };
+  }
+
+  if (kind === "scene_none") {
+    // Round 22: a question that is not about a 3D model ("what's the model number on screen"), or a view word
+    // with no scene on the screen: no scene, part or view tag at all.
+    const sceneFamilyTags = rawTags.filter((tag) => ["SCENE", "PART", "VIEW"].includes(tag.name));
+    const checks = {
+      no_scene_part_or_view_tag: sceneFamilyTags.length === 0,
+      spoken_short: spokenInfo.sentenceCount >= 1 && spokenInfo.sentenceCount <= (expectation.maxSpokenSentences ?? 2),
+      spoken_clean: spokenInfo.clean,
+      valid_point_tag: validPointTag,
+    };
+    const pass = Object.values(checks).every(Boolean);
+    return {
+      score: null, outcome: "hand_check",
+      detail: { kind, hand_check: true, pass, checks, scene_family_tag_names: sceneFamilyTags.map((tag) => tag.name), spoken_sentence_count: spokenInfo.sentenceCount, ...skillRecord },
+    };
   }
 
   const checks = {};
@@ -2359,6 +2431,9 @@ async function runScenario(scenario, context) {
       userPromptForScenario = userPrefix + scenario.userPrompt;
     }
   }
+  // Round 22: a scene scenario gets the app's 8,000 output tokens (requestExtras is spread after max_tokens).
+  const maxTokensOverride = maxTokensOverrideForScenario(scenario);
+  if (maxTokensOverride !== null) requestExtras = { ...(requestExtras ?? {}), max_tokens: maxTokensOverride };
   const requestBody = buildRequestBody({
     systemPrompt: systemPromptForScenario, systemBlocks: systemBlocksForScenario, history: scenario.history, screens: scenario.screens,
     userPrompt: userPromptForScenario, manifest, requestExtras,
@@ -3143,6 +3218,25 @@ function runSelfTest() {
   check("round 21 tags: SCENE and PART are stripped too", stripDrawFamilyTags("a jet engine. [SCENE:jet engine] the fan. [PART:cylinder:fan:-2,0,0:1.2,0.3:blue:x] [POINT:none]") === "a jet engine. the fan. [POINT:none]");
   check("round 21 tags: a round 20 draw reply is stripped as before", stripDrawFamilyTags("here. [DRAW:circle:640,52:38] and [CARD:t] [ROW:text:x] [POINT:none]") === "here. and [POINT:none]");
   check("round 21 tags: a walkthrough reply counts its STEP and PLAN tags as tags", summarizeDrawUse("[STEP:1 of 2] first. [DRAW:circle:10,10:20] [PLAN:1:a] [PLAN:2:b] [POINT:none]", null).raw_tag_count === 4 && summarizeDrawUse("[STEP:1 of 2] first. [DRAW:circle:10,10:20] [POINT:none]", null).raw_draw_tag_count === 1);
+  // Round 22: the scene's VIEW tag is stripped and counted like the rest of the family; a scene scenario is
+  // sent with the app's 8,000 output tokens and every other scenario keeps its body.
+  check("round 22 tags: VIEW is stripped before the trailing POINT tag is read", parsePointTag("pulling it apart. [VIEW:exploded] [POINT:none]").isNone === true && parsePointTag("pulling it apart. [VIEW:exploded] [POINT:none]").spokenText === "pulling it apart." && stripDrawFamilyTags("turning it. [VIEW:turn:left] [POINT:none]") === "turning it. [POINT:none]");
+  check("round 22 tags: a VIEW tag counts as a tag", summarizeDrawUse("closer. [VIEW:zoom:in] [POINT:none]", null).raw_tag_count === 1);
+  check("round 22 max tokens: scene kinds get 8000, a scenario's own maxTokens wins, everything else keeps its body", maxTokensOverrideForScenario({ dimension: "explaining", kind: "scene" }) === 8000 && maxTokensOverrideForScenario({ dimension: "explaining", kind: "scene_view" }) === 8000 && maxTokensOverrideForScenario({ dimension: "explaining", kind: "scene_none" }) === 8000 && maxTokensOverrideForScenario({ dimension: "explaining", kind: "mark" }) === null && maxTokensOverrideForScenario({ dimension: "visual", kind: "scene" }) === null && maxTokensOverrideForScenario({ dimension: "brevity", maxTokens: 2048 }) === 2048);
+  const round22ScenePart = (shape, extras = {}) => ({ shape, label: null, centre: { x: 0, y: 0, z: 0 }, size: [1], pipeRadius: null, colour: "gray", axis: "y", rotation: { x: 0, y: 0, z: 0 }, isRotated: false, material: "matte", effectiveMaterial: "matte", canonicalTagBody: `${shape}::0,0,0:1:gray`, ...extras });
+  const round22SceneFinished = (parts, droppedPartReasons, extras = {}) => ({ spokenText: "here's a lamp. the shade sits on top.", pointTarget: null, drawCommands: [], ignoredDrawTagCount: droppedPartReasons.length, drawingMarksBeforeReply: [], drawingMarksAfterReply: [{ markIdentifier: "m1", shape: { shapeKind: "scene", title: "lamp", partCount: parts.length, isExploded: false, parts }, screenNumber: null }], sceneParts: parts, droppedPartReasons, viewCommands: [], ...extras });
+  const round22SceneReply = "here's a lamp. [SCENE:lamp] the shade sits on top. [PART:hemisphere:shade:0,1,0:1:yellow:mat=glow] [POINT:none]";
+  const round22NineValidParts = Array.from({ length: 9 }, () => round22ScenePart("box"));
+  const round22SceneScore = scoreExplaining({ kind: "scene", expect: { requiredShapes: ["hemisphere"], requiredMaterials: ["glow"], needsARotatedPart: true } }, round22SceneFinished([...round22NineValidParts, round22ScenePart("hemisphere", { effectiveMaterial: "glow", material: "glow", isRotated: true })], ["unknownColour"]), round22SceneReply, manifest, null);
+  check("round 22 scene: 10 valid parts of 11 written pass the 90% bar, with the required shape, material and turned part", round22SceneScore.outcome === "hand_check" && round22SceneScore.detail.pass === true && round22SceneScore.detail.valid_part_share === 0.91 && JSON.stringify(round22SceneScore.detail.dropped_part_reasons) === "[\"unknownColour\"]");
+  const round22MostlyDroppedScore = scoreExplaining({ kind: "scene", expect: {} }, round22SceneFinished(Array.from({ length: 4 }, () => round22ScenePart("box")), ["badRotation", "unknownMaterial"]), round22SceneReply, manifest, null);
+  check("round 22 scene: 4 valid parts of 6 written fail the 90% bar", round22MostlyDroppedScore.detail.pass === false && round22MostlyDroppedScore.detail.checks.at_least_90_percent_of_parts_valid === false);
+  const round22ViewScore = scoreExplaining({ kind: "scene_view", expect: { viewCommands: ["exploded"], sceneMustBeExplodedAfter: true } }, { spokenText: "pulling it apart now.", pointTarget: null, drawCommands: [], ignoredDrawTagCount: 0, viewCommands: ["exploded"], sceneIsExplodedAfterReply: true }, "pulling it apart now. [VIEW:exploded] [POINT:none]", manifest, null);
+  check("round 22 scene_view: [VIEW:exploded] with no new scene passes", round22ViewScore.outcome === "hand_check" && round22ViewScore.detail.pass === true);
+  const round22NewSceneInsteadScore = scoreExplaining({ kind: "scene_view", expect: { viewCommands: ["exploded"] } }, { spokenText: "here it is apart. the parts float.", pointTarget: null, drawCommands: [], ignoredDrawTagCount: 0, viewCommands: [], sceneIsExplodedAfterReply: false }, "here it is apart. [SCENE:lamp apart] the parts float. [PART:box::0,0,0:1,1,1:gray] [POINT:none]", manifest, null);
+  check("round 22 scene_view: a new scene instead of the view tag fails", round22NewSceneInsteadScore.detail.pass === false && round22NewSceneInsteadScore.detail.checks.opens_no_new_scene === false && round22NewSceneInsteadScore.detail.checks.gives_an_expected_view_command === false);
+  check("round 22 scene_none: a plain answer passes and any scene, part or view tag fails", scoreExplaining({ kind: "scene_none", expect: {} }, { spokenText: "the model number is a2338.", pointTarget: null, drawCommands: [], ignoredDrawTagCount: 0 }, "the model number is a2338. [POINT:none]", manifest, null).detail.pass === true && scoreExplaining({ kind: "scene_none", expect: {} }, { spokenText: "zooming in.", pointTarget: null, drawCommands: [], ignoredDrawTagCount: 1 }, "zooming in. [VIEW:zoom:in] [POINT:none]", manifest, null).detail.pass === false);
+  check("round 22 kinds: the three scene kinds are hand checks", ["scene", "scene_view", "scene_none"].every((kindName) => EXPLAINING_HAND_CHECK_KINDS.includes(kindName)));
   const round21RunButtonRectangle = { x: 136, y: 32, w: 28, h: 28 };
   check("round 21 spotlight: a circle around the target lights it", markGeometryQuality({ shapeKind: "spotlight", center: { x: 150, y: 46 }, radius: 40 }, round21RunButtonRectangle).quality === 1);
   check("round 21 spotlight: a circle beside the target does not", markGeometryQuality({ shapeKind: "spotlight", center: { x: 300, y: 46 }, radius: 40 }, round21RunButtonRectangle).quality === 0);
@@ -3273,7 +3367,7 @@ function runSelfTest() {
     for (const exchange of scenario.history ?? []) {
       if (typeof exchange.user !== "string" || typeof exchange.assistant !== "string") contextShapeProblems.push(`${scenario.id}: history exchange needs user and assistant text`);
       if (!/\[POINT:[^\]]*\]\s*$/.test(exchange.assistant ?? "")) contextShapeProblems.push(`${scenario.id}: history assistant text must end with a POINT tag`);
-      if (/\[(NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART|STEP|PLAN):/i.test(exchange.assistant ?? "")) contextShapeProblems.push(`${scenario.id}: history must not carry memory or draw tags`);
+      if (/\[(NOTE|PROFILE|DRAW|CARD|ROW|SCENE|PART|STEP|PLAN|VIEW):/i.test(exchange.assistant ?? "")) contextShapeProblems.push(`${scenario.id}: history must not carry memory or draw tags`);
     }
     for (const field of ["screenContextOfHistory", "screenContextNow"]) {
       if (!scenario[field]?.app || !scenario[field]?.windowTitle) contextShapeProblems.push(`${scenario.id}: ${field} needs app and windowTitle`);

@@ -40,9 +40,10 @@ nonisolated enum EzraSpeechPrefetch {
     /// The first reply tag opens with "[POINT", "[NOTE" or "[PROFILE" and a colon, the same shape
     /// `EzraReplyTagParser` accepts. A stray "[" that is not a tag opening (as in "press [ to
     /// indent") does not count, and neither does a half-arrived "[POI". Round 21 adds the
-    /// walkthrough's STEP and PLAN tags; a reply holding one is skipped earlier anyway (it has tags
-    /// between its sentences), so this only keeps the list of reply tags in one shape.
-    private static let replyTagOpeningPattern = #"\[\s*(?:POINT|NOTE|PROFILE|STEP|PLAN)\s*:"#
+    /// walkthrough's STEP and PLAN tags, and round 22 the 3D scene's VIEW tag; a reply holding one is
+    /// skipped earlier anyway (it has tags between its sentences), so this only keeps the list of
+    /// reply tags in one shape.
+    private static let replyTagOpeningPattern = #"\[\s*(?:POINT|NOTE|PROFILE|STEP|PLAN|VIEW)\s*:"#
 
     /// Looks at the reply text received so far. Once the first tag has opened, the words before it
     /// are the spoken answer and cannot change, even though the stream goes on writing tags.
@@ -65,12 +66,13 @@ nonisolated enum EzraSpeechPrefetch {
 
     /// True when the reply so far holds a tag that sits between its sentences: a `[DRAW`, `[CARD`,
     /// `[ROW`, `[SCENE` or `[PART` tag, or (round 21) a walkthrough's `[STEP` or `[PLAN`, which a
-    /// step reply opens with. In such a reply the words before the first tag are not the whole spoken
+    /// step reply opens with, or (round 22) a scene's `[VIEW`, which follows the sentence that says
+    /// what it does. In such a reply the words before the first tag are not the whole spoken
     /// answer, so audio fetched for them would always be thrown away, and the early fetch is
     /// skipped. A half-arrived "[DRA" does not count yet; the next chunk settles it.
     static func replyHoldsTagsBetweenItsSentences(_ accumulatedReplyText: String) -> Bool {
         accumulatedReplyText.range(
-            of: #"\[\s*(?:DRAW|CARD|ROW|SCENE|PART|STEP|PLAN)"#,
+            of: #"\[\s*(?:DRAW|CARD|ROW|SCENE|PART|STEP|PLAN|VIEW)"#,
             options: [.regularExpression, .caseInsensitive]
         ) != nil
     }

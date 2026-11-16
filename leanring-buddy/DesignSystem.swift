@@ -207,6 +207,10 @@ enum DS {
         /// dark enough for the lit circle to stand out, light enough to keep the rest readable.
         static let overlayDrawingSpotlightShade = Color.black.opacity(0.45)
 
+        /// Round 22: the light fill of the 3D scene's explode toggle while the pointer is over it: the
+        /// card's box fill, so the toggle reads as one of the paper's own small boxes lighting up.
+        static let overlayDrawingSceneToggleHoverFill = Color(hex: "#F1E5C4")
+
         // ── Status Pill ──────────────────────────────────────────────
 
         /// The status pill at the top of the screen on a display without a notch: almost black,
