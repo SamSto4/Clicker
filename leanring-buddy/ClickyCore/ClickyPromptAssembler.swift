@@ -50,7 +50,8 @@ nonisolated struct ClickyTurnContext {
 nonisolated struct ClickyPreparedPrompt {
     /// The whole prompt as one string: static part, the section separator, then the dynamic part.
     /// Kept byte-identical to the single-string prompt used before the split, because an offline
-    /// evaluation tool reads this property.
+    /// evaluation tool reads this property. Round 21b: with a standing context it is static, separator,
+    /// context block, separator, dynamic; with none it is exactly what it was.
     let systemPromptText: String
     /// The base prompt exactly as loaded, with nothing added (no date, no app name, no skills).
     /// It is the same on every turn, which is what lets the API cache it.
@@ -71,6 +72,15 @@ nonisolated struct ClickyPreparedPrompt {
     /// the trade of moving the formats out of the cached base prompt can be measured. 0 on a turn
     /// that selects no skill.
     var skillBodyCharacterCount: Int = 0
+    /// Round 21b: the third system block, the user's standing context (the heading and their words), or
+    /// empty when no context reaches the model. It goes between the static and the dynamic block with a
+    /// cache breakpoint of its own; the dynamic block is the same with or without it.
+    var contextSystemPromptText: String = ""
+    /// The characters of the user's words that reached the block (hidden lines removed, cut to 2,000);
+    /// 0 when no block is sent. For the metrics line and the eval driver.
+    var contextCharacterCount: Int = 0
+    /// The lines of the context that were hidden because they hold a credential shape.
+    var contextHiddenLineCount: Int = 0
 }
 
 /// Builds the system prompt for each turn. Order matters: the static parts come first and the
@@ -98,8 +108,10 @@ nonisolated enum ClickyPromptAssembler {
 
     /// `profileStore` is optional so callers that only care about notes (such as the offline
     /// evaluation tool) keep working; without it no profile section is added. The same goes for
-    /// `memoryStore` (round 16): without it no memories section is added.
-    static func prepareSystemPrompt(for turnContext: ClickyTurnContext, promptsDirectoryURL: URL?, noteStore: ClickyNoteStore, profileStore: ClickyProfileStore? = nil, memoryStore: ClickyMemoryStore? = nil) -> ClickyPreparedPrompt {
+    /// `memoryStore` (round 16): without it no memories section is added. And for `agentContextStore`
+    /// (round 21b): without it (every older caller, the launch warm-up included) no context block is
+    /// built, and the prompt is exactly what it was.
+    static func prepareSystemPrompt(for turnContext: ClickyTurnContext, promptsDirectoryURL: URL?, noteStore: ClickyNoteStore, profileStore: ClickyProfileStore? = nil, memoryStore: ClickyMemoryStore? = nil, agentContextStore: ClickyAgentContextStore? = nil) -> ClickyPreparedPrompt {
         var basePromptText = emergencyBasePromptText
         if let promptsDirectoryURL,
            let baseFileContents = try? String(
@@ -155,8 +167,15 @@ nonisolated enum ClickyPromptAssembler {
             includedMemories: includedMemories,
             context: turnContext
         )
-        let systemPromptText = combineStaticAndDynamicSystemPromptText(
+
+        // Round 21b: the standing context, read once from the store's in-memory copy (never the disk),
+        // so the block, the count and the hidden lines all describe the same words.
+        let agentContextSnapshot = agentContextStore?.promptSnapshot() ?? .empty
+        let contextSystemPromptText = agentContextSnapshot.blockText ?? ""
+
+        let systemPromptText = combineSystemPromptText(
             staticSystemPromptText: basePromptText,
+            contextSystemPromptText: contextSystemPromptText,
             dynamicSystemPromptText: dynamicSystemPromptText
         )
         return ClickyPreparedPrompt(
@@ -169,8 +188,28 @@ nonisolated enum ClickyPromptAssembler {
             includedMemories: includedMemories,
             skillBodyCharacterCount: selectedSkills.reduce(0) { characterCountSoFar, selectedSkill in
                 characterCountSoFar + selectedSkill.bodyText.count
-            }
+            },
+            contextSystemPromptText: contextSystemPromptText,
+            contextCharacterCount: agentContextSnapshot.characterCountReachingThePrompt,
+            contextHiddenLineCount: agentContextSnapshot.hiddenLineNumbers.count
         )
+    }
+
+    /// The whole prompt as one string with the standing context (round 21b) between the static and the
+    /// dynamic part, joined like the rest. With no context it is `combineStaticAndDynamicSystemPromptText`,
+    /// byte for byte.
+    static func combineSystemPromptText(staticSystemPromptText: String, contextSystemPromptText: String, dynamicSystemPromptText: String) -> String {
+        guard !contextSystemPromptText.isEmpty else {
+            return combineStaticAndDynamicSystemPromptText(
+                staticSystemPromptText: staticSystemPromptText,
+                dynamicSystemPromptText: dynamicSystemPromptText
+            )
+        }
+        let staticAndContextText = staticSystemPromptText + systemPromptSectionSeparator + contextSystemPromptText
+        if dynamicSystemPromptText.isEmpty {
+            return staticAndContextText
+        }
+        return staticAndContextText + systemPromptSectionSeparator + dynamicSystemPromptText
     }
 
     /// The whole prompt as one string: the base prompt, then the dynamic part.

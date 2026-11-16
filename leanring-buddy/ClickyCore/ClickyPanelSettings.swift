@@ -1,18 +1,20 @@
 import Foundation
 
 // Pure rules behind the settings tab of the chat panel (round 15): the defaults of every setting,
-// the "drawings stay" choice and the lifetimes it scales, whether a reply is spoken, the five tabs
+// the "drawings stay" choice and the lifetimes it scales, whether a reply is spoken, the six tabs
 // of the panel, the shortcuts cheat sheet and the permission rows. The menu bar panel and the
 // chat panel share the same `CompanionManager` state and `UserDefaults` keys, so a setting changed
 // in either place shows in the other; this file only holds the decisions, never the state.
 
 // MARK: - The tabs
 
-/// The five tabs in the panel's header, in the order they are shown.
+/// The six tabs in the panel's header, in the order they are shown. Round 21b added "context" (the
+/// user's standing context) between memory and usage.
 nonisolated enum ClickyChatPanelTab: String, CaseIterable, Equatable, Sendable {
     case chat
     case chats
     case memory
+    case context
     case usage
     case settings
 
@@ -27,6 +29,7 @@ nonisolated enum ClickyChatPanelTab: String, CaseIterable, Equatable, Sendable {
         case .chat: return "bubble.left"
         case .chats: return "clock.arrow.circlepath"
         case .memory: return "brain"
+        case .context: return "doc.text"
         case .usage: return "chart.bar"
         case .settings: return "gearshape"
         }

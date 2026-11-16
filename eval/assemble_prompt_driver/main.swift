@@ -128,6 +128,13 @@ func memoryStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL:
     return ClickyMemoryStore(memoriesDirectoryURL: scenarioMemoriesDirectoryURL)
 }
 
+/// Round 21b: the standing context of a scenario sits in a folder next to the scenario's notes folder, like
+/// its memories (never inside it, and never the real context folder: the notes root is a temporary folder).
+func agentContextStoreForScenario(_ scenarioIdentifier: String, notesRootDirectoryURL: URL) -> ClickyAgentContextStore {
+    let scenarioContextDirectoryURL = notesRootDirectoryURL.appendingPathComponent("\(scenarioIdentifier)-context", isDirectory: true)
+    return ClickyAgentContextStore(directoryURL: scenarioContextDirectoryURL)
+}
+
 /// The raw profile file, so a scoring step can check that no secret value reached the disk.
 func profileFileContents(of profileStore: ClickyProfileStore) -> String? {
     try? String(contentsOf: profileStore.profileFileURL, encoding: .utf8)
@@ -387,6 +394,20 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             }
         }
 
+        // Round 21b: the scenario's standing context (`agentContext`, a string; an empty string is an empty
+        // context). It is seeded into a temporary context store next to the scenario's notes folder through
+        // the store's own `setCurrentText` and save, and the store is handed to the assembler exactly as the
+        // app hands its own. Without the field there is no store, and the record is exactly what it was.
+        let seedAgentContextText = scenarioInput["agentContext"] as? String
+        let agentContextStore = seedAgentContextText.map { _ in
+            agentContextStoreForScenario(scenarioIdentifier, notesRootDirectoryURL: notesRootDirectoryURL)
+        }
+        if let seedAgentContextText, let agentContextStore {
+            agentContextStore.setCurrentText(seedAgentContextText)
+            agentContextStore.saveNow()
+            agentContextStore.flushPendingSaveNow()
+        }
+
         // Round 6: the marks that are on the screen when this turn starts (empty for an ordinary scenario,
         // which then gets exactly the prompt it got before drawing existed).
         let seededDrawingBoard = drawingBoard(fromSeedDrawTagTexts: (scenarioInput["seedDrawTagTexts"] as? [String]) ?? [])
@@ -488,8 +509,21 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             promptsDirectoryURL: promptsDirectoryURL,
             noteStore: noteStore,
             profileStore: profileStore,
-            memoryStore: seedMemories == nil ? nil : memoryStore
+            memoryStore: seedMemories == nil ? nil : memoryStore,
+            agentContextStore: agentContextStore
         )
+        // Round 21b: what the context did to this turn's prompt, only for a scenario that has the field
+        // (a record without it is exactly what it was). Counts only, and the block the app sends.
+        var agentContextOutputFields: [String: Any] = [:]
+        if let agentContextStore {
+            agentContextOutputFields = [
+                "contextBlockText": preparedPrompt.contextSystemPromptText.isEmpty ? NSNull() : preparedPrompt.contextSystemPromptText,
+                "contextCharacterCount": preparedPrompt.contextCharacterCount,
+                "contextHiddenLineCount": preparedPrompt.contextHiddenLineCount,
+                // The 1-based numbers of the hidden lines, on the text as the editor shows it.
+                "contextHiddenLineNumbers": ClickyAgentContextText.hiddenLineNumbers(in: agentContextStore.currentText),
+            ]
+        }
         outputRecords.append([
             "id": scenarioIdentifier,
             "systemPromptText": preparedPrompt.systemPromptText,
@@ -498,10 +532,12 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             "profileFactTextsInFile": profileStore.loadFactTexts(),
             // The two halves the app sends as separate system blocks (round 4A), plus the exact
             // block array the app builds from them, so the harness can send what the app sends.
+            // Round 21b: with a standing context the array holds its block between the two.
             "staticSystemPromptText": preparedPrompt.staticSystemPromptText,
             "dynamicSystemPromptText": preparedPrompt.dynamicSystemPromptText,
             "systemBlocks": ClickySystemPromptBlocks.makeSystemBlocks(
                 staticText: preparedPrompt.staticSystemPromptText,
+                contextText: preparedPrompt.contextSystemPromptText,
                 dynamicText: preparedPrompt.dynamicSystemPromptText
             ),
             "selectedSkillNames": preparedPrompt.selectedSkillNames,
@@ -515,7 +551,7 @@ func runPrepare(inputPath: String, outputPath: String, promptsDirectoryPath: Str
             // Round 6: the seeded marks, and the lines the app's "marks on screen" section lists for them.
             "drawingMarksOnScreen": drawingMarksOnScreen.map { drawingMarkRecord($0) },
             "drawingMarksOnScreenLineTexts": drawingMarksOnScreen.map { ClickyDrawingMarksOnScreenText.lineText(for: $0) },
-        ].merging(fileEditingOutputFields) { current, _ in current }.merging(walkthroughOutputFields) { current, _ in current })
+        ].merging(fileEditingOutputFields) { current, _ in current }.merging(walkthroughOutputFields) { current, _ in current }.merging(agentContextOutputFields) { current, _ in current })
     }
     writeJSON(outputRecords, toPath: outputPath)
 }

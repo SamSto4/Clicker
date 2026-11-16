@@ -2,11 +2,11 @@
 //  ClickyChatPanelView.swift
 //  leanring-buddy
 //
-//  The SwiftUI content of the chat panel that drops down from the notch: five tabs. "chat" has a
+//  The SwiftUI content of the chat panel that drops down from the notch: six tabs. "chat" has a
 //  text field to type to Clicky and the current chat with the reply streaming in; "chats" lists
-//  past chats grouped by project with search, open, continue, keep and delete; "memory", "usage"
-//  and "settings" are in ClickyChatPanelMemoryView, ClickyChatPanelUsageView and
-//  ClickyChatPanelSettingsView.
+//  past chats grouped by project with search, open, continue, keep and delete; "memory",
+//  "context" (round 21b), "usage" and "settings" are in ClickyChatPanelMemoryView,
+//  ClickyChatPanelContextView, ClickyChatPanelUsageView and ClickyChatPanelSettingsView.
 //
 //  Every colour and size is a `DS.Colors.chatPanel...` or `DS.ChatPanel` token. Every button has
 //  a pointer cursor and a hover state. The view needs nothing from the rest of the app except its
@@ -251,7 +251,7 @@ struct ClickyChatPanelView: View {
 
     /// The tab bar on top, and under it what belongs to the tab that is showing: the text field of
     /// the chat tab, the search field of the chats tab, the title row of an old chat being read.
-    /// The memory, usage and settings tabs have nothing under the bar.
+    /// The memory, context, usage and settings tabs have nothing under the bar.
     private var headerRow: some View {
         VStack(spacing: DS.ChatPanel.belowTabBarSpacingInPoints) {
             tabBar
@@ -295,7 +295,7 @@ struct ClickyChatPanelView: View {
             }
         case .readOnlyChat(let chatID):
             readOnlyChatHeader(chatID: chatID)
-        case .memory, .usage, .settings:
+        case .memory, .context, .usage, .settings:
             EmptyView()
         }
     }
@@ -457,6 +457,9 @@ struct ClickyChatPanelView: View {
             chatListArea
         case .memory:
             tabScrollArea { ClickyChatPanelMemoryContentView(viewModel: viewModel) }
+        case .context:
+            // Round 21b: shorter than the panel's limit, so it never scrolls; the editor scrolls inside.
+            tabScrollArea { ClickyChatPanelContextContentView(viewModel: viewModel) }
         case .usage:
             tabScrollArea { ClickyChatPanelUsageContentView(viewModel: viewModel) }
         case .settings:
@@ -464,8 +467,8 @@ struct ClickyChatPanelView: View {
         }
     }
 
-    /// The scrolling body of the memory, usage and settings tabs. The panel grows with the content
-    /// up to its maximum height and the content scrolls beyond that, like the other tabs.
+    /// The scrolling body of the memory, context, usage and settings tabs. The panel grows with the
+    /// content up to its maximum height and the content scrolls beyond that, like the other tabs.
     private func tabScrollArea<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         ScrollView {
             content()

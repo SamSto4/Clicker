@@ -152,6 +152,9 @@ struct Scenario {
     let unchangedFiles: [String]
     /// Files (root-relative) that must still hold these texts after whatever was applied.
     let filesMustContain: [String: [String]]
+    /// Round 21b: the user's standing context for this scenario (nil: none, and the request is exactly
+    /// what it was). Seeded into a temporary context store and sent as the app sends it.
+    let agentContext: String?
 }
 
 /// A made-up key in the shape the secret rules catch, put where a scenario writes {{FAKE_PROVIDER_KEY}}.
@@ -197,7 +200,8 @@ func loadScenarios() -> [Scenario] {
             maximumToolCalls: expectObject["maxToolCalls"] as? Int,
             forbiddenActions: expectObject["forbiddenActions"] as? [String] ?? [],
             unchangedFiles: expectObject["unchangedFiles"] as? [String] ?? [],
-            filesMustContain: expectObject["filesMustContain"] as? [String: [String]] ?? [:]
+            filesMustContain: expectObject["filesMustContain"] as? [String: [String]] ?? [:],
+            agentContext: scenarioObject["agentContext"] as? String
         )
     }
 }
@@ -324,12 +328,25 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
     turnContext.pendingChangeDescriptions = scenario.pendingChangeDescriptions
     turnContext.actionsAreEnabled = runsWithActionTools
     turnContext.timeZone = TimeZone(identifier: "Europe/Amsterdam")!
+    // Round 21b: the scenario's standing context, seeded through the store's own setCurrentText and save
+    // into the temporary root, and handed to the assembler as the app hands its store.
+    let agentContextStore = scenario.agentContext.map { agentContextText in
+        let scenarioContextStore = ClickyAgentContextStore(directoryURL: rootURL.appendingPathComponent("context", isDirectory: true))
+        scenarioContextStore.setCurrentText(agentContextText)
+        scenarioContextStore.saveNow()
+        scenarioContextStore.flushPendingSaveNow()
+        return scenarioContextStore
+    }
     let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
         for: turnContext,
         promptsDirectoryURL: promptsDirectoryURL,
         noteStore: ClickyNoteStore(notesDirectoryURL: notesURL),
-        profileStore: ClickyProfileStore(profileDirectoryURL: notesURL)
+        profileStore: ClickyProfileStore(profileDirectoryURL: notesURL),
+        agentContextStore: agentContextStore
     )
+    // Round 21b: in every record (0 without a context), so a run can prove the context reached the request.
+    record.fields["contextCharacterCount"] = preparedPrompt.contextCharacterCount
+    record.fields["contextHiddenLineCount"] = preparedPrompt.contextHiddenLineCount
 
     // The request pieces exactly as `ClaudeAPI.analyzeImageStreamingWithFileTools` builds them.
     guard let screenshotData = try? Data(contentsOf: fixturesDirectoryURL.appendingPathComponent(scenario.screenshotFileName)) else {
@@ -337,7 +354,7 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
         return record
     }
     let screenLabel = "user's screen (cursor is here) (image dimensions: 1280x800 pixels; center is at 640,400)"
-    let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(staticText: preparedPrompt.staticSystemPromptText, dynamicText: preparedPrompt.dynamicSystemPromptText)
+    let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(staticText: preparedPrompt.staticSystemPromptText, contextText: preparedPrompt.contextSystemPromptText, dynamicText: preparedPrompt.dynamicSystemPromptText)
     let fileToolSession = ClickyFileToolTurnSession(policy: pathPolicy)
     let fakeActionExecutor = FakeActionExecutor()
     let actionToolSession: ClickyActionToolTurnSession? = runsWithActionTools

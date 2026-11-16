@@ -298,6 +298,9 @@ final class ClickyChatPanelController {
 
     func close() {
         guard isOpen else { return }
+        // Round 21b: before the fade, the context typed in the last moment is written (Escape and a
+        // click outside both come through here).
+        viewModel.panelWillClose()
         isOpen = false
         visibilityGeneration += 1
         let generationWhenClosed = visibilityGeneration
@@ -363,6 +366,15 @@ final class ClickyChatPanelController {
     var settledPanelHeightForSelfTest: CGFloat? {
         guard let shownOnScreen else { return nil }
         return placement(forContentHeightInPoints: viewModel.desiredPanelHeightInPoints, on: shownOnScreen).frame.height
+    }
+
+    /// Asks the window's content to lay itself out now (self test only, before a picture). In the round
+    /// 21 self test the memory tab's height request stayed at its "reading…" height until the next
+    /// change of state after the picture; a layout pass makes the content report the height it has.
+    func layOutContentForSelfTest() {
+        guard let contentView = panel?.contentView else { return }
+        contentView.needsLayout = true
+        contentView.layoutSubtreeIfNeeded()
     }
 
     // MARK: - Window

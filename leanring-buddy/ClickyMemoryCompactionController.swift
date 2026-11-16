@@ -29,6 +29,10 @@ final class ClickyMemoryCompactionController {
     /// Reads the profile's facts once per request, off the main thread: they go into the request's
     /// `<known>` list and the validator checks the answer against them (the profile is in ~/Documents).
     private let loadProfileFactTexts: @Sendable () -> [String]
+    /// Round 21b: the lines of the user's standing context that reach the chat prompt (never a hidden
+    /// line), read once per request from the store's in-memory copy. They go into the `<known>` list after
+    /// the profile facts, and the validator drops a memory that repeats one.
+    private let loadContextLineTexts: @Sendable () -> [String]
     /// Makes the one request. Nil means the real client; a check that must never reach the network
     /// passes its own.
     private let requestSender: (@Sendable (Data, TimeInterval) async -> ClickyMemoryModelResponse)?
@@ -70,6 +74,7 @@ final class ClickyMemoryCompactionController {
         loadProfileFactTexts: @escaping @Sendable () -> [String] = {
             ClickyProfileStore(profileDirectoryURL: ClickyProfileStore.defaultProfileDirectoryURL).loadFactTexts(preferringCachedFile: true)
         },
+        loadContextLineTexts: @escaping @Sendable () -> [String] = { [] },
         requestSender: (@Sendable (Data, TimeInterval) async -> ClickyMemoryModelResponse)? = nil
     ) {
         self.chatSession = chatSession
@@ -81,6 +86,7 @@ final class ClickyMemoryCompactionController {
         self.idleSecondsBeforeCompacting = idleSecondsBeforeCompacting
         self.secondsToWaitBeforeRetryAfterLaunch = secondsToWaitBeforeRetryAfterLaunch
         self.loadProfileFactTexts = loadProfileFactTexts
+        self.loadContextLineTexts = loadContextLineTexts
         self.requestSender = requestSender
     }
 
@@ -208,6 +214,7 @@ final class ClickyMemoryCompactionController {
         let memoryStore = self.memoryStore
         let systemPromptText = self.systemPromptText
         let loadProfileFactTexts = self.loadProfileFactTexts
+        let loadContextLineTexts = self.loadContextLineTexts
         let sendRequestWithTimeLimit = self.sendRequestWithTimeLimit
         return await Task.detached(priority: .utility) {
             await ClickyMemoryCompactionRunner.compactNextBatch(
@@ -216,6 +223,7 @@ final class ClickyMemoryCompactionController {
                 systemPromptText: systemPromptText,
                 memoryStore: memoryStore,
                 loadProfileFactTexts: loadProfileFactTexts,
+                loadContextLineTexts: loadContextLineTexts,
                 sendRequestBody: { requestBodyData in
                     await sendRequestWithTimeLimit(requestBodyData, ClickyMemoryCompaction.requestTimeoutSeconds)
                 }
@@ -250,6 +258,7 @@ final class ClickyMemoryCompactionController {
         let memoryStore = self.memoryStore
         let systemPromptText = self.systemPromptText
         let loadProfileFactTexts = self.loadProfileFactTexts
+        let loadContextLineTexts = self.loadContextLineTexts
         let sendRequestWithTimeLimit = self.sendRequestWithTimeLimit
         let resultBox = ClickyQuitCompactionResultBox()
         let finishedSemaphore = DispatchSemaphore(value: 0)
@@ -260,6 +269,7 @@ final class ClickyMemoryCompactionController {
                 systemPromptText: systemPromptText,
                 memoryStore: memoryStore,
                 loadProfileFactTexts: loadProfileFactTexts,
+                loadContextLineTexts: loadContextLineTexts,
                 sendRequestBody: { requestBodyData in
                     await sendRequestWithTimeLimit(requestBodyData, ClickyMemoryCompaction.requestTimeoutSecondsWhenQuitting)
                 }

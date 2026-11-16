@@ -638,6 +638,18 @@ enum DS {
         static let voiceDefaultTagHorizontalPaddingInPoints: CGFloat = 5
         static let voiceDefaultTagVerticalPaddingInPoints: CGFloat = 1
         static let voiceDefaultTagCornerRadiusInPoints: CGFloat = 4
+
+        // The context tab (round 21b). Its colours are the panel's own: the dim text for the quiet count
+        // and "saving…", the permission rows' amber and green, and the error red.
+        /// The editor of the standing context: a fixed height that scrolls inside, so the panel never
+        /// changes height while the user types.
+        static let contextEditorHeightInPoints: CGFloat = 220
+        /// The count and the save mark under the editor (the detail size).
+        static let contextCounterFontSizeInPoints: CGFloat = 11
+        /// The space between the title, the editor, the row under it and the warning lines.
+        static let contextSectionSpacingInPoints: CGFloat = 8
+        /// " · clicky reads this every turn" is this much dimmer than "CONTEXT" in the tab's title.
+        static let contextTitleSubtitleOpacity: Double = 0.7
         static let voiceSampleButtonSizeInPoints: CGFloat = 24
         static let voiceSampleSymbolFontSizeInPoints: CGFloat = 15
         /// The voice list is indented under the "voice" row's title, past its icon.

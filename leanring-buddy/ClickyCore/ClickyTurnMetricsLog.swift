@@ -151,6 +151,15 @@ nonisolated struct ClickyTurnMetrics: Equatable {
     /// How far the snap moved the point, in whole display points (0 when it did not move it).
     var pointSnapDistancePoints: Int?
 
+    // Round 21b (standing context), two numbers. Each is written only when it is set and greater than
+    // zero, so a line of a turn with no context is what it was in round 21. There is deliberately no
+    // field that could hold a word of the context or a line of it.
+    /// The characters of the user's standing context that reached the prompt (hidden lines removed, cut
+    /// to 2,000).
+    var contextCharacterCount: Int?
+    /// The lines of the context that were hidden from the model because they hold a credential shape.
+    var contextHiddenLineCount: Int?
+
     init(turnStartedAt: Date, modelName: String) {
         self.turnStartedAt = turnStartedAt
         self.modelName = modelName
@@ -261,6 +270,9 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         if let walkthroughStepCount { jsonObject["walkthroughStepCount"] = walkthroughStepCount }
         if let pointSnapOutcome { jsonObject["pointSnapOutcome"] = pointSnapOutcome.rawValue }
         if let pointSnapDistancePoints { jsonObject["pointSnapDistancePoints"] = pointSnapDistancePoints }
+        // Round 21b: written only when greater than zero, so a turn with no context keeps round 21's line.
+        if let contextCharacterCount, contextCharacterCount > 0 { jsonObject["contextCharacterCount"] = contextCharacterCount }
+        if let contextHiddenLineCount, contextHiddenLineCount > 0 { jsonObject["contextHiddenLineCount"] = contextHiddenLineCount }
 
         guard let jsonData = try? JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys]) else {
             return nil
@@ -303,6 +315,10 @@ nonisolated struct ClickyTurnMetrics: Equatable {
         // Round 21: the skill text this turn carried, so an ordinary question can be seen to carry none.
         summaryLine += " skillCharacterCount \(countText(skillCharacterCount))"
         summaryLine += " notes \(countText(noteCount))"
+        // Round 21b: the context's character count, only when a context was sent. A number, never a word of it.
+        if let contextCharacterCount, contextCharacterCount > 0 {
+            summaryLine += " ctx=\(contextCharacterCount)"
+        }
         summaryLine += " point \(usedPointing.map { $0 ? "yes" : "no" } ?? "-")"
         summaryLine += " | \(Self.sanitizedModelName(modelName)), \(countText(screenCount)) screen(s), \(countText(totalImageBytes)) image bytes"
         summaryLine += ", \(inputMode.rawValue)"

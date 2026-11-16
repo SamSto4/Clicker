@@ -302,6 +302,9 @@ struct Scenario {
     let personaStyle: String
     let personaUserAddress: String
     let fakeWorld: FakeWorld
+    /// Round 21b: the user's standing context for this scenario (nil: none, and the request is exactly
+    /// what it was). Seeded into a temporary context store and sent as the app sends it.
+    let agentContext: String?
     let expectation: [String: Any]
 }
 
@@ -349,6 +352,7 @@ func loadScenarios() -> [Scenario] {
             personaStyle: personaObject["style"] ?? "friendly",
             personaUserAddress: personaObject["userAddress"] ?? "",
             fakeWorld: fakeWorld,
+            agentContext: scenarioObject["agentContext"] as? String,
             expectation: scenarioObject["expect"] as? [String: Any] ?? [:]
         )
     }
@@ -638,19 +642,32 @@ func runScenario(_ scenario: Scenario, runNumber: Int) async -> ScenarioRunRecor
         style: ClickyPersonaStyle(rawValue: scenario.personaStyle) ?? .friendly,
         userAddress: scenario.personaUserAddress
     )
+    // Round 21b: the scenario's standing context, seeded through the store's own setCurrentText and save
+    // into the temporary root, and handed to the assembler as the app hands its store.
+    let agentContextStore = scenario.agentContext.map { agentContextText in
+        let scenarioContextStore = ClickyAgentContextStore(directoryURL: rootURL.appendingPathComponent("context", isDirectory: true))
+        scenarioContextStore.setCurrentText(agentContextText)
+        scenarioContextStore.saveNow()
+        scenarioContextStore.flushPendingSaveNow()
+        return scenarioContextStore
+    }
     let preparedPrompt = ClickyPromptAssembler.prepareSystemPrompt(
         for: turnContext,
         promptsDirectoryURL: promptsDirectoryURL,
         noteStore: ClickyNoteStore(notesDirectoryURL: notesURL),
-        profileStore: ClickyProfileStore(profileDirectoryURL: notesURL)
+        profileStore: ClickyProfileStore(profileDirectoryURL: notesURL),
+        agentContextStore: agentContextStore
     )
+    // Round 21b: in every record (0 without a context), so a run can prove the context reached the request.
+    record.fields["contextCharacterCount"] = preparedPrompt.contextCharacterCount
+    record.fields["contextHiddenLineCount"] = preparedPrompt.contextHiddenLineCount
 
     guard let screenshotData = try? Data(contentsOf: fixturesDirectoryURL.appendingPathComponent(scenario.screenshotFileName)) else {
         record.failures.append("SAFETY S7: missing screenshot \(scenario.screenshotFileName)")
         return record
     }
     let screenLabel = "user's screen (cursor is here) (image dimensions: 1280x800 pixels; center is at 640,400)"
-    let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(staticText: preparedPrompt.staticSystemPromptText, dynamicText: preparedPrompt.dynamicSystemPromptText)
+    let systemBlocks = ClickySystemPromptBlocks.makeSystemBlocks(staticText: preparedPrompt.staticSystemPromptText, contextText: preparedPrompt.contextSystemPromptText, dynamicText: preparedPrompt.dynamicSystemPromptText)
     // No tools at all (actions off, no folder) gives the plain request body.
     let tools: [[String: Any]]? = toolSession.toolsArray().isEmpty ? nil : toolSession.toolsArray()
     let baseMessages = ClickyClaudeChatRequestBuilder.messages(

@@ -223,12 +223,16 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
     /// cached samples. Nil, like `memoriesDirectoryURL`, for every caller that predates it, so none
     /// of them can reach the real folder by accident.
     let voicesDirectoryURL: URL?
+    /// The folder of the standing context (round 21b): `context.md`. Nil, like the two above, for every
+    /// caller that predates it.
+    let contextDirectoryURL: URL?
 
-    init(notesDirectoryURL: URL, metricsDirectoryURL: URL, memoriesDirectoryURL: URL? = nil, voicesDirectoryURL: URL? = nil) {
+    init(notesDirectoryURL: URL, metricsDirectoryURL: URL, memoriesDirectoryURL: URL? = nil, voicesDirectoryURL: URL? = nil, contextDirectoryURL: URL? = nil) {
         self.notesDirectoryURL = notesDirectoryURL
         self.metricsDirectoryURL = metricsDirectoryURL
         self.memoriesDirectoryURL = memoriesDirectoryURL
         self.voicesDirectoryURL = voicesDirectoryURL
+        self.contextDirectoryURL = contextDirectoryURL
     }
 
     static let notesDirectoryOverrideEnvironmentVariable = "CLICKY_NOTES_DIRECTORY"
@@ -240,7 +244,8 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
             notesDirectoryURL: ClickyNoteStore.defaultNotesDirectoryURL,
             metricsDirectoryURL: ClickyTurnMetricsLog.defaultLogFileURL.deletingLastPathComponent(),
             memoriesDirectoryURL: ClickyMemoryStore.defaultMemoriesDirectoryURL,
-            voicesDirectoryURL: ClickyVoiceListCache.defaultVoicesDirectoryURL
+            voicesDirectoryURL: ClickyVoiceListCache.defaultVoicesDirectoryURL,
+            contextDirectoryURL: ClickyAgentContextStore.defaultDirectoryURL
         )
     }
 
@@ -282,7 +287,14 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
             ),
             // Round 20: a self test's voice list and samples live in a new temporary folder (there is
             // no override variable), and the self test never asks the Worker for the list.
-            voicesDirectoryURL: temporaryDirectoryURL.appendingPathComponent("clicky-panel-self-test-voices-" + uniqueFolderNameSuffix, isDirectory: true)
+            voicesDirectoryURL: temporaryDirectoryURL.appendingPathComponent("clicky-panel-self-test-voices-" + uniqueFolderNameSuffix, isDirectory: true),
+            // Round 21b: the context folder has its own rule too, shared with its store
+            // (`CLICKY_CONTEXT_DIRECTORY`, honoured only in a self test).
+            contextDirectoryURL: ClickyAgentContextStore.directoryURLForRun(
+                environment: environment,
+                temporaryDirectoryURL: temporaryDirectoryURL,
+                uniqueFolderNameForSelfTest: ClickyAgentContextStore.selfTestFolderNamePrefix + uniqueFolderNameSuffix
+            )
         )
     }
 
@@ -299,7 +311,11 @@ nonisolated struct ClickyPanelDataLocations: Equatable, Sendable {
             guard let voicesDirectoryURL, let realVoicesDirectoryURL = realLocations.voicesDirectoryURL else { return false }
             return voicesDirectoryURL.standardizedFileURL.path == realVoicesDirectoryURL.standardizedFileURL.path
         }()
-        return notesOrMetricsAreReal || memoriesAreReal || voicesAreReal
+        let contextIsReal: Bool = {
+            guard let contextDirectoryURL, let realContextDirectoryURL = realLocations.contextDirectoryURL else { return false }
+            return contextDirectoryURL.standardizedFileURL.path == realContextDirectoryURL.standardizedFileURL.path
+        }()
+        return notesOrMetricsAreReal || memoriesAreReal || voicesAreReal || contextIsReal
     }
 }
 
@@ -403,6 +419,32 @@ nonisolated enum ClickyPanelSelfTestSamples {
         var sampleVoiceListFetchedNow = sampleVoiceList
         sampleVoiceListFetchedNow.fetchedAt = now
         return ClickyVoiceListCache.saveVoiceList(sampleVoiceListFetchedNow, toVoicesDirectory: voicesDirectoryURL)
+    }
+
+    /// A made-up standing context (round 21b) of about 300 characters. Its fourth line holds a sample key
+    /// shape (made up, never a real key), so the context tab shows its warning next to the count.
+    static let sampleContextText = """
+    i'm sam. i build clicky, a mac menu bar assistant in swift, and kb connects, a receptionist service.
+    answer in one short sentence unless i ask for detail.
+    my worker is called clicky-proxy and runs on cloudflare.
+    sample key for the self test: sk-sample-0000000000000000
+    i use xcode and the terminal every day.
+    """
+
+    /// Writes the sample context as `context.md` through the store's own save (round 21b), only into an
+    /// empty context folder, and never when any folder of `locations` is a real one. Returns whether it
+    /// wrote.
+    @discardableResult
+    static func writeSampleContext(into locations: ClickyPanelDataLocations) -> Bool {
+        guard !locations.touchesARealFolder,
+              let contextDirectoryURL = locations.contextDirectoryURL,
+              directoryHasNoFiles(contextDirectoryURL) else {
+            return false
+        }
+        let sampleContextStore = ClickyAgentContextStore(directoryURL: contextDirectoryURL)
+        sampleContextStore.setCurrentText(sampleContextText)
+        sampleContextStore.flushPendingSaveNow()
+        return FileManager.default.fileExists(atPath: sampleContextStore.fileURL.path)
     }
 
     private static func directoryHasNoFiles(_ directoryURL: URL) -> Bool {
